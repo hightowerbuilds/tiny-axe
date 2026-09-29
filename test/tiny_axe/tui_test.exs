@@ -72,45 +72,6 @@ defmodule TinyAxe.TUITest do
     assert screen =~ ~s(searched "ollama latest version" on duckduckgo)
   end
 
-  @tag :tmp_dir
-  test "shows a proposed edit as a diff and saves it on y", %{tmp_dir: dir} do
-    previous = Application.get_env(:tiny_axe, :project_dir)
-    Application.put_env(:tiny_axe, :project_dir, dir)
-    on_exit(fn -> Application.put_env(:tiny_axe, :project_dir, previous) end)
-
-    path = Path.join(dir, "demo.ex")
-    File.write!(path, "defmodule Demo do\n  def hi, do: :hi\nend\n")
-    new = "defmodule Demo do\n  def hi, do: :hello\nend\n"
-
-    {:ok, state} = TUI.mount(test_mode: @size)
-    id = make_ref()
-    state = %{state | run: {id, self()}, pending_prompt: "change hi", transcript: [{:user, "x"}]}
-    edit = %{path: "demo.ex", abs: path, old: File.read!(path), new: new}
-
-    state =
-      Enum.reduce(
-        [{:attempt, 1}, {:edits, [edit]}, {:done, "```elixir demo.ex\n#{new}```"}],
-        state,
-        fn ev, st ->
-          st |> then(&TUI.handle_info({:pipeline, id, ev}, &1)) |> elem(1)
-        end
-      )
-
-    screen = draw(state)
-    assert screen =~ "save this change?"
-    assert screen =~ "- " <> "  def hi, do: :hi"
-    assert screen =~ "+ " <> "  def hi, do: :hello"
-
-    # Typing goes to the popup, not the prompt.
-    {:noreply, state} = TUI.handle_event(key("x"), state)
-    assert state.pending_edits != []
-
-    {:noreply, state} = TUI.handle_event(key("y"), state)
-    assert state.pending_edits == []
-    assert File.read!(path) == new
-    assert List.last(state.transcript) == {:meta, "✓ saved demo.ex (+1 −1)"}
-  end
-
   describe "scrolling" do
     @answer """
     Here is a function:

@@ -86,6 +86,22 @@ defmodule TinyAxe.OpsTest do
       assert problem =~ "Downloads/c.txt doesn't exist (at that point in the plan)"
     end
 
+    test "cd-ing into a hidden folder doesn't open it up (the review's bypass)", %{home: home} do
+      File.mkdir_p!(at(home, ".config/app"))
+      File.write!(at(home, ".config/app/settings.ini"), "secret=1\n")
+
+      assert {:ok, _} = TinyAxe.Location.cd("~/.config")
+      assert Ops.hidden?(at(home, ".config/app/settings.ini"))
+      refute Ops.changeable?(at(home, ".config/app/settings.ini"))
+
+      assert {:error, [problem]} =
+               Ops.expand([
+                 %{"op" => "write", "path" => "app/settings.ini", "about" => "x", "sources" => []}
+               ])
+
+      assert problem =~ "Can't write"
+    end
+
     test "refuses to move a folder into itself", %{home: home} do
       raw = [
         %{"op" => "move", "from" => at(home, "Downloads"), "to" => at(home, "Downloads/inner")}

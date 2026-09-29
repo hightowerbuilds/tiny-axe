@@ -81,6 +81,11 @@ defmodule TinyAxe.LocationTest do
     assert {:meta, "cd: nowhere isn't a folder" <> _} = List.last(state.transcript)
     assert Location.current() == repo
 
+    state = type.(state, "cd ~/.secret")
+    assert {:meta, "📍 " <> shown} = List.last(state.transcript)
+    assert shown =~ "a hidden folder: tiny-axe can read here but won't change anything"
+    state = type.(state, "cd ~/code/tiny-app")
+
     state = type.(state, "pwd")
     assert {:meta, "📍 " <> shown} = List.last(state.transcript)
     assert String.ends_with?(shown, "code/tiny-app")

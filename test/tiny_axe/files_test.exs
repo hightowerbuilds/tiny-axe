@@ -54,19 +54,24 @@ defmodule TinyAxe.FilesTest do
            ] = Files.proposed_edits(text)
   end
 
-  test "writes an edit only if the file is unchanged and inside the project", %{tmp_dir: dir} do
-    path = Path.join(dir, "lib/demo.ex")
-    old = File.read!(path)
+  test "never proposes edits in hidden folders, .git included", %{tmp_dir: dir} do
+    File.mkdir_p!(Path.join(dir, ".git"))
+    File.mkdir_p!(Path.join(dir, ".config"))
 
-    assert Files.write(path, "changed\n", "stale contents") == {:error, :changed_on_disk}
-    assert File.read!(path) == old
+    text = """
+    ```ini .git/config
+    [core]
+    ```
+    ```ini .config/app.ini
+    secret=2
+    ```
+    ```elixir lib/demo.ex
+    defmodule Demo do
+    end
+    ```
+    """
 
-    assert Files.write(path, "changed\n", old) == :ok
-    assert File.read!(path) == "changed\n"
-
-    assert Files.write(Path.join(dir, "lib/sub/new.ex"), "new\n", nil) == :ok
-    assert Files.write(Path.join(dir, "../escape.ex"), "x", nil) == {:error, :outside_project}
-    assert Files.write(Path.join(dir, ".git/config"), "x", nil) == {:error, :outside_project}
+    assert [%{path: "lib/demo.ex"}] = Files.proposed_edits(text)
   end
 
   test "refuses to read binaries", %{tmp_dir: dir} do

@@ -56,8 +56,13 @@ defmodule Mix.Tasks.TinyAxe.Install do
     # Removed first, so an old symlink (e.g. to this repo's bin/tiny-axe) is
     # replaced rather than written through.
     File.rm(launcher)
-    File.write!(launcher, launcher(release, elixir_paths()))
+    extra_path = elixir_paths()
+    File.write!(launcher, launcher(release, extra_path))
     File.chmod!(launcher, 0o755)
+
+    # The installed copy runs from its own trimmed runtime, which is where code
+    # checks broke before; check one for real before calling the install done.
+    self_check!(release, extra_path)
 
     File.mkdir_p!(config)
     env_file = Path.join(config, "env")
@@ -87,6 +92,36 @@ defmodule Mix.Tasks.TinyAxe.Install do
 
     Run `tiny-axe` in any folder.#{on_path_hint(bin)}
     """)
+  end
+
+  @smoke """
+  code = "```elixir\\ndefmodule Smoke do\\n  @doc \\"\\"\\"\\n      iex> Smoke.two()\\n      2\\n  \\"\\"\\"\\n  def two, do: 2\\nend\\n```"
+  case TinyAxe.CodeCheck.run(code) do
+    {:ran, %{status: :passed}} -> IO.puts("SELF_CHECK passed")
+    {:skipped, reason} -> IO.puts("SELF_CHECK skipped " <> reason)
+    other -> IO.puts("SELF_CHECK failed " <> inspect(other))
+  end
+  """
+
+  defp self_check!(release, extra_path) do
+    path = Enum.join(extra_path ++ [System.get_env("PATH", "")], ":")
+
+    {out, _} =
+      System.cmd(Path.join(release, "bin/tiny_axe"), ["eval", @smoke],
+        env: [{"PATH", path}],
+        stderr_to_stdout: true
+      )
+
+    case Regex.run(~r/SELF_CHECK (passed|skipped|failed)(.*)/, out) do
+      [_, "passed", _] ->
+        Mix.shell().info("Self-check: code checks work in the installed copy.")
+
+      [_, "skipped", why] ->
+        Mix.shell().info("Self-check: code checks are skipped (#{String.trim(why)}).")
+
+      _ ->
+        Mix.raise("Self-check failed: code checks don't work in the installed copy.\n\n#{out}")
+    end
   end
 
   # The Elixir and Erlang that mise gives this repo, for sandboxed code checks.

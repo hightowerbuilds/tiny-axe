@@ -149,4 +149,49 @@ defmodule TinyAxe.TUIPlanTest do
     refute File.exists?(Path.join(home, "Papers"))
     assert {:meta, "↶ rolled back"} in state.transcript
   end
+
+  test "a proposed code edit is shown as a diff, saved as a journaled plan on y, and undone with ctrl+z",
+       %{home: home} do
+    project = Path.join(home, "project")
+    File.mkdir_p!(project)
+    previous = Application.get_env(:tiny_axe, :project_dir)
+    Application.put_env(:tiny_axe, :project_dir, project)
+    TinyAxe.Location.reset()
+    on_exit(fn -> Application.put_env(:tiny_axe, :project_dir, previous) end)
+
+    path = Path.join(project, "demo.ex")
+    old = "defmodule Demo do\n  def hi, do: :hi\nend\n"
+    new = "defmodule Demo do\n  def hi, do: :hello\nend\n"
+    File.write!(path, old)
+
+    {:ok, state} = TUI.mount(test_mode: @size)
+    id = make_ref()
+    state = %{state | run: {id, self()}, pending_prompt: "change hi", transcript: [{:user, "x"}]}
+    edit = %{path: "demo.ex", abs: path, old: old, new: new}
+
+    state =
+      Enum.reduce(
+        [{:attempt, 1}, {:edits, [edit]}, {:done, "```elixir demo.ex\n#{new}```"}],
+        state,
+        fn ev, st ->
+          st |> then(&TUI.handle_info({:pipeline, id, ev}, &1)) |> elem(1)
+        end
+      )
+
+    screen = draw(state)
+    assert screen =~ "save this change?"
+    assert screen =~ "+ " <> "  def hi, do: :hello"
+
+    # Typing goes to the popup, not the prompt.
+    state = key(state, "x")
+    assert state.pending_edits != []
+
+    state = state |> key("y") |> settle()
+    assert File.read!(path) == new
+    assert {:meta, "✓ done: 1 step · ctrl+z undoes it"} in state.transcript
+
+    state = key(state, "z", ["ctrl"])
+    state = state |> key("y") |> settle()
+    assert File.read!(path) == old
+  end
 end

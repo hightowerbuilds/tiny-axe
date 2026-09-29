@@ -1,13 +1,14 @@
 defmodule TinyAxe.Files do
   @moduledoc """
   The project directory tiny-axe works in: listing its files, reading them into
-  context, and writing edits the user has confirmed.
+  context, and proposing edits (which, once confirmed, run as a journaled plan
+  through `TinyAxe.Ops.Runner`, so they can be undone).
 
     * Reads go wherever the user points with `@path` (relative to the project,
       `~/…` or absolute). Directories are listed rather than read.
-    * Writes are limited to the project directory, happen only after the user
-      confirms a diff in the TUI, and are refused if the file changed on disk
-      since it was read.
+    * Edits are limited to the project directory, outside hidden folders, happen
+      only after the user confirms a diff, and are refused if the file changed
+      on disk since it was read.
 
   The project is tiny-axe's current folder (`TinyAxe.Location`), which starts
   at `config :tiny_axe, :project_dir`, or the directory it was launched in.
@@ -155,7 +156,9 @@ defmodule TinyAxe.Files do
     |> Regex.scan(text, capture: :all_but_first)
     |> Enum.filter(fn [path, _] -> path =~ ~r/[\/.]/ and not String.contains?(path, "://") end)
     |> Enum.map(fn [path, content] -> {resolve(path), content} end)
-    |> Enum.filter(fn {abs, _} -> inside_project?(abs) and not git_internal?(abs) end)
+    # The same rules as file plans (no hidden folders, .git included), since
+    # accepted edits run as a plan.
+    |> Enum.filter(fn {abs, _} -> inside_project?(abs) and TinyAxe.Ops.changeable?(abs) end)
     |> Enum.uniq_by(&elem(&1, 0))
     |> Enum.flat_map(fn {abs, content} ->
       old =
@@ -168,43 +171,6 @@ defmodule TinyAxe.Files do
         do: [],
         else: [%{path: display(abs), abs: abs, old: old, new: content}]
     end)
-  end
-
-  defp git_internal?(abs), do: ".git" in Path.split(Path.relative_to(abs, root()))
-
-  @doc """
-  Writes a confirmed edit. Refuses paths outside the project, and files whose
-  contents no longer match `expected_old` (`nil` meaning the file must not exist).
-  """
-  @spec write(String.t(), String.t(), String.t() | nil) :: :ok | {:error, term()}
-  def write(abs, new, expected_old) do
-    current =
-      case File.read(abs) do
-        {:ok, c} -> c
-        {:error, :enoent} -> nil
-        {:error, reason} -> {:error, reason}
-      end
-
-    cond do
-      not inside_project?(abs) or git_internal?(abs) -> {:error, :outside_project}
-      match?({:error, _}, current) -> current
-      current != expected_old -> {:error, :changed_on_disk}
-      true -> atomic_write(abs, new)
-    end
-  end
-
-  defp atomic_write(abs, content) do
-    tmp = abs <> ".tiny_axe_tmp"
-
-    with :ok <- File.mkdir_p(Path.dirname(abs)),
-         :ok <- File.write(tmp, content),
-         :ok <- File.rename(tmp, abs) do
-      :ok
-    else
-      error ->
-        File.rm(tmp)
-        error
-    end
   end
 
   @doc """

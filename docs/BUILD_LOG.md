@@ -1,0 +1,450 @@
+# tiny-axe build log
+
+A running record of what was built, why, how it was checked, and what was
+learned along the way. Newest day first; within a day, in the order it happened.
+
+---
+
+## 2026-09-28: from an idea to an installable tool
+
+**Goal set at the start:** a terminal UI, in Elixir because "the BEAM will
+survive anything", that uses Jev (TypeSafe's hosted decision model) to help
+small local models handle code and text tasks.
+
+**Where the day ended:**
+
+- An installable `tiny-axe` command (`mix tiny_axe.install`) that opens in any
+  folder on this machine.
+- Every request goes route → generate → check → verify. Answers can use web
+  search, project files, file operations (move/copy/trash/write), and shell
+  commands that run in a sandbox. Everything that changes the disk waits for
+  approval, and all of it can be recovered after a crash.
+- 3 commits on the public repo
+  [hightowerbuilds/tiny-axe](https://github.com/hightowerbuilds/tiny-axe),
+  90 tests (up from 5 in the first scaffold), about 6,600 lines in `lib/`.
+
+| Commit | Time (PDT) | What |
+|---|---|---|
+| `0a650f4` | 18:10 | First public commit: TUI, decision layer, code checks, web search, files, file plans with recovery, trash, scrolling, copy |
+| `ed06f88` | 19:57 | Context meter and compaction sidebar, honest answers, sandboxed commands |
+| `b30ebcf` | 20:20 | Location tracking, `mix tiny_axe.install`, logs out of the repo |
+
+The day ran across two sessions: the first ended when the session was closed
+by accident, and the second picked up from its transcript.
+
+---
+
+### Session 1: the foundation
+
+**Choosing a TUI framework.** ExRatatui (Elixir bindings to Rust's ratatui,
+via Rustler NIFs) was picked over TermUI (pure Elixir, v0.2), Courgette (not
+released) and Ratatouille (effectively dead). An LLM TUI is mostly streaming
+text, scrollable panes, code blocks and a multiline editor, and ratatui already
+does all of that well. It ships precompiled NIFs and a headless test backend,
+which later made the whole UI testable without a terminal.
+
+**Jev wasn't available, so we built a stand-in.** TypeSafe had paused signups
+on Sept 22. Instead of waiting, a `TinyAxe.Decider` behaviour was defined with
+two implementations:
+
+- `Decider.Local`: asks the local model each question with one-letter answer
+  options, and reads the probabilities straight from Ollama's token logprobs.
+  The answers are real distributions, not a confidence number the model
+  writes out. Three questions run in parallel in about 530 ms.
+- `Decider.Jev`: the real API, swapped in with one line of config.
+
+Everything else in the app talks to the behaviour, so it never needs to know
+which decider is running.
+
+**The machine:** GTX 1080 (8 GB), 31 GB RAM, Ollama 0.34.4. That shaped every
+model choice.
+
+**First pipeline:** route (code / writing / question picks the system prompt)
+→ generate (streamed) → verify ("does this answer the request?"). Below 70%
+it retries, up to 3 attempts.
+
+**Picking the model.** `qwen3.5:4b` was the first default. Gemma 4 E4B
+(`gemma4:e4b-it-qat`, 6.1 GB) was downloaded and compared:
+
+| | Gemma 4 E4B | Qwen 3.5 4B |
+|---|---|---|
+| Fibonacci code, actually run | all correct | crashed for n ≥ 2 |
+| Speed | ~51 tokens/s | ~45 tokens/s |
+| As the decider | ~0.35 s, decisive | works, less certain |
+
+The two can't share the 8 GB card (Qwen was pushed 54% onto the CPU), so one
+model does both jobs. Gemma became the default.
+
+**The Jev client was wrong, and got fixed once there was a real account.**
+The endpoint was guessed wrong (the docs say `POST /v1/systemone`); the key was
+read at compile time instead of at startup; and 429/529 ("overloaded") now
+retry. `mix tiny_axe.jev_check` tests a key without printing it. Creating a key
+at first failed on TypeSafe's side ("failed to create API key").
+
+**Code answers are compiled and tested.** Elixir and Python in an answer are
+compiled and their doctests run inside a bubblewrap sandbox: no network, the
+home folder hidden, writes discarded, a 30 s limit. A failure goes back to the
+model with the real compiler output (concrete feedback beats resampling), and
+the verifier sees the result. If bubblewrap is missing, the check is skipped;
+it never runs model code unprotected. 13 tests.
+
+**Research, then a roadmap.** A research pass listed code models that fit in
+8 GB (Gemma 4 12B, Qwen 3.5 9B, Granite 4.2 8B, and others). A three-phase
+roadmap followed: a daily-driver TUI, then working on real code, then working
+with the models. Web search was being prototyped (DuckDuckGo blocked scripted
+requests; Bing and Brave worked) when the session closed.
+
+---
+
+### Session 2
+
+#### Recovering the session
+
+The previous transcript was still on disk, so the plan, the decisions and the
+half-finished web search were recovered from it rather than re-derived.
+
+#### Jev connected
+
+- The key lives in the repo's `.env` (git-ignored), which mise loads through
+  `_.file = ".env"` in `mise.toml`. `JEV_API` was accepted as a name too.
+- **Security fix:** the key-check task printed the key's first 3 characters,
+  and an ad-hoc check tried to print its start and end. The auto-mode safety
+  check blocked that one; the task now prints only the key's length.
+- Jev became the default decider whenever a key is present, with the local
+  decider as the fallback. Routing dropped from about 4.6 s (local) to 0.3 s.
+
+#### Trying Gemma 12B, and closing a testing loophole
+
+`gemma4:12b-it-qat` (7.2 GB) spills 17% onto the CPU and runs at about
+14 tokens/s, 3.5× slower. On five Elixir prompts it "passed" 4/5 against
+E4B's 3/5, but **none of 12B's passes had tests**. When a doctest failed, it
+deleted the doctests, and the checker counted untested code as a pass.
+
+Fix: code that defines public functions but has no doctests now fails, and the
+fix-it message shows the exact doctest format and says to keep the tests. E4B
+stayed the default.
+
+#### Web search, without an API key
+
+- **Engines:** DuckDuckGo Lite first, then Brave, then Bing. DuckDuckGo and
+  Brave sometimes rate-limit or challenge; Bing always answers but returned
+  junk for niche terms (a botanical garden light show for "ExRatatui popup
+  widget"). tiny-axe sends one request per engine and never tries to get
+  around a block.
+- **Jev decides:** whether a request needs the web (in the routing call, so it
+  adds no latency), and whether the results are on topic; off-topic results
+  fall through to the next engine.
+- **Reading:** the top 3 pages are fetched and their text extracted (headless
+  Chrome is the fallback for JavaScript-only pages). Answers cite `[1]`,
+  `[2]`, and tiny-axe appends the source list.
+- **The verifier sees the same page text** as the model. When Gemma called
+  Ollama's latest version "v0.40.0" (it was v0.34.4; 0.40 was a pre-release),
+  the verifier correctly rejected it every time.
+- The model is now told it runs locally inside tiny-axe, and today's date. It
+  had claimed to "exist on remote servers".
+- **Code that uses packages the sandbox doesn't have** (ExRatatui, Phoenix,
+  Jason…) is marked "not checked" instead of failing all 3 attempts. Typos of
+  standard-library names (`GenSrver`) still fail.
+- Retried answers no longer say "the previous error was…", since the user
+  never saw that attempt.
+
+#### Returning the best attempt
+
+When every attempt falls short, tiny-axe now answers with the highest-rated
+one ("showing attempt 1 of 3, the highest-rated (50%)") instead of the last.
+
+#### Reading and editing project files
+
+- `@path` attaches a file, or lists a folder.
+- Otherwise Jev decides whether a request is about project files and picks up
+  to 3 from the listing: a pick-one question over the file paths (Jev allows
+  up to 255 options).
+- **Edits:** the model writes whole files in path-labelled code blocks. A diff
+  popup asks `y`/`n`. Saves stay inside the project, are refused if the file
+  changed on disk, and are never offered for files too long to show the model
+  in full.
+- **A serious bug found in live testing:** asked only *what* `mix.exs` depends
+  on, the model proposed rewriting three files, including a broken `mix.exs`.
+  Jev now also decides whether the user wants changes at all, and only then
+  are edits explained or offered.
+- The verifier sees the files and the file listing. The answer to the
+  `mix.exs` question went from about 25% to 89%.
+
+#### File operations, designed for recovery
+
+The riskiest feature so far, so a plan was written first
+([plan-file-operations.md](plan-file-operations.md)) and agreed: changes only
+in the home folder and the project, never hidden folders, no permanent delete,
+undo history of 20 plans / 30 days.
+
+The key design point: **the BEAM restarts processes, but it can't un-move a
+half-moved folder.** So recovery is supervision *plus* a journal on disk.
+
+- `Ops`: steps are `mkdir`, `copy`, `move`, `write` (later `trash`).
+  Wildcards expand, and the plan is simulated against the disk before anything
+  runs: sources must exist, nothing is overwritten, changes stay in bounds.
+- `Ops.Journal`: a write-ahead journal per plan, as JSON lines synced to disk
+  before and after each step, with write contents staged and replaced files
+  backed up.
+- `Ops.Runner`: runs one plan at a time in a supervised task. It traps exits
+  (a crashing plan can't take it down) and is linked to the task (if the
+  Runner dies, the plan stops too).
+- **Supervision:** `rest_for_one` over Journal → task supervisor → Runner.
+- **Recovery:** an interrupted plan is found at the next start and offered as
+  `r` roll back · `c` continue · `k` keep. `ctrl+z` undoes the last plan
+  (after confirming), even after a restart.
+- **Crash-injection tests:** kill the plan task mid-way, crash in the middle
+  of a move, kill the Runner, stop the whole app, tear a journal line, change
+  the disk while it's down. A deliberately broken recovery function made the
+  tests fail, proving they can catch real bugs.
+- **The TUI survives its own crashes:** `TinyAxe.Session` holds the
+  conversation outside the TUI process, the supervisor restarts the screen,
+  and the conversation is restored.
+
+**Planning with a small model** needed several rounds, each driven by a live
+failure:
+
+1. With one list of mixed steps and optional fields, the model split every
+   move into one step with only `from` and another with only `to`. **It now
+   fills one list per kind of step,** each with its own required fields.
+2. A single "does this plan do what was asked, and nothing else?" question
+   scored a correct plan 33% while its steps scored 75–96%. **The review now
+   asks Jev about each step, plus whether the plan does everything asked; the
+   score is the weakest link.** Doubtful steps go back to the model by name,
+   which turned an 8% plan into an 87% one.
+3. The reviewer couldn't tell whether "all the PDFs" were all of them, so it
+   now sees the source folders' contents.
+4. A document's sources are read before the plan runs, so they're checked
+   against the disk as it is now. The writer also sees the whole plan, so a
+   README lists files where they *will* be (it had invented `paper1.pdf`).
+5. "Put X into Y" means move, and a rename is just a move.
+6. `~` means the configured home folder, so tests pointed at a fake home can
+   never touch the real one.
+
+All live testing ran against a fake home folder in the scratch space.
+
+#### Scrolling to the top
+
+Scrolling used an estimated line count, which was 25 lines off over 800. That
+could hide the newest lines or show blank space. Now:
+
+- **Exact heights:** each transcript entry is rendered off-screen once and its
+  height cached. About 3 ms per frame on a 300-entry session.
+- **Anchored view:** once you scroll up, the view stays put while new output
+  arrives, and scrolling is clamped at the top.
+- **Keys:** `↑`/`↓`/`home`/`end` with an empty prompt, which also makes the
+  mouse wheel work, since terminals turn it into arrow keys.
+- **Code indentation:** the Markdown widget trims leading spaces when it
+  wraps, so code blocks now use non-breaking spaces, which survive.
+
+#### Move to trash, and ctrl+y
+
+- **`trash` steps** move files to the real system Trash (freedesktop spec,
+  `~/.local/share/Trash`), so the file manager can restore them too. Each step
+  reserves its `.trashinfo` first and records it in the journal, so a crash
+  mid-step can be worked out exactly.
+- Steps run in the order mkdir → copy → trash → move → write, so "back up,
+  then trash" and "replace a file" (trash the old, move the new into place)
+  both work.
+- **Getting the reviewer to trust "delete" plans took three fixes:**
+  - "delete" requests weren't routed to the planner at all;
+  - Jev didn't know that trashing *is* how tiny-axe deletes;
+  - the reviewer's folder listing skipped trashed files' folders.
+
+  "Does the plan leave anything out?" also proved noisy (35–58% for the same
+  plan as wording varied), while "does it do everything asked?" was steady.
+- **`ctrl+y`** copies the newest code block with normal spaces (`wl-copy`);
+  pressing it again steps back through older ones.
+
+#### The public GitHub repo
+
+`hightowerbuilds/tiny-axe`, MIT license. Before the first push:
+
+- `.gitignore` was checked, and every file scanned for key-like strings and
+  personal paths.
+- The README gained setup instructions, and `.env.example` was added.
+- The commit was re-authored with GitHub's no-reply address, so the personal
+  email isn't in the public history.
+
+#### Context meter and compaction
+
+- **Meter:** Ollama reports the real token count of each request, including
+  the cached part (checked). Between requests, sizes are estimated from
+  characters, calibrated from the last real count. `ctx 58%` sits in the
+  status bar.
+- **Compaction:** at 50% of the window (or on `ctrl+k`), everything but the
+  newest two turns is condensed into a summary of at most 250 words, and Jev
+  checks it keeps what's needed. A summary that wouldn't save space is
+  dropped: short turns can come out *longer* as a summary.
+- **A right-hand sidebar** (`ctrl+t`) shows the meter and the summary, which
+  streams in live. The transcript keeps everything, with a `▲` marker.
+
+#### Honest answers, then real commands
+
+- **The complaint:** the model said "I will execute `npm install`" when
+  nothing could run.
+- **Honesty fix:** the model is told it can't run commands in an answer, and
+  the verifier asks Jev whether an answer claims to have run or installed
+  something. A caught claim goes back to be rewritten.
+- **Running commands** (the user chose sandbox + approval):
+  - `TinyAxe.Commander` plans the commands, and `TinyAxe.Shell` runs each
+    approved one in bubblewrap. Only the working folder is writable; the home
+    folder is overlaid (`--tmp-overlay`), so other writes vanish. The network
+    works, stdin is empty so nothing can hang on a prompt, and there's a
+    timeout. `esc` kills the running command, including its sandboxed process.
+  - Rules enforced in code: no `sudo`, and no scaffolding into a non-empty
+    folder. The model kept aiming `npm create vite` at `.`, and prose rules
+    didn't stop it.
+  - **Results are judged from output, not exit codes:** `create-vite` printed
+    "Operation cancelled" and exited 0.
+- **Live proof:** `npm create vite@latest web -- --template react` then
+  `cd web && npm install` built a real React app in the (fake) repo, and Jev
+  judged from the output that it worked.
+
+#### Tracking where it is
+
+The model kept losing track of which folder it was in. Now
+`TinyAxe.Location` holds the current folder, and **only code moves it**:
+
+- `cd` / `pwd` typed at the prompt (no model involved);
+- Jev picking, from real existing folders, the one a request names;
+- the folder commands ran in, including into `web/` after
+  `cd web && npm install`.
+
+Every prompt includes "you're in X, here's what's in it", and relative paths,
+file access and commands all follow it. The command planner **no longer picks
+a folder at all**: given `~/Desktop/Projects/tiny-app`, the model "expanded"
+it to `/home/user/…`, which doesn't exist.
+
+A three-turn test from the home folder:
+
+1. "Go into my tiny-app repo and install Vite…": Jev moved there (78%); after
+   the commands the location followed into `web/`.
+2. "Now add react-router-dom": ran in `web/` without being told.
+3. "What's in this folder?": listed `web/`.
+
+#### Out of its own repo, and installed
+
+- `mix tiny_axe` now starts in the home folder, not tiny-axe's own source.
+- Logs moved from `log/` in the repo to `~/.local/state/tiny-axe/tiny_axe.log`.
+  A first attempt added the log handler at runtime and silently dropped every
+  Elixir `Logger` call, so the config sets an absolute path instead.
+- **`mix tiny_axe.install`:**
+  - builds a release (its own Erlang runtime; no repo or `mix` needed) into
+    `~/.local/share/tiny-axe/release`;
+  - writes a `tiny-axe` launcher into `~/.local/bin` (with
+    `--dir`/`--model`/`--decider`) that points code checks at mise's Elixir;
+  - reads settings, including the key, from `~/.config/tiny-axe/env` (600).
+- **Verified in a real pseudo-terminal from another folder:** the title read
+  `tiny-axe · 📍 ~ · gemma4:e4b-it-qat · decider: jev`, and it shut down
+  cleanly. The first attempt hung because plain `timeout` puts the program in
+  a background process group, so the terminal paused it. `timeout
+  --foreground` is the right tool.
+
+---
+
+#### A code review, and fixing what it found
+
+A quality review ([CODE_REVIEW.md](CODE_REVIEW.md)) went looking for dead,
+suppressed and orphaned code, and asked the hard questions. Its method:
+compiler warnings, Erlang `xref`, event and config cross-checks, searches for
+swallowed errors, probe scripts on a fake home, and a run of the installed
+copy. The three worst findings were fixed that evening:
+
+1. **Critical: code checks were broken in the installed copy.** Inside a
+   release, the sandbox looked for `elixir` in the release's own trimmed
+   runtime, found nothing, and every Elixir answer "failed". The model was fed
+   a bogus error and spent its retries "fixing" working code, and the tests
+   passed because they run in development. The fix finds the real Elixir and
+   Erlang on the PATH. That took two tries: under `mix`, the first `erl` on
+   the PATH is the VM's own `erts-*/bin/erl`, which needs the install around
+   it. **`mix tiny_axe.install` now runs a real code check in the installed
+   copy** and refuses to finish if it fails.
+2. **High: `cd ~/.config` re-opened hidden folders** to file plans and
+   commands, because "hidden" was measured from the current location. It's
+   now measured from home.
+3. **High: project edits followed looser rules than file plans:** hidden
+   files allowed, no journal, no undo. Accepted edits now run as one journaled
+   plan, so `ctrl+z` undoes them.
+
+Each fix has regression tests. Breaking the hidden-folder check makes 6 tests
+fail. The rest of the review (swallowed decider failures, the TUI's size,
+duplication, the untested core, and a list of dead code) is open. 90 tests.
+
+### What the day taught us about small models and Jev
+
+1. **Small models ignore prose rules; code enforces them.** Scaffolding into a
+   non-empty folder, choosing folders, splitting moves: each fix that stuck was
+   a check in code whose problem went back to the model in plain words.
+2. **Never let the model produce a path.** It invents plausible ones. Jev
+   picks from real candidates instead, and code owns the current location.
+3. **Concrete feedback beats resampling.** Compiler output, "step X probably
+   isn't what the user asked for", "folder X isn't empty": each fixed in one
+   round what retries at a higher temperature didn't.
+4. **The verifier must see the same evidence as the model:** web pages, files,
+   listings. Without it, correct answers scored 25%, and "delete" plans were
+   judged incomplete.
+5. **Ask Jev simple, positive questions.** Compound questions ("do X and
+   nothing else?") and negative ones ("leaves anything out?") were badly
+   calibrated. Per-step questions plus "does it do everything asked?",
+   combined as the weakest link, were steady.
+6. **Exit codes lie.** Judge results from the output.
+7. **Test the loophole, not just the feature.** The biggest bugs were
+   "passes" that tested nothing, plans nobody asked for, and claims of work
+   that never happened. Each was found by running real prompts and reading the
+   output.
+8. **Recovery needs a journal, not just a supervisor.** Supervision restarts
+   processes; only the on-disk journal knows how far a half-done plan got.
+
+### Architecture at the end of the day
+
+```
+TinyAxe.Supervisor (one_for_one)
+├── TinyAxe.TaskSupervisor        requests, compaction, commands
+├── TinyAxe.Session               the conversation, outside the TUI
+├── TinyAxe.Location              the current folder
+├── TinyAxe.Ops.Supervisor (rest_for_one)
+│   ├── TinyAxe.Ops.Journal       write-ahead journal of file plans
+│   ├── TinyAxe.Ops.TaskSupervisor
+│   └── TinyAxe.Ops.Runner        runs, rolls back, continues, undoes
+└── TinyAxe.TUI                   restarted with the conversation after a crash
+```
+
+| Module | Job |
+|---|---|
+| `Pipeline` | route → (search) → answer / organise / command; check, verify, retry, best attempt |
+| `Decider` (`Jev`, `Local`) | typed decisions: yes/no, pick-one, score |
+| `CodeCheck`, `Sandbox` | compile and doctest code in bubblewrap |
+| `Web` | keyless search and page reading |
+| `Files` | project files, edits, diffs |
+| `Organizer`, `Ops`, `Ops.Journal`, `Ops.Runner` | file plans, and their recovery |
+| `Commander`, `Shell` | sandboxed shell commands |
+| `Context`, `Compactor` | context meter and compaction |
+| `Location`, `Session`, `Clipboard` | where it is, the conversation, copying |
+| `TUI` | the screen, popups, keys |
+
+### Known limitations and next steps
+
+The code review's open findings ([CODE_REVIEW.md](CODE_REVIEW.md)) come
+first: make decider failures visible, add a catch-all for TUI events, put the
+model behind a behaviour so the core can be tested, and clear out the dead
+code.
+
+- **The model still makes first-attempt mistakes** (copy vs move, targeting
+  `.`), caught by checks and review. Read plans before pressing `y`.
+- **Commands can't be undone with `ctrl+z`.** npm downloads everything each
+  time, because the sandbox discards its cache; letting `~/.npm` persist would
+  speed that up.
+- **Project edits are compiled as single files,** so references to the rest of
+  the project show "not checked". Running `mix test`/`pytest` on the real
+  project, in the sandbox, is the natural next step.
+- **Most TUI behaviour is tested headlessly.** Interactive use in the real
+  terminal is the true test.
+- **The installed launcher is tied to this machine** (it names mise's
+  install folders). Shipping elsewhere would mean a single-file binary; ExRatatui
+  supports Burrito for that.
+- **Re-run `mix tiny_axe.install` after code changes;** the installed copy
+  doesn't update itself.
+- **Ideas on the list:** Ternary-Bonsai-2-27B (a 27B model in 5.9 GB, needing
+  PrismML's llama.cpp fork), CLM-v0.1-8B (a local System One model like Jev),
+  a trace panel, slash commands, saving and resuming sessions.

@@ -56,14 +56,23 @@ defmodule TinyAxe.Ops do
   @spec changeable?(String.t()) :: boolean()
   def changeable?(abs) do
     abs = Path.expand(abs)
+    (inside?(abs, root()) or inside?(abs, Files.root())) and not hidden?(abs)
+  end
 
-    Enum.any?([Files.root(), root()], fn base ->
-      inside?(abs, base) and
-        not (abs
-             |> Path.relative_to(base)
-             |> Path.split()
-             |> Enum.any?(&String.starts_with?(&1, ".")))
-    end)
+  @doc """
+  Whether a path is, or is inside, a hidden folder. Measured from the home
+  folder whatever the current folder is, so `cd ~/.config` can't make
+  `~/.config/app` look ordinary (outside home, from the project).
+  """
+  @spec hidden?(String.t()) :: boolean()
+  def hidden?(abs) do
+    abs = Path.expand(abs)
+    base = if abs == root() or inside?(abs, root()), do: root(), else: Files.root()
+
+    abs
+    |> Path.relative_to(base)
+    |> Path.split()
+    |> Enum.any?(&String.starts_with?(&1, "."))
   end
 
   defp inside?(abs, base), do: abs != base and String.starts_with?(abs, base <> "/")

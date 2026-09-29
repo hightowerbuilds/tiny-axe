@@ -153,7 +153,9 @@ defmodule TinyAxe.Commander do
   end
 
   # The home folder itself would make every file writable; any folder below it is fine.
-  defp workable?(abs), do: abs == Files.root() or Ops.changeable?(abs)
+  defp workable?(abs) do
+    abs != Ops.root() and not Ops.hidden?(abs) and (abs == Files.root() or Ops.changeable?(abs))
+  end
 
   defp review(dir, commands, reply, messages, prompt, notify, round, reviewed?) do
     listing =

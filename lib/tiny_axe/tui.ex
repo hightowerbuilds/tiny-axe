@@ -66,6 +66,8 @@ defmodule TinyAxe.TUI do
        run: nil,
        # Proposed file edits awaiting y/n, first one shown; each carries its diff.
        pending_edits: [],
+       # Edits the user said y to, saved together once all have an answer.
+       accepted_edits: [],
        edit_scroll: 0,
        # A file plan awaiting y/n, the plan being carried out, and a monitor on
        # the Runner so a crash there surfaces as an interrupted plan.
@@ -887,28 +889,22 @@ defmodule TinyAxe.TUI do
 
   defp page(%{size: {_w, h}}), do: max(h - @input_height - 4, 1)
 
+  # y and n only record the decision; once every edit has one, the accepted
+  # edits run together as one journaled plan (backed up, and ctrl+z undoes them).
   defp edit_key("y", edit, state) do
-    meta =
-      case Files.write(edit.abs, edit.new, edit.old) do
-        :ok ->
-          {_, added, removed} = edit.diff
-          "✓ saved #{edit.path} (+#{added} −#{removed})"
+    {_, added, removed} = edit.diff
 
-        {:error, :changed_on_disk} ->
-          "✗ didn't save #{edit.path}: it changed on disk since tiny-axe read it"
-
-        {:error, reason} ->
-          "✗ couldn't save #{edit.path}: #{inspect(reason)}"
-      end
-
-    next_edit(state, meta)
+    %{state | accepted_edits: state.accepted_edits ++ [edit]}
+    |> next_edit("accepted the change to #{edit.path} (+#{added} −#{removed})")
   end
 
   defp edit_key("n", edit, state), do: next_edit(state, "skipped the change to #{edit.path}")
 
   defp edit_key("esc", _edit, state) do
     skipped = Enum.map(state.pending_edits, &{:meta, "skipped the change to #{&1.path}"})
+
     %{state | pending_edits: [], transcript: state.transcript ++ skipped, status: "ready"}
+    |> save_accepted_edits()
   end
 
   defp edit_key(code, _edit, state) when code in ["down", "j"],
@@ -933,7 +929,29 @@ defmodule TinyAxe.TUI do
         transcript: state.transcript ++ [{:meta, meta}],
         status: if(rest == [], do: "ready", else: state.status)
     }
+    |> save_accepted_edits()
   end
+
+  defp save_accepted_edits(%{pending_edits: [], accepted_edits: [_ | _] = edits} = state) do
+    ops =
+      Enum.map(edits, fn e ->
+        %{
+          op: :write,
+          path: e.abs,
+          content: e.new,
+          old_hash: e.old && TinyAxe.Ops.hash(e.old),
+          about: "edit",
+          sources: []
+        }
+      end)
+
+    request = "save #{Enum.map_join(edits, ", ", & &1.path)}"
+
+    %{state | accepted_edits: []}
+    |> start_ops(nil, fn _id, me -> TinyAxe.Ops.Runner.run(request, ops, me) end)
+  end
+
+  defp save_accepted_edits(state), do: state
 
   defp submit(%{run: run} = state) when run != nil, do: {:noreply, state}
 
@@ -963,8 +981,13 @@ defmodule TinyAxe.TUI do
 
     case TinyAxe.Location.cd(target) do
       {:ok, abs} ->
+        note =
+          if TinyAxe.Ops.hidden?(abs),
+            do: " (a hidden folder: tiny-axe can read here but won't change anything)",
+            else: ""
+
         state
-        |> add_meta("📍 #{TinyAxe.Ops.show(abs)}")
+        |> add_meta("📍 #{TinyAxe.Ops.show(abs)}#{note}")
         |> Map.put(:status, "ready")
 
       {:error, :not_a_folder} ->

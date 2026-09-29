@@ -92,6 +92,12 @@ defmodule TinyAxe.ShellTest do
       assert p =~ "sudo"
     end
 
+    test "won't run commands in a hidden folder, even after cd-ing into it", %{home: home} do
+      assert {:ok, hidden} = TinyAxe.Location.cd(Path.join(home, ".hidden"))
+      assert {:error, [p]} = Commander.check(hidden, ["echo hi > x"])
+      assert p =~ "outside hidden folders"
+    end
+
     test "sends a scaffolder aimed at a non-empty folder to a subfolder instead", %{
       project: project
     } do
