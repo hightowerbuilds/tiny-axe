@@ -328,6 +328,8 @@ defmodule TinyAxe.Organizer do
       if(recent != "", do: "Conversation so far:\n#{recent}"),
       "Request: #{prompt}",
       "Today is #{Date.utc_today()}. The home folder is #{Ops.show(Ops.root())}.",
+      "The current folder is #{Ops.show(TinyAxe.Location.current())}; relative paths mean " <>
+        "this folder. What's in it:\n#{TinyAxe.Location.listing()}",
       "Map of the home folder (two levels, hidden entries left out):\n#{home_map()}",
       if(hits != [],
         do: "Files and folders whose names match words in the request:\n" <> Enum.join(hits, "\n")

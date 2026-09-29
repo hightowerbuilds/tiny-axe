@@ -7,6 +7,7 @@ defmodule TinyAxe.ShellTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    TinyAxe.Location.reset()
     home = Path.join(dir, "home")
     project = Path.join(home, "project")
     File.mkdir_p!(Path.join(home, ".hidden"))

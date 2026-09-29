@@ -18,6 +18,8 @@ defmodule TinyAxe.Application do
         {Task.Supervisor, name: TinyAxe.TaskSupervisor},
         # Holds the conversation, so the TUI can crash and restart without losing it.
         TinyAxe.Session,
+        # The current folder, so it too survives a TUI crash.
+        TinyAxe.Location,
         %{
           id: TinyAxe.Ops.Supervisor,
           type: :supervisor,

@@ -494,7 +494,7 @@ defmodule TinyAxe.TUI do
         do: "",
         else: " ↓#{max_top(state, size) - view_top(state, size)} lines below · end to follow ·"
 
-    "#{scroll} tiny-axe · #{Files.display(Files.root())} · #{model()} · decider: #{decider_name()} "
+    "#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()} "
   end
 
   defp status_widget(%{run: nil} = state) do
@@ -940,11 +940,38 @@ defmodule TinyAxe.TUI do
   defp submit(state) do
     prompt = state.input |> ExRatatui.textarea_get_value() |> String.trim()
 
-    if prompt == "" do
-      {:noreply, state}
-    else
-      ExRatatui.textarea_set_value(state.input, "")
-      {:noreply, start_run(state, prompt)}
+    cond do
+      prompt == "" ->
+        {:noreply, state}
+
+      # cd and pwd are handled here, like shell built-ins: no model involved.
+      prompt == "pwd" or prompt =~ ~r/\Acd(\s|\z)/ ->
+        ExRatatui.textarea_set_value(state.input, "")
+        {:noreply, builtin(state, prompt)}
+
+      true ->
+        ExRatatui.textarea_set_value(state.input, "")
+        {:noreply, start_run(state, prompt)}
+    end
+  end
+
+  defp builtin(state, "pwd"),
+    do: add_meta(state, "📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())}")
+
+  defp builtin(state, "cd" <> arg) do
+    target = if String.trim(arg) == "", do: "~", else: String.trim(arg)
+
+    case TinyAxe.Location.cd(target) do
+      {:ok, abs} ->
+        state
+        |> add_meta("📍 #{TinyAxe.Ops.show(abs)}")
+        |> Map.put(:status, "ready")
+
+      {:error, :not_a_folder} ->
+        add_meta(
+          state,
+          "cd: #{target} isn't a folder (you're in #{TinyAxe.Ops.show(TinyAxe.Location.current())})"
+        )
     end
   end
 
@@ -1222,6 +1249,15 @@ defmodule TinyAxe.TUI do
   end
 
   defp apply_event({:plan, plan}, state), do: %{state | pending_plan: plan, plan_scroll: 0}
+
+  defp apply_event({:moved, %{to: to} = m}, state) do
+    how =
+      if m.confidence,
+        do: " (the request named it; Jev #{pct(m.confidence)})",
+        else: " (where the commands went)"
+
+    add_meta(state, "📍 moved to #{to}#{how}")
+  end
 
   defp apply_event({:command_plan, plan}, state),
     do: %{state | pending_commands: plan, plan_scroll: 0}

@@ -6,7 +6,7 @@ defmodule Mix.Tasks.TinyAxe do
       mix tiny_axe
       mix tiny_axe --model qwen3.5:4b
       mix tiny_axe --decider jev     # TypeSafe Jev for route/verify
-      mix tiny_axe --dir ~/code/app  # project to read and edit (default: current dir)
+      mix tiny_axe --dir ~/code/app  # where to start (default: the home folder)
 
   `bin/tiny-axe` runs this from any directory, using that directory as the project.
   """
@@ -23,11 +23,12 @@ defmodule Mix.Tasks.TinyAxe do
     if model = opts[:model], do: Application.put_env(:tiny_axe, :model, model)
     if model = opts[:decider_model], do: Application.put_env(:tiny_axe, :decider_model, model)
 
-    if dir = opts[:dir] do
-      dir = Path.expand(dir)
-      unless File.dir?(dir), do: Mix.raise("--dir #{inspect(dir)} is not a directory")
-      Application.put_env(:tiny_axe, :project_dir, dir)
-    end
+    # `mix tiny_axe` runs inside tiny-axe's own repo; starting there would make
+    # its source the project. Start in the home folder instead, unless --dir says
+    # otherwise (bin/tiny-axe passes the folder it was run from).
+    dir = Path.expand(opts[:dir] || System.user_home!())
+    unless File.dir?(dir), do: Mix.raise("--dir #{inspect(dir)} is not a directory")
+    Application.put_env(:tiny_axe, :project_dir, dir)
 
     case opts[:decider] do
       nil -> :ok

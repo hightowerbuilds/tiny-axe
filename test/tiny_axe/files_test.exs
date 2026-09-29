@@ -7,6 +7,7 @@ defmodule TinyAxe.FilesTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    TinyAxe.Location.reset()
     previous = Application.get_env(:tiny_axe, :project_dir)
     Application.put_env(:tiny_axe, :project_dir, dir)
     on_exit(fn -> Application.put_env(:tiny_axe, :project_dir, previous) end)

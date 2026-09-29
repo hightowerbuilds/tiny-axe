@@ -1,7 +1,8 @@
 defmodule TinyAxe.TUICommandTest do
   @moduledoc "The command popup, driven through the real sandbox."
 
-  use ExUnit.Case, async: true
+  # Running commands moves tiny-axe's (app-wide) location, so not async.
+  use ExUnit.Case, async: false
 
   alias ExRatatui.Event
   alias TinyAxe.TUI
@@ -10,6 +11,8 @@ defmodule TinyAxe.TUICommandTest do
   @moduletag :tmp_dir
 
   setup do
+    TinyAxe.Location.reset()
+    on_exit(&TinyAxe.Location.reset/0)
     if TinyAxe.Shell.available?(), do: :ok, else: {:skip, "bwrap not installed"}
   end
 
@@ -91,8 +94,14 @@ defmodule TinyAxe.TUICommandTest do
 
     refute Enum.any?(state.transcript, &match?({:output, "echo never", _, _}, &1))
 
-    assert {:meta, "✗ stopped: `echo made > made.txt && false` exited with 1" <> _} =
-             List.last(state.transcript)
+    assert Enum.any?(
+             state.transcript,
+             &match?({:meta, "✗ stopped: `echo made > made.txt && false` exited with 1" <> _}, &1)
+           )
+
+    # The location follows the commands to the folder they ran in.
+    assert TinyAxe.Location.current() == dir
+    assert {:meta, "📍 moved to " <> _} = List.last(state.transcript)
 
     # The model's next turn will know what actually ran.
     assert List.last(state.history).content =~ "$ echo hello from the sandbox → exited 0"

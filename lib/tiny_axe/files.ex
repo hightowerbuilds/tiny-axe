@@ -9,16 +9,17 @@ defmodule TinyAxe.Files do
       confirms a diff in the TUI, and are refused if the file changed on disk
       since it was read.
 
-  The project directory is `config :tiny_axe, :project_dir`, or the current
-  directory when unset.
+  The project is tiny-axe's current folder (`TinyAxe.Location`), which starts
+  at `config :tiny_axe, :project_dir`, or the directory it was launched in.
   """
 
   @max_listing 5_000
   # Binary sniffing looks at this much of a file.
   @sniff 8_000
 
+  @doc "The project: the current folder (`TinyAxe.Location`), where tiny-axe was launched until it moves."
   @spec root() :: String.t()
-  def root, do: Path.expand(Application.get_env(:tiny_axe, :project_dir) || File.cwd!())
+  def root, do: TinyAxe.Location.current()
 
   @doc "Resolves a path the way the user would mean it: relative to the project, `~` or absolute."
   @spec resolve(String.t()) :: String.t()

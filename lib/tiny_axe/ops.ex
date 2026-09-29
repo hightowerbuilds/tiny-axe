@@ -45,13 +45,12 @@ defmodule TinyAxe.Ops do
   def root, do: Path.expand(Application.get_env(:tiny_axe, :fs_root) || System.user_home!())
 
   @doc """
-  Resolves a path the user or model gave. `~` means `root/0` (the home folder,
-  unless configured otherwise, as tests do), and relative paths are relative to it.
+  Resolves a path the user or model gave: `~` means `root/0` (the home folder,
+  unless configured otherwise, as tests do), and relative paths are relative
+  to the current folder (`TinyAxe.Location`).
   """
   @spec resolve(String.t()) :: String.t()
-  def resolve("~"), do: root()
-  def resolve("~/" <> rest), do: Path.join(root(), rest) |> Path.expand()
-  def resolve(path), do: Path.expand(path, root())
+  def resolve(path), do: TinyAxe.Location.resolve(path)
 
   @doc "Whether operations may change `abs`: inside the root or project, and not hidden there."
   @spec changeable?(String.t()) :: boolean()

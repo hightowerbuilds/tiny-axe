@@ -5,8 +5,10 @@ defmodule TinyAxe.Commander do
   approved commands are run by `execute/2`, one at a time, each in the
   `TinyAxe.Shell` sandbox where only the working folder can change.
 
-  1. **Plan** — the model picks the working folder and the commands, answering
-     in a fixed JSON shape.
+  1. **Plan** — the model writes the commands, answering in a fixed JSON shape.
+     They run in the current folder (`TinyAxe.Location`), which code tracks: the
+     model never picks the folder, because given `~/code/app` a small model will
+     "expand" it to a home folder that doesn't exist.
   2. **Check** — the folder must exist, be inside the home folder or project,
      not be the home folder itself, and not be hidden; `sudo` is refused.
      Problems go back to the model.
@@ -19,18 +21,17 @@ defmodule TinyAxe.Commander do
   just before `:done`.
   """
 
-  alias TinyAxe.{Decider, Files, Ollama, Ops, Organizer, Shell}
+  alias TinyAxe.{Decider, Files, Location, Ollama, Ops, Organizer, Shell}
 
   @max_rounds 4
 
   @schema %{
     type: "object",
     properties: %{
-      dir: %{type: "string"},
       commands: %{type: "array", items: %{type: "string"}},
       reply: %{type: "string"}
     },
-    required: ["dir", "commands", "reply"]
+    required: ["commands", "reply"]
   }
 
   @spec run([Ollama.message()], String.t(), (term() -> any())) :: :ok
@@ -77,7 +78,7 @@ defmodule TinyAxe.Commander do
       if commands == [] do
         {:reply, reply}
       else
-        case check(answer["dir"] || "", commands) do
+        case check(Location.current(), commands) do
           {:ok, dir} ->
             review(dir, commands, reply, messages, prompt, notify, round, reviewed?)
 
@@ -169,10 +170,17 @@ defmodule TinyAxe.Commander do
         type: :noul,
         instructions: "Would running these commands, in this order, do everything the user asked?"
       })
+      |> Map.put(:right_folder, %{
+        type: :noul,
+        instructions:
+          "Is the working folder the right place to run these, given the request and " <>
+            "the current folder?"
+      })
 
     state = %{
       request: prompt,
       working_folder: Ops.show(dir),
+      current_folder: Ops.show(Location.current()),
       commands: listing,
       folder_contents: folder_listing(dir),
       how_commands_run:
@@ -183,7 +191,7 @@ defmodule TinyAxe.Commander do
     case Decider.decide(state, questions) do
       {:ok, answers} ->
         scores = Enum.map(Enum.with_index(commands), fn {_, i} -> answers[:"cmd_#{i}"].noul end)
-        score = Enum.min([answers.complete.noul | scores])
+        score = Enum.min([answers.complete.noul, answers.right_folder.noul | scores])
         notify.({:review, score})
 
         plan = %{
@@ -203,6 +211,15 @@ defmodule TinyAxe.Commander do
             if answers.complete.noul < 0.5,
               do: ["- together they may not do everything asked (#{pct(answers.complete.noul)})"],
               else: []
+
+          missing =
+            if answers.right_folder.noul < 0.5,
+              do:
+                missing ++
+                  [
+                    "- #{Ops.show(dir)} may be the wrong folder (#{pct(answers.right_folder.noul)})"
+                  ],
+              else: missing
 
           feedback =
             "A reviewer checked the commands against the request:\n" <>
@@ -259,9 +276,32 @@ defmodule TinyAxe.Commander do
       |> Enum.reverse()
 
     notify.({:cmds_done, results})
+    follow(plan.dir, results, notify)
     check? = Application.get_env(:tiny_axe, :check_command_outcome, true)
     notify.({:cmds_checked, if(check?, do: outcome(plan.request, results))})
     :ok
+  end
+
+  # The location follows the commands: to the folder they ran in, or, if the last
+  # one succeeded and began `cd x && …`, into x (so after
+  # `cd web && npm install`, "start the dev server" means in web/).
+  defp follow(dir, results, notify) do
+    from = Location.current()
+
+    to =
+      with %{status: 0, command: c} <- List.last(results),
+           [_, sub] <- Regex.run(~r/\A\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&/, c),
+           abs = Path.expand(String.trim(sub, "\"") |> String.trim("'"), dir),
+           true <- File.dir?(abs) do
+        abs
+      else
+        _ -> dir
+      end
+
+    if to != from do
+      Location.set(to)
+      notify.({:moved, %{from: Ops.show(from), to: Ops.show(to), confidence: nil}})
+    end
   end
 
   defp outcome(request, results) do
@@ -294,20 +334,21 @@ defmodule TinyAxe.Commander do
     with JSON, the user approves the commands, and tiny-axe runs them.
 
     Reply with JSON:
-    - "dir": the folder to run the commands in (~/… or absolute), an existing folder.
-    - "commands": the commands, in order. Each runs with sh -c in "dir".
+    - "commands": the commands, in order. Each runs with sh -c in the current folder, \
+    which tiny-axe tracks for you: don't cd to other places with absolute or ~ paths; \
+    use `cd sub && …` to work in a subfolder of it.
     - "reply": one or two sentences for the user saying what the commands will do once \
     approved. If the request is unclear, ask here and leave "commands" empty.
 
     How commands run:
-    - In a sandbox: only "dir" and what's inside it can be changed; the network works.
+    - In a sandbox: only the current folder and what's inside it can be changed; the network works.
     - Nothing answers questions, so use flags that skip them, e.g. \
     `npm create vite@latest my-app -- --template react`, `--yes`, `-y`.
-    - Each command starts in "dir"; use `cd sub && …` within one command to work in a \
-    subfolder a previous command made.
+    - Each command starts in the current folder; use `cd sub && …` within one command \
+    to work in a subfolder a previous command made.
     - No sudo. Global installs (npm -g, pip --user) don't persist; install into the project.
     - Scaffolders (npm create vite, create-next-app, mix new, cargo new) refuse a folder \
-    that isn't empty, and here they give up silently. Unless "dir" is empty, scaffold into \
+    that isn't empty, and here they give up silently. Unless the current folder is empty, scaffold into \
     a new subfolder, e.g. `npm create vite@latest web -- --template react`, then \
     `cd web && npm install`.
     - Only the commands the user asked for, or that are needed for it.
@@ -320,12 +361,12 @@ defmodule TinyAxe.Commander do
       |> Enum.take(-4)
       |> Enum.map_join("\n", &"#{&1.role}: #{String.slice(&1.content, 0, 500)}")
 
-    project = Files.root()
+    here = Location.current()
 
     [
       recent != "" && "Conversation so far:\n#{recent}",
       "Request: #{prompt}",
-      "The current project is #{Ops.show(project)}. Its top level:\n#{folder_listing(project)}",
+      "The current folder is #{Ops.show(here)}. What's in it:\n#{folder_listing(here)}",
       "Map of the home folder (two levels, hidden entries left out):\n#{Organizer.home_map()}"
     ]
     |> Enum.filter(& &1)

@@ -24,6 +24,7 @@ defmodule TinyAxe.Pipeline do
       {:route, answers}
       {:search, %{query: q, engine: e, results: n, read: n}}
       {:search_failed, %{query: q, reason: reason}}
+      {:moved, %{from: path, to: path, confidence: p}}   the Decider picked a folder
       {:files, %{read: [path], listed: n}}
       {:attempt, n}
       {:delta, text}
@@ -38,7 +39,7 @@ defmodule TinyAxe.Pipeline do
       {:error, reason}
   """
 
-  alias TinyAxe.{CodeCheck, Decider, Files, Ollama, Web}
+  alias TinyAxe.{CodeCheck, Decider, Files, Location, Ollama, Ops, Web}
 
   @route_questions %{
     kind: %{
@@ -81,6 +82,12 @@ defmodule TinyAxe.Pipeline do
           "computer? Also yes if they ask what's in a folder on their computer or where a " <>
           "file is. No if they want code in their project written or changed."
     },
+    elsewhere: %{
+      type: :noul,
+      instructions:
+        "Does the request name a folder to work in other than the current folder " <>
+          "(e.g. \"in my tiny-app repo\", \"go to Downloads\", \"the web folder\")?"
+    },
     command: %{
       type: :noul,
       instructions:
@@ -115,9 +122,13 @@ defmodule TinyAxe.Pipeline do
 
   @spec run([Ollama.message()], String.t(), (term() -> any())) :: :ok
   def run(history, prompt, notify) do
-    with {:ok, route} <- Decider.decide(prompt, @route_questions) do
+    # The router sees where tiny-axe is, so it can tell whether a request means somewhere else.
+    state = %{request: prompt, current_folder: Ops.show(Location.current())}
+
+    with {:ok, route} <- Decider.decide(state, @route_questions) do
       notify.({:route, route})
       kind = route.kind.choice
+      navigate(route, prompt, notify)
       {web_context, request, notify} = maybe_search(route, history, prompt, notify)
 
       case task(route) do
@@ -289,6 +300,52 @@ defmodule TinyAxe.Pipeline do
 
   ## System prompt
 
+  ## Location
+
+  # When a request names another folder, the Decider picks it from real folders
+  # (TinyAxe.Location.candidates/1), so the location is never a path a model made up.
+  defp navigate(%{elsewhere: %{noul: p}}, prompt, notify) when p >= 0.5 do
+    here = Location.current()
+
+    candidates =
+      prompt
+      |> Location.candidates()
+      |> Enum.map(&Ops.show/1)
+      |> Files.shortlist(prompt, Decider.max_options() - 1)
+
+    options =
+      candidates
+      |> Map.new(&{&1, &1})
+      |> Map.put("(stay)", "The current folder, #{Ops.show(here)}")
+
+    question = %{
+      folder: %{
+        type: :choice,
+        instructions: "Which folder does the user want to work in?",
+        options: options
+      }
+    }
+
+    state = %{request: prompt, current_folder: Ops.show(here)}
+
+    with {:ok, %{folder: %{choice: choice, probabilities: probs}}} <-
+           Decider.decide(state, question),
+         true <- choice != "(stay)" and (probs[choice] || 0) >= 0.4,
+         {:ok, to} <- Location.cd(choice),
+         true <- to != here do
+      notify.({:moved, %{from: Ops.show(here), to: Ops.show(to), confidence: probs[choice]}})
+    end
+  end
+
+  defp navigate(_route, _prompt, _notify), do: :ok
+
+  defp location_note do
+    here = Location.current()
+
+    "You're working in #{Ops.show(here)} (tiny-axe's current folder; relative paths mean " <>
+      "this folder). What's in it:\n#{Location.listing(here, 30)}"
+  end
+
   defp system_prompt(kind) do
     "You are tiny-axe, an assistant running locally on the user's computer " <>
       "(model: #{config(:model, "unknown")}). Today is #{today()}. When a request needs " <>
@@ -298,7 +355,7 @@ defmodule TinyAxe.Pipeline do
       "commands: give any command in a code block, and never say you ran, installed or " <>
       "executed anything. If the user wants a command run, tell them to ask tiny-axe to " <>
       "run it; it will show the command for approval and run it in a sandbox.\n\n" <>
-      @system_prompts[kind]
+      location_note() <> "\n\n" <> @system_prompts[kind]
   end
 
   defp today do
@@ -312,10 +369,11 @@ defmodule TinyAxe.Pipeline do
   defp maybe_search(%{web: %{noul: p}}, history, prompt, notify) do
     if config(:web_search, true) and p >= config(:web_threshold, 0.5),
       do: search(history, prompt, notify),
-      else: {[], %{request: prompt}, notify}
+      else: {[], %{request: prompt, current_folder: Ops.show(Location.current())}, notify}
   end
 
-  defp maybe_search(_route, _history, prompt, notify), do: {[], %{request: prompt}, notify}
+  defp maybe_search(_route, _history, prompt, notify),
+    do: {[], %{request: prompt, current_folder: Ops.show(Location.current())}, notify}
 
   defp search(history, prompt, notify) do
     notify.({:stage, "searching the web…"})
@@ -339,7 +397,8 @@ defmodule TinyAxe.Pipeline do
           "A web search for this request failed. Answer from your own knowledge and say " <>
             "that you couldn't check the web, so recent details may be out of date."
 
-        {[%{role: "system", content: failed}], %{request: prompt}, notify}
+        {[%{role: "system", content: failed}],
+         %{request: prompt, current_folder: Ops.show(Location.current())}, notify}
     end
   end
 

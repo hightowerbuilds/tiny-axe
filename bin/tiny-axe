@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Starts tiny-axe with the current directory as the project it reads and edits.
-# Symlink it onto your PATH, e.g.: ln -s "$PWD/bin/tiny-axe" ~/.local/bin/tiny-axe
+# Development launcher: runs tiny-axe from this repo with mix, starting in the
+# folder you run it from. To install a `tiny-axe` command that doesn't need the
+# repo, run `mix tiny_axe.install` instead.
 set -euo pipefail
 project="$PWD"
 home="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"

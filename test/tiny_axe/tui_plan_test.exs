@@ -12,6 +12,7 @@ defmodule TinyAxe.TUIPlanTest do
   @moduletag :tmp_dir
 
   setup %{tmp_dir: dir} do
+    TinyAxe.Location.reset()
     home = Path.join(dir, "home")
 
     for {key, value} <- [fs_root: home, state_dir: Path.join(dir, "state"), ops_step_hook: nil] do
