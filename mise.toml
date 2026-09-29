@@ -1,0 +1,7 @@
+[tools]
+elixir = "1.19.5-otp-28"
+erlang = "28.4.2"
+
+[env]
+# Secrets live in .env (gitignored), e.g. TYPESAFE_API_KEY=...
+_.file = ".env"

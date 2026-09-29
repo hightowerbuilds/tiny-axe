@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Starts tiny-axe with the current directory as the project it reads and edits.
+# Symlink it onto your PATH, e.g.: ln -s "$PWD/bin/tiny-axe" ~/.local/bin/tiny-axe
+set -euo pipefail
+project="$PWD"
+home="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+cd "$home"
+exec mise exec -- mix tiny_axe --dir "$project" "$@"
