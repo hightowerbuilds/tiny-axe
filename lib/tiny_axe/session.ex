@@ -11,17 +11,29 @@ defmodule TinyAxe.Session do
   use Agent
 
   def start_link(_opts),
-    do: Agent.start_link(fn -> %{history: [], transcript: [], crashed: nil} end, name: __MODULE__)
+    do:
+      Agent.start_link(fn -> %{history: [], transcript: [], summary: nil, crashed: nil} end,
+        name: __MODULE__
+      )
 
-  @spec save([map()], list()) :: :ok
-  def save(history, transcript),
-    do: Agent.cast(__MODULE__, &%{&1 | history: history, transcript: transcript})
+  @spec save([map()], list(), map() | nil) :: :ok
+  def save(history, transcript, summary),
+    do:
+      Agent.cast(
+        __MODULE__,
+        &%{&1 | history: history, transcript: transcript, summary: summary}
+      )
 
   @doc "Records why the TUI crashed, for the next one to report."
   @spec crashed(term()) :: :ok
   def crashed(reason), do: Agent.cast(__MODULE__, &%{&1 | crashed: reason})
 
   @doc "The saved conversation, and the crash reason if the last TUI crashed (cleared once read)."
-  @spec restore() :: %{history: [map()], transcript: list(), crashed: term()}
+  @spec restore() :: %{
+          history: [map()],
+          transcript: list(),
+          summary: map() | nil,
+          crashed: term()
+        }
   def restore, do: Agent.get_and_update(__MODULE__, &{&1, %{&1 | crashed: nil}})
 end

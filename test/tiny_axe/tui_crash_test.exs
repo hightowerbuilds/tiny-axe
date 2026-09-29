@@ -10,7 +10,9 @@ defmodule TinyAxe.TUICrashTest do
   alias TinyAxe.TUI
 
   test "the supervisor restarts a crashed TUI, which restores the conversation" do
-    Agent.update(TinyAxe.Session, fn _ -> %{history: [], transcript: [], crashed: nil} end)
+    Agent.update(TinyAxe.Session, fn _ ->
+      %{history: [], transcript: [], summary: nil, crashed: nil}
+    end)
 
     start_supervised!({TUI, test_mode: {100, 30}, session: true, name: :crash_test_tui})
     tui = Process.whereis(:crash_test_tui)

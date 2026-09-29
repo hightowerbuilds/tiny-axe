@@ -2,10 +2,14 @@ defmodule TinyAxe.TUI do
   @moduledoc """
   The terminal UI: a scrolling transcript, a status bar, and a multiline prompt.
 
+  The status bar shows how full the model's context window is. Once the
+  conversation reaches half of it, older turns are compacted into a summary
+  (`TinyAxe.Compactor`), shown in a sidebar on the right with the meter.
+
   Keys: `enter` send · `alt+enter` newline · `esc` cancel · `pgup`/`pgdn` scroll
   (and `↑`/`↓`/`home`/`end` with an empty prompt) · `ctrl+y` copy the newest code
   block, again for the one before · `ctrl+z` undo the last file plan ·
-  `ctrl+l` clear · `ctrl+c` quit. When the model proposes file edits, each is
+  `ctrl+k` compact now · `ctrl+t` show/hide the sidebar · `ctrl+l` clear · `ctrl+c` quit. When the model proposes file edits, each is
   shown as a diff: `y` save · `n` skip · `esc` skip the rest · `↑`/`↓` scroll.
   """
 
@@ -17,9 +21,10 @@ defmodule TinyAxe.TUI do
   alias ExRatatui.Style
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Popup, Textarea, Throbber}
-  alias TinyAxe.Files
+  alias TinyAxe.{Compactor, Context, Files}
 
   @input_height 6
+  @sidebar_width 44
   @tick_ms 100
 
   @impl true
@@ -31,7 +36,7 @@ defmodule TinyAxe.TUI do
     saved =
       if session?,
         do: TinyAxe.Session.restore(),
-        else: %{history: [], transcript: [], crashed: nil}
+        else: %{history: [], transcript: [], summary: nil, crashed: nil}
 
     restored =
       if saved.crashed,
@@ -65,6 +70,9 @@ defmodule TinyAxe.TUI do
        # A file plan awaiting y/n, the plan being carried out, and a monitor on
        # the Runner so a crash there surfaces as an interrupted plan.
        pending_plan: nil,
+       # Shell commands awaiting y/n, and the one running (with its output so far).
+       pending_commands: nil,
+       running_cmd: nil,
        plan_scroll: 0,
        ops_job: nil,
        ops_monitor: nil,
@@ -79,6 +87,16 @@ defmodule TinyAxe.TUI do
        tick: 0,
        halt_on_exit: Keyword.get(opts, :halt_on_exit, false),
        session?: session?,
+       # The compacted summary of older turns: %{text, turns, check, before, after}.
+       summary: saved.summary,
+       # The summary as it streams in while compacting.
+       compacting: nil,
+       # Tokens per character, recalibrated from each measured request.
+       ratio: Context.default_ratio(),
+       # The last request's measured size (Ollama's counts).
+       usage: nil,
+       # nil shows the sidebar automatically on wide screens; ctrl+t sets true/false.
+       sidebar: nil,
        # How many code blocks back the next ctrl+y copies; reset by each new request.
        copy_back: 0,
        # Tests swap in a function that doesn't touch the real clipboard.
@@ -92,6 +110,7 @@ defmodule TinyAxe.TUI do
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
     [transcript_area, status_area, input_area] = split(area)
+    {transcript_area, sidebar} = split_sidebar(state, transcript_area)
 
     size = {frame.width, frame.height}
 
@@ -120,7 +139,7 @@ defmodule TinyAxe.TUI do
     }
 
     [{transcript, transcript_area}, {status_widget(state), status_area}, {input, input_area}] ++
-      overlay(state, area)
+      sidebar ++ overlay(state, area)
   end
 
   # At most one popup at a time, most urgent first.
@@ -174,6 +193,39 @@ defmodule TinyAxe.TUI do
         ]
 
     popup(" undo ", lines, state.plan_scroll, area)
+  end
+
+  defp overlay(%{pending_commands: plan} = state, area) when plan != nil do
+    review_color = if plan.review >= 0.5, do: :green, else: :yellow
+
+    header = [
+      Line.new([
+        Span.new("tiny-axe will run these once you approve", style: %Style{modifiers: [:bold]}),
+        Span.new(" · reviewer: #{pct(plan.review)}", style: %Style{fg: review_color})
+      ]),
+      # On its own line, so a long path can't push the note off the edge.
+      styled("in #{TinyAxe.Ops.show(plan.dir)}", :cyan),
+      styled("only this folder can be changed; network on", :cyan),
+      styled("y run · n cancel · ↑/↓ scroll", :dark_gray),
+      styled("")
+    ]
+
+    commands =
+      Enum.map(plan.commands, fn c ->
+        doubt =
+          case c.review do
+            p when is_number(p) and p < 0.5 ->
+              Span.new("  ⚠ reviewer #{pct(p)}", style: %Style{fg: :yellow})
+
+            _ ->
+              Span.new("")
+          end
+
+        Line.new([Span.new("$ " <> c.command, style: %Style{modifiers: [:bold]}), doubt])
+      end)
+
+    footer = [styled(""), styled("Commands can't be undone with ctrl+z.", :dark_gray)]
+    popup(" run these commands? ", header ++ commands ++ footer, state.plan_scroll, area)
   end
 
   defp overlay(%{pending_plan: plan} = state, area) when plan != nil do
@@ -300,6 +352,137 @@ defmodule TinyAxe.TUI do
     [{popup, area}]
   end
 
+  ## Sidebar: the context meter and the compacted summary
+
+  defp split_sidebar(state, area) do
+    if sidebar?(state, area.width) do
+      [main, side] = Layout.split(area, :horizontal, [{:fill, 1}, {:length, @sidebar_width}])
+      {main, sidebar_widgets(state, side)}
+    else
+      {area, []}
+    end
+  end
+
+  # Shown automatically on wide screens once there's something worth seeing.
+  defp sidebar?(state, width) do
+    case state.sidebar do
+      nil ->
+        width >= 110 and
+          (state.summary != nil or state.compacting != nil or
+             Context.fraction(context_tokens(state)) >= 0.25)
+
+      shown ->
+        shown and width >= @sidebar_width + 30
+    end
+  end
+
+  defp sidebar_widgets(state, area) do
+    [meter_area, summary_area] = Layout.split(area, :vertical, [{:length, 6}, {:fill, 1}])
+    tokens = context_tokens(state)
+    fraction = Context.fraction(tokens)
+
+    color =
+      cond do
+        fraction < 0.5 -> :green
+        fraction < 0.8 -> :yellow
+        true -> :red
+      end
+
+    cells = 22
+    filled = round(fraction * cells)
+
+    last =
+      case state.usage do
+        %{prompt_tokens: p, output_tokens: o} ->
+          "last request #{Context.short(p + o)}, incl. web/files"
+
+        nil ->
+          "no request measured yet"
+      end
+
+    compact_at = round(Application.get_env(:tiny_axe, :compact_at, 0.5) * 100)
+
+    meter = %Paragraph{
+      text: [
+        Line.new([
+          Span.new(String.duplicate("▰", filled), style: %Style{fg: color}),
+          Span.new(String.duplicate("▱", cells - filled), style: %Style{fg: :dark_gray}),
+          Span.new(" #{round(fraction * 100)}%", style: %Style{fg: color, modifiers: [:bold]})
+        ]),
+        styled("#{Context.short(tokens)} of #{Context.short(Context.window())} tokens"),
+        styled(last, :dark_gray),
+        styled("compacts at #{compact_at}% · ctrl+k now · ctrl+t hide", :dark_gray)
+      ],
+      block: %Block{
+        title: " context ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray}
+      }
+    }
+
+    {title, content} =
+      cond do
+        state.compacting != nil ->
+          {" compacting… ", state.compacting <> " ▌"}
+
+        state.summary != nil ->
+          s = state.summary
+
+          # The title stays short enough for the sidebar; the details lead the text.
+          saved =
+            if s[:before],
+              do: "#{Context.short(s.before)} → #{Context.short(s.after)} tokens · ",
+              else: ""
+
+          {" compacted · #{s.turns} #{if s.turns == 1, do: "turn", else: "turns"} ",
+           "*#{saved}reviewer #{pct(s.check)}*\n\n" <> s.text}
+
+        true ->
+          {" compacted ",
+           "*Nothing yet. When the conversation fills #{compact_at}% of the window, older turns are condensed into a summary here, and the newest two stay word for word.*"}
+      end
+
+    summary = %Markdown{
+      content: content,
+      block: %Block{
+        title: title,
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :cyan}
+      }
+    }
+
+    [{meter, meter_area}, {summary, summary_area}]
+  end
+
+  # What the next request carries: the summary, the kept turns, and whatever is
+  # in flight (the prompt being answered and the answer so far).
+  defp context_tokens(state) do
+    live =
+      [state.pending_prompt, state.streaming]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&%{content: &1})
+
+    Context.conversation_tokens(request_history(state) ++ live, state.ratio)
+  end
+
+  defp request_history(%{summary: nil} = state), do: state.history
+
+  defp request_history(state) do
+    [
+      %{
+        role: "system",
+        content:
+          "Summary of the earlier conversation (older turns were compacted):\n" <>
+            state.summary.text
+      }
+      | state.history
+    ]
+  end
+
+  defp ctx_label(state), do: "ctx #{round(Context.fraction(context_tokens(state)) * 100)}%"
+
   defp split(area) do
     Layout.split(area, :vertical, [{:fill, 1}, {:length, 1}, {:length, @input_height}])
   end
@@ -317,26 +500,59 @@ defmodule TinyAxe.TUI do
   defp status_widget(%{run: nil} = state) do
     %Paragraph{
       text:
-        " #{state.status}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy code · ctrl+z undo · ctrl+l clear · ctrl+c quit",
+        " #{state.status}  ·  #{ctx_label(state)}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
       style: %Style{fg: :dark_gray}
     }
   end
 
   defp status_widget(state) do
-    %Throbber{label: " " <> state.status, step: state.tick, throbber_style: %Style{fg: :cyan}}
+    %Throbber{
+      label: " #{state.status}  ·  #{ctx_label(state)}",
+      step: state.tick,
+      throbber_style: %Style{fg: :cyan}
+    }
   end
 
   # One Markdown string per transcript entry; the transcript is these joined
   # by blank lines, which renders exactly as tall as the entries plus one line
   # between each.
   defp entries_markdown(state) do
-    streaming = if state.streaming, do: [{:assistant, state.streaming <> " ▌"}], else: []
-    Enum.map(state.transcript ++ streaming, &entry_markdown/1)
+    Enum.map(state.transcript ++ live_entries(state), &entry_markdown/1)
   end
 
   defp entry_markdown({:user, text}), do: "#### ▍you\n\n" <> keep_indent(text)
   defp entry_markdown({:assistant, text}), do: "#### ▍tiny-axe\n\n" <> keep_indent(text)
   defp entry_markdown({:meta, text}), do: "*· " <> text <> "*"
+
+  defp entry_markdown({:output, command, output, status}) do
+    lines = String.split(output, "\n")
+    shown = Enum.take(lines, -40)
+    cut = if length(lines) > 40, do: "… (#{length(lines) - 40} earlier lines)\n", else: ""
+
+    status =
+      case status do
+        :running -> "*running…*"
+        0 -> "*✓ exit 0*"
+        n when is_integer(n) -> "*✗ exit #{n}*"
+        other -> "*✗ #{other}*"
+      end
+
+    keep_indent("```console\n$ #{command}\n#{cut}#{Enum.join(shown, "\n")}\n```") <>
+      "\n" <> status
+  end
+
+  # What's still arriving: the answer being streamed and the command running.
+  defp live_entries(state) do
+    streaming = if state.streaming, do: [{:assistant, state.streaming <> " ▌"}], else: []
+
+    running =
+      case state.running_cmd do
+        %{command: c, output: o} -> [{:output, c, String.trim_trailing(o), :running}]
+        nil -> []
+      end
+
+    streaming ++ running
+  end
 
   # The Markdown widget wraps with trimming, which strips the indentation from
   # code blocks. Non-breaking spaces survive trimming, so leading spaces in
@@ -360,8 +576,9 @@ defmodule TinyAxe.TUI do
   end
 
   defp max_top(state, {w, h}) do
+    width = if sidebar?(state, w), do: w - @sidebar_width, else: w
     inner_h = max(h - 1 - @input_height - 2, 1)
-    max(transcript_height(state, max(w - 2, 1)) - inner_h, 0)
+    max(transcript_height(state, max(width - 2, 1)) - inner_h, 0)
   end
 
   # Scrolling to the end resumes following new output.
@@ -401,10 +618,7 @@ defmodule TinyAxe.TUI do
 
     Process.put(:tiny_axe_heights, {width, cache})
 
-    streaming =
-      if state.streaming,
-        do: [measure(entry_markdown({:assistant, state.streaming <> " ▌"}), width)],
-        else: []
+    streaming = Enum.map(live_entries(state), &measure(entry_markdown(&1), width))
 
     heights = heights ++ streaming
     Enum.sum(heights) + max(length(heights) - 1, 0)
@@ -446,8 +660,12 @@ defmodule TinyAxe.TUI do
   defp saved(result, before) do
     now = elem(result, 1)
 
-    if now.session? and (now.transcript != before.transcript or now.history != before.history),
-      do: TinyAxe.Session.save(now.history, now.transcript)
+    changed? =
+      now.transcript != before.transcript or now.history != before.history or
+        now.summary != before.summary
+
+    if now.session? and changed?,
+      do: TinyAxe.Session.save(now.history, now.transcript, now.summary)
 
     result
   end
@@ -487,6 +705,21 @@ defmodule TinyAxe.TUI do
 
       c when c in ["n", "esc"] ->
         {:noreply, %{state | confirm_undo: nil, plan_scroll: 0, status: "ready"}}
+
+      _ ->
+        {:noreply, scroll_plan(code, state)}
+    end
+  end
+
+  defp on_event(%Event.Key{code: code}, %{pending_commands: plan} = state) when plan != nil do
+    case code do
+      "y" ->
+        {:noreply, start_commands(%{state | pending_commands: nil, plan_scroll: 0}, plan)}
+
+      c when c in ["n", "esc"] ->
+        {:noreply,
+         %{state | pending_commands: nil, plan_scroll: 0, status: "ready"}
+         |> add_meta("commands cancelled; nothing ran")}
 
       _ ->
         {:noreply, scroll_plan(code, state)}
@@ -538,7 +771,15 @@ defmodule TinyAxe.TUI do
 
   defp on_event(%Event.Key{code: "l", modifiers: ["ctrl"]}, %{run: nil} = state) do
     {:noreply,
-     %{state | history: [], transcript: [], pending_edits: [], scroll: :bottom, status: "cleared"}}
+     %{
+       state
+       | history: [],
+         transcript: [],
+         summary: nil,
+         pending_edits: [],
+         scroll: :bottom,
+         status: "cleared"
+     }}
   end
 
   defp on_event(%Event.Key{code: "enter", modifiers: []}, state), do: submit(state)
@@ -546,6 +787,14 @@ defmodule TinyAxe.TUI do
   defp on_event(%Event.Key{code: "enter"}, state) do
     ExRatatui.textarea_handle_key(state.input, "enter", [])
     {:noreply, state}
+  end
+
+  defp on_event(%Event.Key{code: "k", modifiers: ["ctrl"]}, %{run: nil} = state),
+    do: {:noreply, start_compaction(state)}
+
+  defp on_event(%Event.Key{code: "t", modifiers: ["ctrl"]}, state) do
+    {w, _h} = state.size
+    {:noreply, %{state | sidebar: not sidebar?(state, w)}}
   end
 
   defp on_event(%Event.Key{code: "y", modifiers: ["ctrl"]}, state), do: {:noreply, copy(state)}
@@ -699,10 +948,77 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  ## Commands
+
+  defp start_commands(state, plan) do
+    tui = self()
+    id = make_ref()
+
+    {:ok, pid} =
+      Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+        TinyAxe.Commander.execute(plan, &send(tui, {:pipeline, id, &1}))
+      end)
+
+    Process.monitor(pid)
+    Process.send_after(self(), :tick, @tick_ms)
+    %{state | run: {id, pid}, status: "running commands…", scroll: :bottom}
+  end
+
+  ## Compaction
+
+  # After an answer, compact once the conversation has reached the threshold.
+  defp maybe_compact(%{run: nil} = state) do
+    if Context.compact?(context_tokens(state)), do: start_compaction(state), else: state
+  end
+
+  defp maybe_compact(state), do: state
+
+  # Runs like a request (in the run slot, so esc cancels it and the prompt waits).
+  defp start_compaction(state) do
+    case Compactor.split(state.history) do
+      {[], _recent} ->
+        %{
+          state
+          | status: "nothing to compact yet: the newest two turns are always kept as they are"
+        }
+
+      {old, _recent} ->
+        tui = self()
+        id = make_ref()
+        previous = state.summary && state.summary.text
+
+        {:ok, pid} =
+          Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+            Compactor.run(previous, old, &send(tui, {:pipeline, id, &1}))
+          end)
+
+        Process.monitor(pid)
+        Process.send_after(self(), :tick, @tick_ms)
+        turns = div(length(old), 2)
+        %{state | run: {id, pid}, compacting: "", status: "compacting #{turns} turns…"}
+    end
+  end
+
+  # The marker goes just before the first turn that was kept.
+  defp insert_marker(transcript, marker, recent) do
+    kept = Enum.count(recent, &(&1.role == "user"))
+
+    users =
+      transcript
+      |> Enum.with_index()
+      |> Enum.filter(&match?({{:user, _}, _}, &1))
+      |> Enum.map(&elem(&1, 1))
+
+    case Enum.at(users, length(users) - kept) do
+      nil -> transcript ++ [marker]
+      at -> List.insert_at(transcript, at, marker)
+    end
+  end
+
   defp start_run(state, prompt) do
     tui = self()
     id = make_ref()
-    history = state.history
+    history = request_history(state)
 
     {:ok, pid} =
       Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
@@ -728,12 +1044,26 @@ defmodule TinyAxe.TUI do
 
   defp cancel(%{run: {_id, pid}} = state) do
     Process.exit(pid, :kill)
+
+    # Killing the task doesn't stop the sandboxed command, so kill that directly.
+    state =
+      case state.running_cmd do
+        %{os_pid: os_pid} = cmd when is_integer(os_pid) ->
+          System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+          entry = {:output, cmd.command, String.trim_trailing(cmd.output), "cancelled"}
+          %{state | running_cmd: nil, transcript: state.transcript ++ [entry]}
+
+        _ ->
+          %{state | running_cmd: nil}
+      end
+
     partial = if state.streaming in [nil, ""], do: [], else: [{:assistant, state.streaming}]
 
     %{
       state
       | run: nil,
         streaming: nil,
+        compacting: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
@@ -893,6 +1223,81 @@ defmodule TinyAxe.TUI do
 
   defp apply_event({:plan, plan}, state), do: %{state | pending_plan: plan, plan_scroll: 0}
 
+  defp apply_event({:command_plan, plan}, state),
+    do: %{state | pending_commands: plan, plan_scroll: 0}
+
+  defp apply_event({:command_problems, problems}, state),
+    do: add_meta(state, "commands sent back to the model: " <> Enum.join(problems, " "))
+
+  defp apply_event({:cmd_start, _i, command}, state),
+    do: %{
+      state
+      | running_cmd: %{command: command, output: "", os_pid: nil},
+        status: "running $ #{command}"
+    }
+
+  defp apply_event({:cmd_os_pid, pid}, %{running_cmd: %{} = cmd} = state),
+    do: %{state | running_cmd: %{cmd | os_pid: pid}}
+
+  defp apply_event({:cmd_output, text}, %{running_cmd: %{} = cmd} = state) do
+    output = cmd.output <> text
+    # Only the tail is shown, so don't let the buffer grow without bound.
+    output =
+      if byte_size(output) > 40_000,
+        do: binary_part(output, byte_size(output) - 20_000, 20_000),
+        else: output
+
+    %{state | running_cmd: %{cmd | output: output}}
+  end
+
+  defp apply_event({:cmd_exit, _i, status}, %{running_cmd: %{} = cmd} = state) do
+    entry = {:output, cmd.command, String.trim_trailing(cmd.output), status}
+    %{state | running_cmd: nil, transcript: state.transcript ++ [entry]}
+  end
+
+  defp apply_event({:cmds_checked, nil}, state), do: %{state | run: nil, status: "ready"}
+
+  # The verdict on whether the commands worked comes after they finish.
+  defp apply_event({:cmds_checked, p}, state) do
+    {meta, note} =
+      if p >= 0.5,
+        do:
+          {"✓ judging by the output, that worked (reviewer #{pct(p)})",
+           "It looks like it worked."},
+        else:
+          {"⚠ judging by the output, that didn't do what you asked (reviewer #{pct(p)}); " <>
+             "ask again or say what to change",
+           "Judging by the output, it did NOT do what was asked."}
+
+    %{
+      state
+      | run: nil,
+        status: "ready",
+        history: append_to_last_answer(state.history, "\n" <> note)
+    }
+    |> add_meta(meta)
+  end
+
+  defp apply_event({:cmds_done, results}, state) do
+    failed = Enum.find(results, &(&1.status != 0))
+
+    meta =
+      if failed,
+        do:
+          "✗ stopped: `#{failed.command}` #{exit_text(failed.status)}; the commands after it didn't run",
+        else:
+          "✓ ran #{length(results)} #{if length(results) == 1, do: "command", else: "commands"}"
+
+    # The run stays open for the verdict on whether it worked (:cmds_checked).
+    %{
+      state
+      | running_cmd: nil,
+        status: "checking whether it worked…",
+        history: with_results(state.history, results)
+    }
+    |> add_meta(meta)
+  end
+
   defp apply_event({:looked, dirs}, state),
     do: add_meta(state, "looked in #{Enum.join(dirs, ", ")}")
 
@@ -949,10 +1354,17 @@ defmodule TinyAxe.TUI do
   defp apply_event({:delta, text}, state),
     do: %{state | streaming: (state.streaming || "") <> text}
 
-  defp apply_event({:verify, %{addresses: v}}, state) do
+  defp apply_event({:verify, %{addresses: v} = verdict}, state) do
+    claim =
+      case verdict[:false_claim] do
+        %{noul: p} when p >= 0.5 -> " · ✗ claims to have run something it can't (#{pct(p)})"
+        _ -> ""
+      end
+
     %{
       state
-      | transcript: state.transcript ++ [{:meta, "verifier: addresses request #{pct(v.noul)}"}],
+      | transcript:
+          state.transcript ++ [{:meta, "verifier: addresses request #{pct(v.noul)}#{claim}"}],
         status: "verifying…"
     }
   end
@@ -979,15 +1391,95 @@ defmodule TinyAxe.TUI do
         transcript: before ++ [{:assistant, text} | judged],
         status: if(state.pending_edits == [], do: "ready", else: "review the proposed change")
     }
+    |> maybe_compact()
+  end
+
+  defp apply_event({:usage, usage}, state),
+    do: %{state | usage: usage, ratio: Context.calibrate(state.ratio, usage)}
+
+  defp apply_event({:compact_delta, :reset}, state), do: %{state | compacting: ""}
+
+  defp apply_event({:compact_delta, text}, state),
+    do: %{state | compacting: (state.compacting || "") <> text}
+
+  defp apply_event({:compacted, result}, state) do
+    {_old, recent} = Compactor.split(state.history)
+    before = context_tokens(state)
+    turns = ((state.summary && state.summary.turns) || 0) + result.turns
+    summary = %{text: result.summary, turns: turns, check: result.check}
+    compacted = %{state | history: recent, summary: summary, compacting: nil, run: nil}
+    after_ = context_tokens(compacted)
+
+    if after_ >= before,
+      do: compaction_skipped(state),
+      else: compacted(compacted, result, before, after_)
   end
 
   defp apply_event({:error, reason}, state), do: fail(state, inspect(reason))
+
+  defp exit_text(0), do: "exited 0"
+  defp exit_text(n) when is_integer(n), do: "exited with #{n}"
+  defp exit_text(reason), do: "failed (#{reason})"
+
+  # The model's next turn should know what actually ran, so the results are
+  # added to the answer that proposed the commands.
+  defp with_results(history, results) do
+    report =
+      "\n\n(The user approved these commands and tiny-axe ran them:)\n" <>
+        Enum.map_join(results, "\n", fn r ->
+          tail = r.output |> String.split("\n") |> Enum.take(-12) |> Enum.join("\n")
+          "$ #{r.command} → #{exit_text(r.status)}\n#{tail}"
+        end)
+
+    append_to_last_answer(history, report)
+  end
+
+  defp append_to_last_answer(history, text) do
+    case Enum.reverse(history) do
+      [%{role: "assistant"} = last | rest] ->
+        Enum.reverse([%{last | content: last.content <> text} | rest])
+
+      _ ->
+        history
+    end
+  end
+
+  # Short turns can come out longer as a summary; then compacting isn't worth it.
+  defp compaction_skipped(state) do
+    meta = "compaction skipped: the summary wasn't smaller than the turns it would replace"
+
+    %{
+      state
+      | compacting: nil,
+        run: nil,
+        status: "ready",
+        transcript: state.transcript ++ [{:meta, meta}]
+    }
+  end
+
+  defp compacted(state, result, before, after_) do
+    recent = state.history
+    summary = state.summary
+
+    marker =
+      {:meta,
+       "▲ the #{result.turns} turns above are compacted into the summary in the sidebar " <>
+         "(#{Context.short(before)} → #{Context.short(after_)} tokens · ctrl+t)"}
+
+    %{
+      state
+      | summary: Map.merge(summary, %{before: before, after: after_}),
+        transcript: insert_marker(state.transcript, marker, recent),
+        status: "compacted #{result.turns} turns"
+    }
+  end
 
   defp fail(state, message) do
     %{
       state
       | run: nil,
         streaming: nil,
+        compacting: nil,
         pending_prompt: nil,
         transcript: state.transcript ++ [{:meta, "error: " <> message}],
         status: "error"

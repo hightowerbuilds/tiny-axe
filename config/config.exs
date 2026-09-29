@@ -33,7 +33,14 @@ config :tiny_axe,
   file_access: true,
   files_threshold: 0.5,
   file_pick_min: 0.2,
-  file_chars: 12_000
+  file_chars: 12_000,
+  # Compact older turns into a summary once the conversation fills this much of
+  # the context window, leaving room for web results, files and the answer.
+  compact_at: 0.5,
+  # Shell commands (TinyAxe.Commander) run only after approval, in a sandbox,
+  # and are killed after this long.
+  commands: true,
+  command_timeout: 600_000
 
 config :tiny_axe, :jev, model: "jev-latest"
 

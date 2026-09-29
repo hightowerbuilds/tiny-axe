@@ -233,6 +233,95 @@ defmodule TinyAxe.TUITest do
     state
   end
 
+  describe "context and compaction" do
+    defp chat_session(turns) do
+      {:ok, state} = TUI.mount(test_mode: {140, 36})
+
+      {history, transcript} =
+        Enum.reduce(1..turns, {[], []}, fn i, {h, t} ->
+          q = "QUESTION #{i} " <> String.duplicate("words ", 40)
+          a = "ANSWER #{i} " <> String.duplicate("more words ", 60)
+
+          {h ++ [%{role: "user", content: q}, %{role: "assistant", content: a}],
+           t ++ [{:user, q}, {:meta, "route"}, {:assistant, a}]}
+        end)
+
+      %{state | history: history, transcript: transcript, size: {140, 36}}
+    end
+
+    defp draw_at(state, {w, h}) do
+      terminal = ExRatatui.init_test_terminal(w, h)
+      ExRatatui.draw(terminal, TUI.render(state, %ExRatatui.Frame{width: w, height: h}))
+      ExRatatui.get_buffer_content(terminal)
+    end
+
+    test "the status bar shows how full the context window is" do
+      assert draw_at(chat_session(3), {140, 36}) =~ ~r/ctx \d+%/
+    end
+
+    test "ctrl+t shows and hides the sidebar with the meter" do
+      state = chat_session(1)
+      refute draw_at(state, {140, 36}) =~ " context "
+
+      {:noreply, state} = TUI.handle_event(key("t", ["ctrl"]), state)
+      screen = draw_at(state, {140, 36})
+      assert screen =~ " context "
+      assert screen =~ "▰"
+      assert screen =~ "compacts at 50%"
+
+      {:noreply, state} = TUI.handle_event(key("t", ["ctrl"]), state)
+      refute draw_at(state, {140, 36}) =~ " context "
+    end
+
+    test "a finished compaction keeps the newest turns, shows the summary and marks the spot" do
+      state = chat_session(5)
+      id = make_ref()
+      state = %{state | run: {id, self()}, compacting: ""}
+
+      {:noreply, state} =
+        TUI.handle_info({:pipeline, id, {:compact_delta, "- User asked five questions"}}, state)
+
+      assert draw_at(state, {140, 36}) =~ "compacting…"
+
+      result = %{summary: "- User asked five questions about words", turns: 3, check: 0.91}
+      {:noreply, state} = TUI.handle_info({:pipeline, id, {:compacted, result}}, state)
+
+      assert state.run == nil
+
+      assert Enum.map(state.history, &String.slice(&1.content, 0, 10)) ==
+               ["QUESTION 4", "ANSWER 4 m", "QUESTION 5", "ANSWER 5 m"]
+
+      assert state.summary.before > state.summary.after
+
+      # The marker sits just before the first kept turn.
+      i = Enum.find_index(state.transcript, &match?({:meta, "▲" <> _}, &1))
+      assert {:user, "QUESTION 4" <> _} = Enum.at(state.transcript, i + 1)
+
+      screen = draw_at(state, {140, 36})
+      assert screen =~ "compacted · 3 turns"
+      assert screen =~ "reviewer 91%"
+      assert screen =~ "User asked five questions about words"
+    end
+
+    test "a summary that wouldn't save space is dropped, keeping the turns" do
+      state = chat_session(3)
+      id = make_ref()
+      state = %{state | run: {id, self()}, compacting: ""}
+      long = %{summary: String.duplicate("far too long ", 400), turns: 1, check: 0.9}
+
+      {:noreply, after_} = TUI.handle_info({:pipeline, id, {:compacted, long}}, state)
+      assert after_.history == state.history
+      assert after_.summary == nil
+      assert {:meta, "compaction skipped" <> _} = List.last(after_.transcript)
+    end
+
+    test "ctrl+k with only the newest turns says there's nothing to compact" do
+      {:noreply, state} = TUI.handle_event(key("k", ["ctrl"]), chat_session(2))
+      assert state.run == nil
+      assert state.status =~ "nothing to compact yet"
+    end
+  end
+
   test "ignores events from a stale run" do
     {:ok, state} = TUI.mount(test_mode: @size)
     state = %{state | run: {make_ref(), self()}}

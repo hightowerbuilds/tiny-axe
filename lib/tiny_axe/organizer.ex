@@ -340,7 +340,8 @@ defmodule TinyAxe.Organizer do
 
   defp user(content), do: %{role: "user", content: content}
 
-  defp home_map do
+  @doc false
+  def home_map do
     root = Ops.root()
 
     root
@@ -519,7 +520,10 @@ defmodule TinyAxe.Organizer do
 
     notify.({:attempt, 1})
 
-    case Ollama.stream_chat(messages, &notify.({:delta, &1}), options: [temperature: temperature]) do
+    case Ollama.stream_chat(messages, &notify.({:delta, &1}),
+           options: [temperature: temperature],
+           on_usage: &notify.({:usage, &1})
+         ) do
       {:ok, text} -> text |> unfence() |> String.trim() |> Kernel.<>("\n")
       {:error, _} -> old || ""
     end

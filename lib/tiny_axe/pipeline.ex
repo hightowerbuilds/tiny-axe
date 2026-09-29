@@ -30,6 +30,7 @@ defmodule TinyAxe.Pipeline do
       {:stage, status_label}
       {:check, {:ran, result} | {:skipped, reason}}
       {:verify, answers}
+      {:usage, %{prompt_tokens: n, output_tokens: n, prompt_chars: n}}   after each generation
       {:chose, %{attempt: n, score: p, attempts: n}}   # answering with an earlier attempt
       {:edits, [%{path: p, abs: abs, old: old | nil, new: new}]}   # just before :done
       {:edit_refused, %{path: p, reason: text}}
@@ -79,6 +80,13 @@ defmodule TinyAxe.Pipeline do
           "made, or a document (notes, Markdown, plain text) written to a file on their " <>
           "computer? Also yes if they ask what's in a folder on their computer or where a " <>
           "file is. No if they want code in their project written or changed."
+    },
+    command: %{
+      type: :noul,
+      instructions:
+        "Does the user want a shell command run for them: installing packages, " <>
+          "scaffolding a project (e.g. Vite), git, or running build, test or dev tools? " <>
+          "No if they only want to know which command to use."
     }
   }
 
@@ -98,6 +106,13 @@ defmodule TinyAxe.Pipeline do
       "You are a knowledgeable assistant. Answer directly and concisely, then add detail if useful."
   }
 
+  @false_claim_fix """
+  Your answer says you ran, installed or executed something, or that you're about to. \
+  You can't run commands. Rewrite it so the user runs them: give each command in a \
+  code block, say where to run it, and what to expect. The user never saw your earlier \
+  answer or this message, so don't mention either.
+  """
+
   @spec run([Ollama.message()], String.t(), (term() -> any())) :: :ok
   def run(history, prompt, notify) do
     with {:ok, route} <- Decider.decide(prompt, @route_questions) do
@@ -105,10 +120,10 @@ defmodule TinyAxe.Pipeline do
       kind = route.kind.choice
       {web_context, request, notify} = maybe_search(route, history, prompt, notify)
 
-      if organize?(route) do
-        TinyAxe.Organizer.run(history, prompt, web_context, notify)
-      else
-        answer(route, kind, history, prompt, web_context, request, notify)
+      case task(route) do
+        :command -> TinyAxe.Commander.run(history, prompt, notify)
+        :organize -> TinyAxe.Organizer.run(history, prompt, web_context, notify)
+        :answer -> answer(route, kind, history, prompt, web_context, request, notify)
       end
     else
       {:error, reason} -> notify.({:error, reason})
@@ -117,10 +132,17 @@ defmodule TinyAxe.Pipeline do
     :ok
   end
 
-  # File tasks (moving, organising, writing documents) go to the Organizer.
-  defp organize?(route) do
-    config(:file_ops, true) and
-      match?(%{organize: %{noul: p}} when p >= 0.5, route)
+  # Commands go to the Commander and file tasks (moving, organising, writing
+  # documents) to the Organizer; when both look likely, the likelier wins.
+  defp task(route) do
+    command = if config(:commands, true), do: get_in(route, [:command, :noul]) || 0, else: 0
+    organize = if config(:file_ops, true), do: get_in(route, [:organize, :noul]) || 0, else: 0
+
+    cond do
+      command >= 0.5 and command >= organize -> :command
+      organize >= 0.5 -> :organize
+      true -> :answer
+    end
   end
 
   defp answer(route, kind, history, prompt, web_context, request, notify) do
@@ -141,7 +163,8 @@ defmodule TinyAxe.Pipeline do
 
     with {:ok, text} <-
            Ollama.stream_chat(run.messages, &run.notify.({:delta, &1}),
-             options: [temperature: temperature]
+             options: [temperature: temperature],
+             on_usage: &run.notify.({:usage, &1})
            ) do
       run.notify.({:stage, "checking code…"})
       check = CodeCheck.run(text)
@@ -175,7 +198,9 @@ defmodule TinyAxe.Pipeline do
     case verify(run.request, text, check) do
       {:ok, verdict} ->
         run.notify.({:verify, verdict})
-        score = verdict.addresses.noul
+        claim = get_in(verdict, [:false_claim, :noul]) || 0.0
+        # An answer that claims to have done what it can't is only as good as its honesty.
+        score = min(verdict.addresses.noul, 1 - claim)
         run = remember(run, text, n, score)
 
         cond do
@@ -184,6 +209,14 @@ defmodule TinyAxe.Pipeline do
 
           last? ->
             finish(run, text, n)
+
+          claim >= 0.5 ->
+            fix = [
+              %{role: "assistant", content: text},
+              %{role: "user", content: @false_claim_fix}
+            ]
+
+            attempt(%{run | messages: run.messages ++ fix}, n + 1, 0.3)
 
           true ->
             # No concrete feedback to give, so nudge sampling for a different answer.
@@ -242,6 +275,14 @@ defmodule TinyAxe.Pipeline do
         instructions:
           "Does the response fully and correctly address the request, without errors or " <>
             "missing parts?"
+      },
+      # Small models say "I ran npm install" when nothing ran.
+      false_claim: %{
+        type: :noul,
+        instructions:
+          "Does the response claim that the assistant ran a command, installed software or " <>
+            "did something on the computer (or is about to), rather than telling the user " <>
+            "what to run?"
       }
     })
   end
@@ -253,7 +294,11 @@ defmodule TinyAxe.Pipeline do
       "(model: #{config(:model, "unknown")}). Today is #{today()}. When a request needs " <>
       "current information, tiny-axe searches the web and gives you the results. It can " <>
       "also give you files from the user's project (#{Files.display(Files.root())}) and " <>
-      "offer your changes to them for the user to approve.\n\n" <> @system_prompts[kind]
+      "offer your changes to them for the user to approve. This answer can't run shell " <>
+      "commands: give any command in a code block, and never say you ran, installed or " <>
+      "executed anything. If the user wants a command run, tell them to ask tiny-axe to " <>
+      "run it; it will show the command for approval and run it in a sandbox.\n\n" <>
+      @system_prompts[kind]
   end
 
   defp today do

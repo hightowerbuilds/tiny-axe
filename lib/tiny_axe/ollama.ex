@@ -23,6 +23,9 @@ defmodule TinyAxe.Ollama do
   @doc """
   Streaming chat call. `on_delta` is invoked with each content fragment.
   Returns `{:ok, full_text}` once the model finishes.
+
+  With `on_usage: fun`, `fun` gets `%{prompt_tokens:, output_tokens:, prompt_chars:}`
+  when the model finishes. Ollama counts the whole prompt, cached or not.
   """
   @spec stream_chat([message()], (String.t() -> any()), keyword()) ::
           {:ok, String.t()} | {:error, term()}
@@ -38,6 +41,11 @@ defmodule TinyAxe.Ollama do
           case JSON.decode(line) do
             {:ok, %{"error" => error}} ->
               throw({:ollama_error, error})
+
+            # The last chunk carries token counts, for the context meter.
+            {:ok, %{"done" => true} = final} ->
+              report_usage(final, messages, opts)
+              acc
 
             {:ok, %{"message" => %{"content" => delta}}} when delta != "" ->
               on_delta.(delta)
@@ -69,6 +77,14 @@ defmodule TinyAxe.Ollama do
       end
     catch
       {:ollama_error, error} -> {:error, {:ollama, error}}
+    end
+  end
+
+  defp report_usage(final, messages, opts) do
+    with fun when is_function(fun, 1) <- Keyword.get(opts, :on_usage),
+         tokens when is_integer(tokens) <- final["prompt_eval_count"] do
+      chars = messages |> Enum.map(&String.length(&1.content)) |> Enum.sum()
+      fun.(%{prompt_tokens: tokens, output_tokens: final["eval_count"] || 0, prompt_chars: chars})
     end
   end
 
