@@ -87,7 +87,7 @@ defmodule TinyAxe.TUIPlanTest do
 
     screen = draw(state)
     assert screen =~ "carry out this plan?"
-    assert screen =~ "reviewer: 87%"
+    assert screen =~ "review score 87/100"
     assert screen =~ "Downloads/a.pdf"
     assert screen =~ "+ # Notes"
 

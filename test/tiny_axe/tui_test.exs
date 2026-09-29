@@ -46,7 +46,7 @@ defmodule TinyAxe.TUITest do
 
     assert state.run == nil
     assert [%{role: "user"}, %{role: "assistant"}] = state.history
-    assert List.last(state.transcript) == {:meta, "verifier: addresses request 91%"}
+    assert List.last(state.transcript) == {:meta, "verifier score 91/100"}
     assert draw(state) =~ "ready"
   end
 
@@ -260,7 +260,7 @@ defmodule TinyAxe.TUITest do
 
       screen = draw_at(state, {140, 36})
       assert screen =~ "compacted · 3 turns"
-      assert screen =~ "reviewer 91%"
+      assert screen =~ "review score 91/100"
       assert screen =~ "User asked five questions about words"
     end
 
@@ -281,6 +281,39 @@ defmodule TinyAxe.TUITest do
       assert state.run == nil
       assert state.status =~ "nothing to compact yet"
     end
+  end
+
+  test "a decider outage is noted once per request, and unknown events don't crash" do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    id = make_ref()
+    state = %{state | run: {id, self()}, transcript: [{:user, "q"}]}
+
+    send_event = fn st, ev -> st |> then(&TUI.handle_info({:pipeline, id, ev}, &1)) |> elem(1) end
+
+    state =
+      state
+      |> send_event.({:decider_unavailable, "reviewing the plan"})
+      |> send_event.({:decider_unavailable, "reviewing the plan"})
+      |> send_event.({:no_such_event, :at_all})
+
+    notes =
+      Enum.filter(state.transcript, &match?({:meta, "⚠ the decider couldn't answer" <> _}, &1))
+
+    assert length(notes) == 1
+    assert state.run == {id, self()}
+
+    # A new request gets its own note.
+    state = %{state | transcript: state.transcript ++ [{:user, "again"}]}
+    state = send_event.(state, {:decider_unavailable, "reviewing the plan"})
+    assert length(Enum.filter(state.transcript, &match?({:meta, "⚠" <> _}, &1))) == 2
+  end
+
+  test "a plan whose review is unknown says so instead of showing a number" do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    plan = %{request: "tidy", ops: [%{op: :mkdir, path: "/tmp/x"}], review: nil}
+    screen = draw(%{state | pending_plan: plan})
+    assert screen =~ "no review score: check this yourself"
+    refute screen =~ "review score ?"
   end
 
   test "ignores events from a stale run" do

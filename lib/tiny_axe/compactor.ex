@@ -14,7 +14,7 @@ defmodule TinyAxe.Compactor do
       {:error, reason}
   """
 
-  alias TinyAxe.{Decider, Ollama}
+  alias TinyAxe.{Decider, Model}
 
   @keep_turns 2
 
@@ -35,12 +35,17 @@ defmodule TinyAxe.Compactor do
 
     first = summarise(conversation, notify, 0.3)
     first_check = check(conversation, first)
+    if first_check == nil, do: notify.({:decider_unavailable, "checking the summary"})
 
+    # Rewrite once when the check doubts it; without a check, keep the first.
     {summary, check} =
-      if first_check < 0.5 do
+      if is_number(first_check) and first_check < Decider.review_threshold() do
         second = summarise(conversation, notify, 0.7)
         second_check = check(conversation, second)
-        if second_check > first_check, do: {second, second_check}, else: {first, first_check}
+
+        if is_number(second_check) and second_check > first_check,
+          do: {second, second_check},
+          else: {first, first_check}
       else
         {first, first_check}
       end
@@ -83,7 +88,7 @@ defmodule TinyAxe.Compactor do
 
     notify.({:compact_delta, :reset})
 
-    case Ollama.stream_chat(messages, &notify.({:compact_delta, &1}),
+    case Model.stream_chat(messages, &notify.({:compact_delta, &1}),
            options: [temperature: temperature]
          ) do
       {:ok, text} -> String.trim(text)
@@ -102,9 +107,8 @@ defmodule TinyAxe.Compactor do
       }
     }
 
-    case Decider.decide(%{conversation: conversation, summary: summary}, question) do
-      {:ok, %{keeps: %{noul: p}}} -> p
-      _ -> 0.5
-    end
+    %{conversation: conversation, summary: summary}
+    |> Decider.decide(question)
+    |> Decider.p(:keeps)
   end
 end

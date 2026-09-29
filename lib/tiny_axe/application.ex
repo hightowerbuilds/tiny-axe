@@ -5,6 +5,9 @@ defmodule TinyAxe.Application do
 
   @impl true
   def start(_type, _args) do
+    # Before the TUI takes over the terminal: make sure Ollama is up.
+    if Application.get_env(:tiny_axe, :start_tui, false), do: prepare_ollama()
+
     # rest_for_one: if the Journal restarts, the Runner restarts after it, so
     # it never writes to a journal that isn't there.
     ops = [
@@ -33,5 +36,43 @@ defmodule TinyAxe.Application do
           else: []
 
     Supervisor.start_link(children, strategy: :one_for_one, name: TinyAxe.Supervisor)
+  end
+
+  # Starts Ollama if it isn't running, and checks the model is downloaded. What
+  # happened is left in :startup_notes for the TUI to show once it's open.
+  defp prepare_ollama do
+    url = Application.get_env(:tiny_axe, :ollama_url, "http://localhost:11434")
+
+    unless TinyAxe.OllamaServer.up?(url),
+      do: IO.puts(:stderr, "tiny-axe: Ollama isn't running, so starting it…")
+
+    notes =
+      case TinyAxe.OllamaServer.ensure_running() do
+        {:ok, :already_running} ->
+          model_notes(url)
+
+        {:ok, {:started, how, ms}} ->
+          [
+            "Ollama wasn't running, so tiny-axe started it (#{how}, ready in #{Float.round(ms / 1000, 1)}s)"
+            | model_notes(url)
+          ]
+
+        {:error, reason} ->
+          IO.puts(:stderr, "tiny-axe: #{reason}")
+          ["✗ #{reason}. Requests will fail until Ollama is running (try `ollama serve`)."]
+      end
+
+    Application.put_env(:tiny_axe, :startup_notes, notes)
+  end
+
+  defp model_notes(url) do
+    models =
+      [Application.get_env(:tiny_axe, :model), Application.get_env(:tiny_axe, :decider_model)]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    for model <- models,
+        TinyAxe.OllamaServer.has_model?(url, model) == false,
+        do: "✗ the model #{model} isn't downloaded; run `ollama pull #{model}`"
   end
 end

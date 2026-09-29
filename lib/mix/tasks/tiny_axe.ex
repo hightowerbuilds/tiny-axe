@@ -8,7 +8,9 @@ defmodule Mix.Tasks.TinyAxe do
       mix tiny_axe --decider jev     # TypeSafe Jev for route/verify
       mix tiny_axe --dir ~/code/app  # where to start (default: the home folder)
 
-  `bin/tiny-axe` runs this from any directory, using that directory as the project.
+  `bin/tiny-axe-dev` runs this from any directory, starting in that directory.
+  To install a `tiny-axe` command that doesn't need this repo, run
+  `mix tiny_axe.install`.
   """
 
   use Mix.Task
@@ -25,7 +27,7 @@ defmodule Mix.Tasks.TinyAxe do
 
     # `mix tiny_axe` runs inside tiny-axe's own repo; starting there would make
     # its source the project. Start in the home folder instead, unless --dir says
-    # otherwise (bin/tiny-axe passes the folder it was run from).
+    # otherwise (bin/tiny-axe-dev passes the folder it was run from).
     dir = Path.expand(opts[:dir] || System.user_home!())
     unless File.dir?(dir), do: Mix.raise("--dir #{inspect(dir)} is not a directory")
     Application.put_env(:tiny_axe, :project_dir, dir)

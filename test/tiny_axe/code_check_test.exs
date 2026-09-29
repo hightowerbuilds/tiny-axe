@@ -26,6 +26,19 @@ defmodule TinyAxe.CodeCheckTest do
       assert CodeCheck.extract(text) == []
     end
 
+    test "illustrative snippets that define nothing aren't checked" do
+      text = """
+      ```elixir
+      expression |> function_name(arg1, arg2, ...)
+      ```
+      ```python
+      result = f(x)
+      ```
+      """
+
+      assert {:skipped, "only illustrative snippets" <> _} = CodeCheck.run(text)
+    end
+
     test "ignores prose-only answers" do
       assert {:skipped, "no Elixir or Python code"} = CodeCheck.run("Just words.")
     end
@@ -122,9 +135,42 @@ defmodule TinyAxe.CodeCheckTest do
     end
 
     test "treats compiler warnings as failures" do
-      code = "```elixir\ndefmodule W do\n  @nonsense\n  def f, do: 1\nend\n```"
+      code = "```elixir\ndefmodule W do\n  def f, do: @nonsense\nend\n```"
       assert {:ran, %{status: :failed, summary: summary}} = CodeCheck.run(code)
       assert summary =~ "compiler warning"
+    end
+
+    test "a doctest that isn't valid Elixir is reported, not a checker crash" do
+      code = ~s"""
+      ```elixir
+      defmodule W do
+        @doc "\n    iex> W.f()\n    %{[]}\n"
+        def f, do: %{}
+      end
+      ```
+      """
+
+      assert {:ran, %{status: :failed, summary: "a doctest isn't valid Elixir", output: output}} =
+               CodeCheck.run(code)
+
+      assert output =~ "expected key-value pairs in a map"
+      assert output =~ "doctest W.f/0"
+    end
+
+    test "a stray or unused module attribute doesn't fail working code" do
+      for stray <- ["@moduloclear", "@modue \"W\""] do
+        code = ~s"""
+        ```elixir
+        defmodule W do
+          #{stray}
+          @doc "\n    iex> W.f()\n    1\n"
+          def f, do: 1
+        end
+        ```
+        """
+
+        assert {:ran, %{status: :passed}} = CodeCheck.run(code)
+      end
     end
 
     test "checks Python doctests" do

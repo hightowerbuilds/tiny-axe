@@ -25,7 +25,7 @@ defmodule TinyAxe.Organizer do
       {:plan, %{request: text, ops: [op], review: probability}}   just before :done
   """
 
-  alias TinyAxe.{Decider, Files, Ollama, Ops}
+  alias TinyAxe.{Decider, Files, Model, Ollama, Ops}
 
   @max_rounds 5
   @look_rounds 3
@@ -73,7 +73,7 @@ defmodule TinyAxe.Organizer do
       %{role: "user", content: first_message(history, prompt)}
     ]
 
-    case plan(messages, prompt, notify, 1, false) do
+    case plan(messages, TinyAxe.Pipeline.context(history, prompt), notify, 1, false) do
       {:ok, ops, reply, review} ->
         notify.({:stage, "writing…"})
         steps = Enum.map_join(ops, "\n", &("- " <> Ops.describe(&1)))
@@ -93,7 +93,7 @@ defmodule TinyAxe.Organizer do
 
   ## Planning
 
-  defp plan(messages, _prompt, _notify, round, _reviewed) when round > @max_rounds do
+  defp plan(messages, _context, _notify, round, _reviewed) when round > @max_rounds do
     # The last message is tiny-axe's list of what was wrong; pass it on.
     problems = List.last(messages).content |> String.split("\n\n") |> hd()
 
@@ -102,9 +102,9 @@ defmodule TinyAxe.Organizer do
        problems <> "\n\nCould you say more precisely what you'd like?"}
   end
 
-  defp plan(messages, prompt, notify, round, reviewed?) do
+  defp plan(messages, context, notify, round, reviewed?) do
     with {:ok, %{"message" => %{"content" => json}}} <-
-           Ollama.chat(messages, format: @schema, options: [temperature: 0.2]),
+           Model.chat(messages, format: @schema, options: [temperature: 0.2]),
          {:ok, answer} <- JSON.decode(json) do
       look = answer |> Map.get("look", []) |> List.wrap() |> Enum.take(4)
       steps = steps(answer)
@@ -114,13 +114,13 @@ defmodule TinyAxe.Organizer do
       cond do
         steps == [] and look != [] and round <= @look_rounds ->
           notify.({:looked, Enum.map(look, &(&1 |> Ops.resolve() |> Ops.show()))})
-          plan(messages ++ [user(listings(look))], prompt, notify, round + 1, reviewed?)
+          plan(messages ++ [user(listings(look))], context, notify, round + 1, reviewed?)
 
         steps == [] ->
           {:reply, reply}
 
         true ->
-          check(steps, reply, messages, prompt, notify, round, reviewed?)
+          check(steps, reply, messages, context, notify, round, reviewed?)
       end
     else
       {:error, reason} -> {:error, reason}
@@ -141,7 +141,7 @@ defmodule TinyAxe.Organizer do
       Enum.map(list.("write"), &Map.put(&1, "op", "write"))
   end
 
-  defp check(steps, reply, messages, prompt, notify, round, reviewed?) do
+  defp check(steps, reply, messages, context, notify, round, reviewed?) do
     case Ops.expand(steps) do
       {:error, problems} ->
         notify.({:plan_problems, problems})
@@ -151,16 +151,18 @@ defmodule TinyAxe.Organizer do
             Enum.map_join(problems, "\n", &"- #{&1}") <>
             "\n\nLook again if you need to, and reply with a corrected plan."
 
-        plan(messages ++ [user(fix)], prompt, notify, round + 1, reviewed?)
+        plan(messages ++ [user(fix)], context, notify, round + 1, reviewed?)
 
       {:ok, ops} ->
-        {review, feedback, ops} = review(prompt, ops)
+        {review, feedback, ops} = review(context, ops)
         notify.({:review, review})
+        if review == nil, do: notify.({:decider_unavailable, "reviewing the plan"})
 
         # One second chance when the reviewer doubts the plan; after that the
-        # user sees the score and decides.
-        if review < 0.5 and not reviewed? and round < @max_rounds do
-          plan(messages ++ [user(feedback)], prompt, notify, round + 1, true)
+        # user sees the score and decides. No score means no second chance.
+        if is_number(review) and review < Decider.review_threshold() and not reviewed? and
+             round < @max_rounds do
+          plan(messages ++ [user(feedback)], context, notify, round + 1, true)
         else
           {:ok, ops, reply, review}
         end
@@ -175,7 +177,7 @@ defmodule TinyAxe.Organizer do
   # where "does it do everything asked?" held at 76-77%).
   @max_step_questions 30
 
-  defp review(prompt, ops) do
+  defp review(context, ops) do
     plan = Enum.map_join(ops, "\n", &("- " <> describe_step(&1)))
     reviewed = Enum.take(ops, @max_step_questions)
 
@@ -210,7 +212,8 @@ defmodule TinyAxe.Organizer do
       |> Enum.map_join("\n\n", &listing/1)
 
     state = %{
-      request: prompt,
+      request: context.request,
+      recent_conversation: Map.get(context, :recent_conversation, ""),
       plan: plan,
       source_folders: source_folders,
       # Without this the reviewer marks "delete X" → "trash X" as missing the delete.
@@ -223,20 +226,23 @@ defmodule TinyAxe.Organizer do
 
     case Decider.decide(state, questions) do
       {:ok, answers} ->
-        scores = Enum.map(Enum.with_index(reviewed), fn {_, i} -> answers[:"step_#{i}"].noul end)
-        complete = answers.complete.noul
-        score = Enum.min([complete | scores])
+        scores =
+          Enum.map(Enum.with_index(reviewed), fn {_, i} -> Decider.p(answers, :"step_#{i}") end)
+
+        complete = Decider.p(answers, :complete)
+        # Any unknown makes the whole review unknown: a weakest link can't be missing.
+        score = if nil in [complete | scores], do: nil, else: Enum.min([complete | scores])
 
         doubtful =
           reviewed
           |> Enum.zip(scores)
-          |> Enum.filter(fn {_op, p} -> p < 0.5 end)
+          |> Enum.filter(fn {_op, p} -> is_number(p) and p < Decider.review_threshold() end)
           |> Enum.map(fn {op, p} ->
             "- probably not what the user asked for (#{pct(p)}): " <> describe_step(op)
           end)
 
         missing_line =
-          if complete < 0.5,
+          if is_number(complete) and complete < Decider.review_threshold(),
             do: [
               "- something the user asked for seems to be missing (complete: #{pct(complete)})"
             ],
@@ -255,12 +261,13 @@ defmodule TinyAxe.Organizer do
 
         {score, feedback, ops_scored}
 
-      _ ->
-        {0.5, "", ops}
+      {:error, _} ->
+        {nil, "", ops}
     end
   end
 
-  defp pct(p), do: "#{round(p * 100)}%"
+  defp pct(p) when is_number(p), do: "#{round(p * 100)}%"
+  defp pct(_), do: "?"
 
   defp describe_step(%{op: :write, about: about} = op), do: Ops.describe(op) <> ": " <> about
   defp describe_step(op), do: Ops.describe(op)
@@ -461,12 +468,17 @@ defmodule TinyAxe.Organizer do
 
     content = generate(op, old, prompt, steps, web_context, notify, 0.5)
     check = check_document(op, prompt, content)
+    if check == nil, do: notify.({:decider_unavailable, "checking #{Ops.show(path)}"})
 
+    # Rewrite once when the check doubts it; without a check, keep the first draft.
     {content, check} =
-      if check < 0.5 do
+      if is_number(check) and check < Decider.review_threshold() do
         retry = generate(op, old, prompt, steps, web_context, notify, 0.9)
         retry_check = check_document(op, prompt, retry)
-        if retry_check > check, do: {retry, retry_check}, else: {content, check}
+
+        if is_number(retry_check) and retry_check > check,
+          do: {retry, retry_check},
+          else: {content, check}
       else
         {content, check}
       end
@@ -522,7 +534,7 @@ defmodule TinyAxe.Organizer do
 
     notify.({:attempt, 1})
 
-    case Ollama.stream_chat(messages, &notify.({:delta, &1}),
+    case Model.stream_chat(messages, &notify.({:delta, &1}),
            options: [temperature: temperature],
            on_usage: &notify.({:usage, &1})
          ) do
@@ -547,10 +559,9 @@ defmodule TinyAxe.Organizer do
       }
     }
 
-    case Decider.decide(%{asked: op.about, user_request: prompt, document: content}, question) do
-      {:ok, %{fits: %{noul: p}}} -> p
-      _ -> 0.5
-    end
+    %{asked: op.about, user_request: prompt, document: content}
+    |> Decider.decide(question)
+    |> Decider.p(:fits)
   end
 
   ## The answer shown in the transcript

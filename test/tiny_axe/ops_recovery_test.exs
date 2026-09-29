@@ -231,4 +231,31 @@ defmodule TinyAxe.OpsRecoveryTest do
     assert File.ls!(Path.join(trash, "files")) == []
     assert File.ls!(Path.join(trash, "info")) == []
   end
+
+  test "pruning an old plan moves what undo set aside to the system Trash, not oblivion",
+       %{home: home} do
+    path = Path.join(home, "notes.md")
+
+    {:ok, id} =
+      Runner.run("write notes", [%{op: :write, path: path, content: "hi\n", old_hash: nil}])
+
+    assert_receive {:ops, ^id, {:finished, _}}, 5_000
+    assert {:ok, ^id} = Runner.undo_last()
+    assert_receive {:ops, ^id, {:undone, []}}, 5_000
+
+    {:ok, plan} = Journal.load(id)
+    assert File.read!(Path.join(plan.dir, "trash/notes.md")) == "hi\n"
+
+    # Make the plan 40 days old, then restart the journal, which prunes on start.
+    journal = Path.join(plan.dir, "journal.jsonl")
+    old_at = DateTime.utc_now() |> DateTime.add(-40, :day) |> DateTime.to_iso8601()
+    File.write!(journal, String.replace(File.read!(journal), plan.at, old_at, global: false))
+    :ok = Supervisor.terminate_child(TinyAxe.Ops.Supervisor, Journal)
+    {:ok, _} = Supervisor.restart_child(TinyAxe.Ops.Supervisor, Journal)
+
+    refute File.exists?(plan.dir)
+    trash = Application.get_env(:tiny_axe, :trash_dir)
+    assert File.read!(Path.join(trash, "files/notes.md")) == "hi\n"
+    assert File.exists?(Path.join(trash, "info/notes.md.trashinfo"))
+  end
 end

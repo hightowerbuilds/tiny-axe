@@ -14,6 +14,10 @@ defmodule TinyAxe.Decider.Local do
     * `:coverage` — how much of the raw probability mass fell on valid labels;
       a low value means the model wanted to say something else entirely
 
+  Below `@min_coverage` there's no real evidence, so the answer is unknown
+  (`noul`, `choice` or `score` is `nil`, and `unknown: true`) rather than a
+  distribution renormalised from almost nothing, or a uniform guess.
+
   Questions run concurrently, one Ollama request each.
   """
 
@@ -22,6 +26,9 @@ defmodule TinyAxe.Decider.Local do
   alias TinyAxe.Ollama
 
   @letters ~w(A B C D E F G H I J K L M N O P)
+
+  # Less of the probability on valid labels than this, and the answer is unknown.
+  @min_coverage 0.05
 
   @impl true
   def max_options, do: length(@letters)
@@ -43,8 +50,7 @@ defmodule TinyAxe.Decider.Local do
     end)
   end
 
-  @doc false
-  def ask(state_text, question) do
+  defp ask(state_text, question) do
     {labels, prompt} = build_prompt(state_text, question)
 
     messages = [
@@ -165,11 +171,33 @@ defmodule TinyAxe.Decider.Local do
   defp normalise(token),
     do: token |> String.trim() |> String.trim_trailing(".") |> String.downcase()
 
-  defp build_answer(%{type: :noul}, _labels, {dist, coverage}) do
+  @doc false
+  def build_answer(%{type: :noul}, _labels, {_dist, coverage}) when coverage < @min_coverage,
+    do: %{noul: nil, coverage: round4(coverage), unknown: true}
+
+  def build_answer(%{type: :choice}, _labels, {_dist, coverage}) when coverage < @min_coverage,
+    do: %{
+      choice: nil,
+      probabilities: %{},
+      confidence: 0.0,
+      coverage: round4(coverage),
+      unknown: true
+    }
+
+  def build_answer(%{type: :score}, _labels, {_dist, coverage}) when coverage < @min_coverage,
+    do: %{
+      score: nil,
+      probabilities: %{},
+      confidence: 0.0,
+      coverage: round4(coverage),
+      unknown: true
+    }
+
+  def build_answer(%{type: :noul}, _labels, {dist, coverage}) do
     %{noul: round4(dist["Yes"]), coverage: round4(coverage)}
   end
 
-  defp build_answer(%{type: :choice}, labels, {dist, coverage}) do
+  def build_answer(%{type: :choice}, labels, {dist, coverage}) do
     probs = Map.new(dist, fn {label, p} -> {labels[label], round4(p)} end)
     {choice, _} = Enum.max_by(probs, &elem(&1, 1))
 
@@ -181,7 +209,7 @@ defmodule TinyAxe.Decider.Local do
     }
   end
 
-  defp build_answer(%{type: :score}, labels, {dist, coverage}) do
+  def build_answer(%{type: :score}, labels, {dist, coverage}) do
     probs = Map.new(dist, fn {label, p} -> {labels[label], round4(p)} end)
     mean = Enum.reduce(probs, 0.0, fn {v, p}, acc -> acc + v * p end)
 

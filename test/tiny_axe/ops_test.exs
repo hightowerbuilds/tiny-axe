@@ -141,6 +141,23 @@ defmodule TinyAxe.OpsTest do
       assert File.read!(Path.join(trash, "Documents/notes.md")) == "# New notes\n"
     end
 
+    test "undo leaves a rewritten file alone if it can't set the undone version aside",
+         %{home: home, trash: trash} do
+      path = at(home, "Documents/notes.md")
+      old = File.read!(path)
+      op = %{op: :write, path: path, content: "# New\n", old_hash: Ops.hash(old)}
+      assert {:ok, records} = Ops.step(op, Path.join(trash, "../backup-0"))
+
+      # The plan's trash can't be created (a file sits where the folder would go).
+      File.rm_rf!(trash)
+      File.write!(trash, "in the way")
+
+      notes = Enum.flat_map(records, &Ops.undo_record(&1, trash))
+      assert Enum.any?(notes, &(&1 =~ "couldn't move"))
+      assert Enum.any?(notes, &(&1 =~ "was left as it is, so nothing was lost"))
+      assert File.read!(path) == "# New\n"
+    end
+
     test "a write refuses a file that changed since it was read", %{home: home} do
       op = %{
         op: :write,

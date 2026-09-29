@@ -63,7 +63,7 @@ defmodule TinyAxe.Location do
     abs
   end
 
-  @doc "Back to where tiny-axe was launched (tests, and ctrl+l)."
+  @doc "Back to where tiny-axe was launched. Used by tests; `ctrl+l` clears the conversation but doesn't move."
   @spec reset() :: :ok
   def reset, do: Agent.update(__MODULE__, fn _ -> %{current: nil, trail: []} end)
 

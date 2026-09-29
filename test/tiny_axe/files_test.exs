@@ -74,6 +74,63 @@ defmodule TinyAxe.FilesTest do
     assert [%{path: "lib/demo.ex"}] = Files.proposed_edits(text)
   end
 
+  describe "against_snapshots/2 (edits must be written from the version the model saw)" do
+    setup %{tmp_dir: dir} do
+      path = Path.join(dir, "lib/demo.ex")
+      # What the model was given: version A.
+      given = %{partial: MapSet.new(), snapshots: %{path => Files.hash(path)}}
+      %{path: path, given: given}
+    end
+
+    defp proposal(text), do: Files.proposed_edits(text)
+
+    test "an edit of the file as it was given is offered", %{given: given} do
+      edits = proposal("```elixir lib/demo.ex\ndefmodule Demo do\n  def hi, do: :hello\nend\n```")
+      assert {[%{path: "lib/demo.ex"}], []} = Files.against_snapshots(edits, given)
+    end
+
+    test "a file saved while the model was writing makes its edit stale", %{
+      path: path,
+      given: given
+    } do
+      # The user saves version B during generation; the proposal then reads B as "old".
+      File.write!(path, "defmodule Demo do\n  def hi, do: :b\nend\n")
+      edits = proposal("```elixir lib/demo.ex\ndefmodule Demo do\n  def hi, do: :hello\nend\n```")
+
+      assert {[], [{%{path: "lib/demo.ex"}, reason}]} = Files.against_snapshots(edits, given)
+      assert reason =~ "changed while the model was writing"
+    end
+
+    test "an existing file the model was never given is refused; a new file is fine", %{
+      given: given
+    } do
+      edits =
+        proposal("""
+        ```elixir mix.exs
+        defmodule Demo.MixProject do
+          # rewritten without having seen it
+        end
+        ```
+        ```elixir lib/new.ex
+        defmodule New do
+        end
+        ```
+        """)
+
+      assert {[%{path: "lib/new.ex"}], [{%{path: "mix.exs"}, reason}]} =
+               Files.against_snapshots(edits, given)
+
+      assert reason =~ "never given this file"
+    end
+
+    test "a file the model only saw part of is refused", %{path: path, given: given} do
+      given = %{given | partial: MapSet.new([path])}
+      edits = proposal("```elixir lib/demo.ex\ndefmodule Demo do\nend\n```")
+      assert {[], [{_, reason}]} = Files.against_snapshots(edits, given)
+      assert reason =~ "too long to show the model in full"
+    end
+  end
+
   test "refuses to read binaries", %{tmp_dir: dir} do
     path = Path.join(dir, "image.bin")
     File.write!(path, <<137, 80, 78, 71, 0, 1, 2>>)

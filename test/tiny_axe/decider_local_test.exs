@@ -23,4 +23,23 @@ defmodule TinyAxe.Decider.LocalTest do
     assert coverage == 0.0
     assert dist == %{"A" => 0.5, "B" => 0.5}
   end
+
+  test "an answer with almost no probability on the labels is unknown, not a guess" do
+    # 1% of the probability on Yes, none on No: renormalising would say 100% Yes.
+    top = [
+      %{"token" => "Yes", "logprob" => :math.log(0.01)},
+      %{"token" => "Hmm", "logprob" => 0.0}
+    ]
+
+    dist = Local.label_distribution(top, ["Yes", "No"])
+
+    assert %{noul: nil, unknown: true} = Local.build_answer(%{type: :noul}, %{}, dist)
+
+    assert %{choice: nil, probabilities: %{}, unknown: true} =
+             Local.build_answer(
+               %{type: :choice},
+               %{"A" => :a, "B" => :b},
+               Local.label_distribution(top, ~w(A B))
+             )
+  end
 end

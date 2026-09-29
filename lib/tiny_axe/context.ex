@@ -51,4 +51,91 @@ defmodule TinyAxe.Context do
   def short(n) when n < 1000, do: "#{n}"
   def short(n) when n < 10_000, do: "#{Float.round(n / 1000, 1)}k"
   def short(n), do: "#{round(n / 1000)}k"
+
+  ## Fitting a request into the window
+
+  # For budgeting, estimate on the high side: code packs more tokens per
+  # character than prose.
+  @budget_ratio 0.33
+  @material_floor 1_500
+
+  @doc """
+  Fits a request's messages into the window, leaving `:answer_reserve` tokens
+  (1,500 by default) for the answer. Cuts, in order, until it fits:
+
+    1. the largest attached material (system messages after the first: web
+       pages, files), a quarter at a time, down to #{@material_floor} characters each
+    2. the oldest turns of history, keeping the newest two turns
+
+  The system prompt and the final message are never cut. Returns the messages
+  and `nil`, or a description of what was cut and the estimates before and after.
+  """
+  @spec fit([map()], keyword()) :: {[map()], nil | map()}
+  def fit(messages, opts \\ []) do
+    budget =
+      Keyword.get(
+        opts,
+        :budget,
+        window() - Application.get_env(:tiny_axe, :answer_reserve, 1_500)
+      )
+
+    before = conversation_tokens(messages, @budget_ratio)
+
+    if before <= budget do
+      {messages, nil}
+    else
+      {fitted, cuts} = messages |> shrink_material(budget, []) |> drop_old_turns(budget)
+
+      {fitted,
+       %{before: before, after: conversation_tokens(fitted, @budget_ratio), cut: Enum.uniq(cuts)}}
+    end
+  end
+
+  defp over?(messages, budget), do: conversation_tokens(messages, @budget_ratio) > budget
+
+  defp shrink_material(messages, budget, cuts) do
+    candidates =
+      messages
+      |> Enum.with_index()
+      |> Enum.filter(fn {m, i} ->
+        # The margin covers the "cut to fit" note, so a cut message isn't cut forever.
+        i > 0 and i < length(messages) - 1 and m.role == "system" and
+          String.length(m.content) > @material_floor + 100
+      end)
+
+    case {over?(messages, budget),
+          Enum.max_by(candidates, fn {m, _} -> String.length(m.content) end, fn -> nil end)} do
+      {true, {m, i}} ->
+        keep = max(div(String.length(m.content) * 3, 4), @material_floor)
+
+        cut =
+          String.slice(m.content, 0, keep) <>
+            "\n(… the rest was cut to fit the model's context window)"
+
+        shrink_material(List.replace_at(messages, i, %{m | content: cut}), budget, [
+          "attached material" | cuts
+        ])
+
+      _ ->
+        {messages, cuts}
+    end
+  end
+
+  defp drop_old_turns({messages, cuts}, budget) do
+    turns =
+      Enum.filter(Enum.with_index(messages), fn {m, i} ->
+        i > 0 and m.role in ["user", "assistant"]
+      end)
+
+    # Everything but the newest two turns (and the request itself) may go.
+    droppable = Enum.drop(turns, -5)
+
+    case {over?(messages, budget), droppable} do
+      {true, [{_, i} | _]} ->
+        drop_old_turns({List.delete_at(messages, i), ["older turns" | cuts]}, budget)
+
+      _ ->
+        {messages, cuts}
+    end
+  end
 end

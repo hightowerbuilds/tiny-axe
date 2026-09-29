@@ -19,7 +19,9 @@ defmodule TinyAxe.Ops.Journal do
 
   A plan whose journal has no closing event was interrupted: tiny-axe stopped
   partway through it. Plans are pruned to the newest 20 within 30 days, except
-  interrupted ones, which are kept until the user deals with them.
+  interrupted ones, which are kept until the user deals with them. Pruning
+  deletes a plan's journal and backups, but moves anything in its `trash/` to
+  the system Trash.
 
   One process owns the files, so journal writes never interleave.
   """
@@ -234,6 +236,20 @@ defmodule TinyAxe.Ops.Journal do
     |> Enum.reject(&(&1.status == :interrupted))
     |> Enum.with_index()
     |> Enum.filter(fn {plan, i} -> i >= @keep_plans or plan.at < cutoff end)
-    |> Enum.each(fn {plan, _} -> File.rm_rf(plan.dir) end)
+    |> Enum.each(fn {plan, _} -> forget(plan) end)
+  end
+
+  # An old plan's journal and backups go. What undo set aside in its trash/
+  # (versions tiny-axe wrote, copies it made) goes to the system Trash, so
+  # nothing tiny-axe took away is ever deleted outright.
+  defp forget(plan) do
+    trash = Path.join(plan.dir, "trash")
+
+    case File.ls(trash) do
+      {:ok, entries} -> Enum.each(entries, &TinyAxe.Ops.discard(Path.join(trash, &1)))
+      {:error, _} -> :ok
+    end
+
+    File.rm_rf(plan.dir)
   end
 end

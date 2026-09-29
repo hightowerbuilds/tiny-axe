@@ -53,7 +53,7 @@ defmodule Mix.Tasks.TinyAxe.Install do
 
     File.mkdir_p!(bin)
     launcher = Path.join(bin, "tiny-axe")
-    # Removed first, so an old symlink (e.g. to this repo's bin/tiny-axe) is
+    # Removed first, so an old symlink (e.g. to this repo's bin/tiny-axe-dev) is
     # replaced rather than written through.
     File.rm(launcher)
     extra_path = elixir_paths()

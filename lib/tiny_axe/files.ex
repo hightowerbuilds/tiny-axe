@@ -38,8 +38,7 @@ defmodule TinyAxe.Files do
     end
   end
 
-  @spec inside_project?(String.t()) :: boolean()
-  def inside_project?(abs) do
+  defp inside_project?(abs) do
     abs = Path.expand(abs)
     abs != root() and String.starts_with?(abs, root() <> "/")
   end
@@ -171,6 +170,59 @@ defmodule TinyAxe.Files do
         do: [],
         else: [%{path: display(abs), abs: abs, old: old, new: content}]
     end)
+  end
+
+  @doc "Hash of a file's whole contents, or nil if it can't be read."
+  @spec hash(String.t()) :: String.t() | nil
+  def hash(abs) do
+    case File.read(abs) do
+      {:ok, content} -> TinyAxe.Ops.hash(content)
+      {:error, _} -> nil
+    end
+  end
+
+  @doc """
+  Splits proposed edits into those safe to offer and those refused, with the
+  reason. An edit is only safe if it was written from the version of the file
+  the model was given: `given.snapshots` maps each file given to the model to
+  the hash of its contents then, and `given.partial` holds files it only saw
+  part of. Refused:
+
+    * a file the model saw only part of (its rewrite would drop the rest)
+    * a file that changed while the model was writing (the rewrite is based on
+      an older version)
+    * an existing file the model was never given (it can't know what's there)
+
+  New files are fine.
+  """
+  @spec against_snapshots([map()], %{partial: MapSet.t(), snapshots: map()}) ::
+          {[map()], [{map(), String.t()}]}
+  def against_snapshots(edits, given) do
+    edits
+    |> Enum.map(fn edit -> {edit, refusal(edit, given)} end)
+    |> Enum.split_with(fn {_edit, reason} -> reason == nil end)
+    |> then(fn {ok, refused} -> {Enum.map(ok, &elem(&1, 0)), refused} end)
+  end
+
+  defp refusal(%{abs: abs, old: old}, given) do
+    cond do
+      abs in given.partial ->
+        "the file was too long to show the model in full, so its rewrite would drop the rest"
+
+      old == nil ->
+        nil
+
+      not Map.has_key?(given.snapshots, abs) ->
+        "the model was never given this file, so it can't know what's in it; " <>
+          "mention it with @#{display(abs)} and ask again"
+
+      TinyAxe.Ops.hash(old) != given.snapshots[abs] ->
+        "it changed while the model was writing, so the rewrite is based on an older version; " <>
+          "ask again to work from the current one"
+
+      true ->
+        nil
+    end
   end
 
   @doc """

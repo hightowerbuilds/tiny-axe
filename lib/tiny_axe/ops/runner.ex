@@ -61,9 +61,6 @@ defmodule TinyAxe.Ops.Runner do
   def undo_plan(id, reply_to \\ self()),
     do: GenServer.call(__MODULE__, {:job, :undo, id, reply_to})
 
-  @spec busy?() :: boolean()
-  def busy?, do: GenServer.call(__MODULE__, :busy?)
-
   ## Server
 
   @impl true
@@ -73,8 +70,6 @@ defmodule TinyAxe.Ops.Runner do
   end
 
   @impl true
-  def handle_call(:busy?, _from, state), do: {:reply, state.job != nil, state}
-
   def handle_call(_request, _from, %{job: job} = state) when job != nil,
     do: {:reply, {:error, :busy}, state}
 

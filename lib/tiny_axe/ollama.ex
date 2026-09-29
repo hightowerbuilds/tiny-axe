@@ -6,9 +6,12 @@ defmodule TinyAxe.Ollama do
   deltas to a callback as they arrive and returns the assembled text.
   """
 
+  @behaviour TinyAxe.Model
+
   @type message :: %{role: String.t(), content: String.t()}
 
   @doc "Non-streaming chat call. Returns the decoded response body."
+  @impl true
   @spec chat([message()], keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts \\ []) do
     body = build_body(messages, false, opts)
@@ -27,6 +30,7 @@ defmodule TinyAxe.Ollama do
   With `on_usage: fun`, `fun` gets `%{prompt_tokens:, output_tokens:, prompt_chars:}`
   when the model finishes. Ollama counts the whole prompt, cached or not.
   """
+  @impl true
   @spec stream_chat([message()], (String.t() -> any()), keyword()) ::
           {:ok, String.t()} | {:error, term()}
   def stream_chat(messages, on_delta, opts \\ []) do
@@ -84,7 +88,18 @@ defmodule TinyAxe.Ollama do
     with fun when is_function(fun, 1) <- Keyword.get(opts, :on_usage),
          tokens when is_integer(tokens) <- final["prompt_eval_count"] do
       chars = messages |> Enum.map(&String.length(&1.content)) |> Enum.sum()
-      fun.(%{prompt_tokens: tokens, output_tokens: final["eval_count"] || 0, prompt_chars: chars})
+      # Ollama reports its own timings in nanoseconds: loading the model,
+      # reading the prompt, and generating.
+      ms = fn key -> div(final[key] || 0, 1_000_000) end
+
+      fun.(%{
+        prompt_tokens: tokens,
+        output_tokens: final["eval_count"] || 0,
+        prompt_chars: chars,
+        load_ms: ms.("load_duration"),
+        prompt_ms: ms.("prompt_eval_duration"),
+        generate_ms: ms.("eval_duration")
+      })
     end
   end
 

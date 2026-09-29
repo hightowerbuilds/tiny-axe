@@ -610,9 +610,12 @@ defmodule TinyAxe.Ops do
         trash_notes(path, trash, nil)
 
       true ->
-        # Keep the version being undone too, in case the user wanted it after all.
-        _ = trash_notes(path, trash, nil)
-        note(File.cp(r["backup"], path), path)
+        # Move the version being undone aside first (the user may want it after
+        # all); if that fails, leave everything as it is rather than overwrite it.
+        case trash_notes(path, trash, nil) do
+          [] -> note(File.cp(r["backup"], path), path)
+          notes -> notes ++ ["#{show(path)} was left as it is, so nothing was lost"]
+        end
     end
   end
 
@@ -632,12 +635,12 @@ defmodule TinyAxe.Ops do
         do: Path.relative_to(path, root()),
         else: String.trim_leading(show(path), "~/") |> String.trim_leading("/")
 
-    dest = Path.join(trash, rel)
-    File.mkdir_p!(Path.dirname(dest))
-    dest = unique(dest)
+    dest = unique(Path.join(trash, rel))
 
+    # Failures come back as notes, never a crash mid-undo.
     result =
-      with {:error, :exdev} <- File.rename(path, dest),
+      with :ok <- File.mkdir_p(Path.dirname(dest)),
+           {:error, :exdev} <- File.rename(path, dest),
            {:ok, _} <- File.cp_r(path, dest),
            {:ok, _} <- File.rm_rf(path),
            do: :ok
@@ -661,9 +664,8 @@ defmodule TinyAxe.Ops do
   @spec hash(String.t()) :: String.t()
   def hash(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
-  @doc "Hash of a file's contents; a folder hashes its sorted listing; nil if missing."
-  @spec hash_path(String.t()) :: String.t() | nil
-  def hash_path(path) do
+  # Hash of a file's contents; a folder hashes its sorted listing; nil if missing.
+  defp hash_path(path) do
     cond do
       File.regular?(path) ->
         path |> File.read!() |> hash()
@@ -681,6 +683,24 @@ defmodule TinyAxe.Ops do
   end
 
   ## The system Trash
+
+  @doc """
+  Moves a path to the system Trash (with its `.trashinfo`), for things
+  tiny-axe itself is discarding, like an old plan's own trash.
+  """
+  @spec discard(String.t()) :: :ok | {:error, term()}
+  def discard(path) do
+    {dest, info} = reserve_trash_name(path)
+
+    case relocate(path, dest) do
+      :ok ->
+        :ok
+
+      error ->
+        File.rm(info)
+        error
+    end
+  end
 
   defp reserve_trash_name(path, n \\ 0) do
     files = Path.join(trash_dir(), "files")

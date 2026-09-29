@@ -37,21 +37,46 @@ case compiled do
 
     doc_modules = Enum.filter(modules, &(inspect(Code.fetch_docs(&1)) =~ "iex>"))
 
-    doc_modules
-    |> Enum.with_index()
-    |> Enum.each(fn {mod, i} ->
-      Module.create(
-        :"Elixir.TinyAxeDoctest#{i}",
-        quote do
-          use ExUnit.Case
-          doctest unquote(mod)
-        end,
-        Macro.Env.location(__ENV__)
-      )
-    end)
+    # A doctest that isn't valid Elixir (say, an expected value of `%{[]}`)
+    # raises while its test is built; report it rather than crash.
+    doctest_errors =
+      doc_modules
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {mod, i} ->
+        {result, logged} =
+          ExUnit.CaptureIO.with_io(:stderr, fn ->
+            try do
+              Module.create(
+                :"Elixir.TinyAxeDoctest#{i}",
+                quote do
+                  use ExUnit.Case
+                  doctest unquote(mod)
+                end,
+                Macro.Env.location(__ENV__)
+              )
+
+              :ok
+            rescue
+              e -> {:error, Exception.message(e)}
+            end
+          end)
+
+        case result do
+          :ok -> []
+          # The compiler logs the real error and raises a generic one.
+          {:error, message} -> [String.trim(logged) |> case do "" -> message; l -> l end]
+        end
+      end)
 
     %{total: total, failures: failures} =
-      if doc_modules == [], do: %{total: 0, failures: 0}, else: ExUnit.run()
+      if doc_modules == [] or doctest_errors != [], do: %{total: 0, failures: 0}, else: ExUnit.run()
 
-    report.(%{compiled: true, errors: [], warnings: format.(w ++ rw), doctests: total, failures: failures})
+    report.(%{
+      compiled: true,
+      errors: [],
+      warnings: format.(w ++ rw),
+      doctest_errors: doctest_errors,
+      doctests: total,
+      failures: failures
+    })
 end

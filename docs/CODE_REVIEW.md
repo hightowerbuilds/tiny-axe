@@ -16,7 +16,21 @@ when the fix is removed:
 | 2 | Hidden-folder bypass via `cd` | "Hidden" is measured from the home folder, whatever the location (`Ops.hidden?/1`). Commands won't run in a hidden folder. `cd` into one still works for reading, and says it's read-only. All four probes below are now refused. |
 | 3 | Project edits bypass the rules | `y`/`n` now only record the decision. Accepted edits run together as one journaled plan through `Ops.Runner`, with the same rules, backups and `ctrl+z` undo as file plans. `Files.write/3` is gone. |
 
-Open: #4–#14 and the cleanup list below.
+Fixed next, working through the review in order:
+
+| # | Finding | Fix |
+|---|---|---|
+| 4 | Decider failures swallowed | Scores are read through `Decider.p/2` and `Decider.yes?/3`, and a missing or unknown score is `nil`, never a stand-in number. That mattered more than the review said: in Elixir `nil >= 0.5` is `true`, so at every `p >= 0.5` routing check (web, files, edits, navigation), a missing score would have *switched the feature on*. The local decider now returns "unknown" when under 5% of its probability landed on valid labels (the harness review's F1). Reviews show "reviewer unavailable: check this yourself", nothing is retried on a missing score, and the transcript notes, once per request, which decision couldn't be made. |
+| 5 | Unknown events crash the TUI | A catch-all logs and ignores them. |
+| 8 | Pruning deleted tiny-axe's trash | Pruning moves an old plan's `trash/` to the system Trash (`Ops.discard/1`); journals and backups still go. |
+| 9 | Suppressed note in undo | If the undone version can't be set aside, the file is left alone and the user is told. Setting aside no longer crashes on a folder it can't create. |
+| 12 | Height cache survives `ctrl+l` | `ctrl+l` clears it. |
+| 14 | Scattered thresholds | Every decision threshold is in `config.exs`, with a comment (`route_threshold`, `false_claim_threshold`, `review_threshold`, `relevance_threshold`, `change_threshold`, `navigate_min`), as is the `:file_ops` switch. |
+| — | Dead and orphaned code | Done, see the table below. |
+| 6 | No tests for the core | The model is behind a `TinyAxe.Model` behaviour, and scripted fakes of the model and decider (`test/support/scripted.ex`) drive `Pipeline`, `Organizer` and `Commander` in tests: answering, false claims, unknown verdicts, the best attempt, routing, plans, commands, conversation context, file budgets, stale edits. `mix tiny_axe.eval` checks the real model end to end. |
+
+Open: #7 (app-wide state), #10 (the TUI's size), #11 (duplication),
+#13 (the Chrome fallback).
 
 A scrolling test failed intermittently during the fixes and couldn't be
 reproduced afterwards (8 module runs, 4 full runs). The likely cause, a test in
@@ -41,17 +55,17 @@ test moved to a non-async module. That is another instance of #7.
 | 1 | **Critical** ✓ fixed | Code checks are broken in the installed copy: every Elixir answer "fails" |
 | 2 | **High** ✓ fixed | The hidden-folder rule can be bypassed by `cd`-ing into a hidden folder |
 | 3 | **High** ✓ fixed | Project edits ignore the hidden-folder rule, and aren't journaled or undoable |
-| 4 | Medium | Decider failures are swallowed in 10 places, so a Jev outage is invisible |
-| 5 | Medium | The TUI has no catch-all for events: an unknown event crashes it |
-| 6 | Medium | The core, `Pipeline` and `Organizer`, has no automated tests |
+| 4 | Medium ✓ fixed | Decider failures are swallowed in 10 places, so a Jev outage is invisible |
+| 5 | Medium ✓ fixed | The TUI has no catch-all for events: an unknown event crashes it |
+| 6 | Medium ✓ fixed | The core, `Pipeline` and `Organizer`, has no automated tests |
 | 7 | Medium | App-wide mutable state (`Location`, `Session`, app env) makes behaviour and tests order-dependent |
-| 8 | Medium | Journal pruning permanently deletes tiny-axe's own trash and backups |
-| 9 | Low | A suppressed note in undo |
+| 8 | Medium ✓ fixed | Journal pruning permanently deletes tiny-axe's own trash and backups |
+| 9 | Low ✓ fixed | A suppressed note in undo |
 | 10 | Low | `TUI` is a 1,550-line module doing everything |
 | 11 | Low | Duplicated logic, including two sandboxes with different rules |
-| 12 | Low | A side effect in `render`: the height cache in the process dictionary |
+| 12 | Low ✓ fixed | A side effect in `render`: the height cache in the process dictionary |
 | 13 | Low | The headless-Chrome fallback is untested and runs outside bubblewrap |
-| 14 | Low | Scattered magic thresholds; confusable config names |
+| 14 | Low ✓ fixed | Scattered magic thresholds; confusable config names |
 | — | Cleanup | Dead and orphaned code: see the list at the end |
 
 ---
@@ -280,16 +294,17 @@ sandboxed, or remove it until a page actually needs it.
 
 | Item | Status | Action |
 |---|---|---|
-| `lib/tiny_axe.ex` (`TinyAxe.hello/0`) | the untouched `mix new` "hello world"; nothing calls it | delete |
-| `Ops.Runner.busy?/0` | no callers in `lib/` or `test/` | delete |
-| `Ops.Runner.undo_last/1` | only a test calls it; the TUI uses `undo_plan/2` | keep for tests or delete; say which |
-| `Location.reset/0` | only tests call it; **its docs claim `ctrl+l` does** | fix the docs, or make `ctrl+l` reset it |
-| `Decider.Local.ask/2` | public, but only called inside its module | make private |
-| `Files.inside_project?/1`, `Ops.hash_path/1`, `Ops.trash_dir/0`, `Journal.state_dir/0`, `Context.estimate/2`, `Decider.Jev.api_key/0,1` | public but used only within their own module (or tests) | make private, or `@doc false` |
+| `lib/tiny_axe.ex` (`TinyAxe.hello/0`) | the untouched `mix new` "hello world"; nothing calls it | ✓ deleted |
+| `Ops.Runner.busy?/0` | no callers in `lib/` or `test/` | ✓ deleted |
+| `Ops.Runner.undo_last/1` | only a test calls it; the TUI uses `undo_plan/2` | kept: public API for "undo the newest plan" |
+| `Location.reset/0` | only tests call it; **its docs claim `ctrl+l` does** | ✓ docs fixed (`ctrl+l` doesn't move) |
+| `Decider.Local.ask/2` | public, but only called inside its module | ✓ private |
+| `Files.inside_project?/1`, `Ops.hash_path/1`, `Decider.Jev.api_key/0,1` | public but used only within their own module | ✓ private |
+| `Ops.trash_dir/0`, `Journal.state_dir/0`, `Context.estimate/2` | documented accessors (and tests use `estimate`) | kept public |
 | `Web.parse_*`, `Web.unwrap_*`, `CodeCheck.extract/1`, `Commander.check/2`, `Decider.Local.label_distribution/2` | public test seams, already `@doc false` or documented | fine |
-| `config/config.exs` comment: "`:project_dir` defaults to the current directory" | stale: `mix tiny_axe` now starts at home | update |
+| `config/config.exs` comment: "`:project_dir` defaults to the current directory" | stale: `mix tiny_axe` now starts at home | ✓ updated |
 | `Files.write/3` | dead once #3 routed edits through `Ops` | ✓ removed |
-| `bin/tiny-axe` (dev launcher) | still useful for development, but shares the installed command's name | rename (e.g. `bin/tiny-axe-dev`) |
+| `bin/tiny-axe` (dev launcher) | still useful for development, but shares the installed command's name | ✓ renamed `bin/tiny-axe-dev` |
 
 ## Suppressed code, the full list
 
@@ -301,7 +316,7 @@ sandboxed, or remove it until a page actually needs it.
 | `rescue ErlangError` | `tiny_axe.install` (mise missing → no extra PATH) | fine |
 | Unchecked `File.rm`/`rm_rf` | 11 sites, all cleanup of temp files; 3 (`.trashinfo` in settle/undo) could leave a stale Trash entry | acceptable; note it |
 | `@moduletag :capture_log` | recovery and crash tests | fine: the crashes are deliberate |
-| Tests skipped without bubblewrap | code-check, shell and command tests `{:skip, …}`; `location_test` uses `flunk` instead | make consistent |
+| Tests skipped without bubblewrap | code-check, shell and command tests `{:skip, …}`; `location_test` used `flunk` | ✓ consistent (skip) |
 | `check_command_outcome: false` in tests | the "did it work?" judgment is only live-tested | covered by #6 |
 
 ## What's in good shape

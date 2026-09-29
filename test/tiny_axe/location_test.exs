@@ -91,22 +91,26 @@ defmodule TinyAxe.LocationTest do
     assert String.ends_with?(shown, "code/tiny-app")
   end
 
-  @tag :sandbox
-  test "after commands, the location follows a successful `cd x && …`", %{repo: repo} do
-    if not TinyAxe.Shell.available?(), do: flunk("bwrap not installed")
+  describe "after commands" do
+    # Like the other sandbox tests: skipped, not failed, without bubblewrap.
+    setup do
+      if TinyAxe.Shell.available?(), do: :ok, else: {:skip, "bwrap not installed"}
+    end
 
-    plan = %{
-      request: "set up web",
-      dir: repo,
-      commands: [%{command: "cd web && true", review: 0.9}],
-      review: 0.9
-    }
+    test "the location follows a successful `cd x && …`", %{repo: repo} do
+      plan = %{
+        request: "set up web",
+        dir: repo,
+        commands: [%{command: "cd web && true", review: 0.9}],
+        review: 0.9
+      }
 
-    me = self()
-    TinyAxe.Commander.execute(plan, &send(me, &1))
+      me = self()
+      TinyAxe.Commander.execute(plan, &send(me, &1))
 
-    assert_received {:moved, %{to: to}}
-    assert String.ends_with?(to, "code/tiny-app/web")
-    assert Location.current() == Path.join(repo, "web")
+      assert_received {:moved, %{to: to}}
+      assert String.ends_with?(to, "code/tiny-app/web")
+      assert Location.current() == Path.join(repo, "web")
+    end
   end
 end

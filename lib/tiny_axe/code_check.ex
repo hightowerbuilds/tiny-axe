@@ -11,8 +11,9 @@ defmodule TinyAxe.CodeCheck do
   Code that uses a package the sandbox doesn't have (say, `use ExRatatui.App`)
   is skipped rather than failed, since no fix to the code could make it compile.
 
-  All blocks of the first supported language are concatenated into one file,
-  skipping blocks that are shell sessions or IEx transcripts rather than source.
+  All blocks of the first supported language that define a module (Elixir) or
+  a function or class (Python) are concatenated into one file. Shell sessions,
+  IEx transcripts and illustrative snippets that define nothing aren't checked.
   """
 
   alias TinyAxe.Sandbox
@@ -63,14 +64,17 @@ defmodule TinyAxe.CodeCheck do
   def run(text) do
     with {:enabled, true} <- {:enabled, Application.get_env(:tiny_axe, :code_check, true)},
          [_ | _] = blocks <- extract(text),
+         [_ | _] = blocks <- Enum.filter(blocks, &defines?/1),
          {:sandbox, true} <- {:sandbox, Sandbox.available?()} do
       check(blocks)
     else
       {:enabled, _} ->
         {:skipped, "disabled"}
 
-      [] ->
-        {:skipped, "no Elixir or Python code"}
+      [] when is_binary(text) ->
+        if extract(text) == [],
+          do: {:skipped, "no Elixir or Python code"},
+          else: {:skipped, "only illustrative snippets: no module or function is defined"}
 
       {:sandbox, false} ->
         {:skipped, "bubblewrap (bwrap) not installed; refusing to run unsandboxed"}
@@ -95,6 +99,12 @@ defmodule TinyAxe.CodeCheck do
       [{lang, _} | _] -> Enum.filter(blocks, &(elem(&1, 0) == lang))
     end
   end
+
+  # A block that defines nothing, like `expression |> function(arg1, ...)` in an
+  # explanation, is an illustration: there is nothing in it to test, and
+  # compiling it fails for reasons no fix to the answer should address.
+  defp defines?({:elixir, code}), do: code =~ ~r/^\s*defmodule\s/m
+  defp defines?({:python, code}), do: code =~ ~r/^\s*(async\s+def|def|class)\s/m
 
   defp source?(code) do
     not String.match?(String.trim_leading(code), ~r/^(iex(\(\d+\))?>|\$ |>>> |mix |pip )/)
@@ -180,20 +190,26 @@ defmodule TinyAxe.CodeCheck do
 
   # `details` is ExUnit's output, which only matters when doctests fail.
   defp elixir_result(
-         %{"warnings" => warnings, "failures" => f, "doctests" => t},
+         %{"warnings" => warnings, "failures" => f, "doctests" => t} = r,
          details,
          public?
        ) do
+    warnings = Enum.reject(warnings, &harmless?(&1, warnings))
+    unreadable = Map.get(r, "doctest_errors", [])
+
     problems =
       [
         warnings != [] && "#{length(warnings)} compiler warning(s)",
-        f > 0 && "#{f}/#{t} doctests failed"
+        f > 0 && "#{f}/#{t} doctests failed",
+        unreadable != [] && "a doctest isn't valid Elixir"
       ]
       |> Enum.filter(& &1)
 
     cond do
       problems != [] ->
-        output = Enum.join(warnings, "\n") <> if(f > 0, do: "\n\n" <> details, else: "")
+        output =
+          Enum.join(warnings ++ unreadable, "\n") <> if(f > 0, do: "\n\n" <> details, else: "")
+
         failed(:elixir, Enum.join(problems, ", "), output)
 
       t == 0 and public? ->
@@ -204,6 +220,28 @@ defmodule TinyAxe.CodeCheck do
 
       true ->
         passed(:elixir, "compiled cleanly, #{t}/#{t} doctests passed")
+    end
+  end
+
+  # Warnings about a module attribute that's set but never used, or a bare `@x`
+  # statement, which small models sometimes emit as a garbled `@moduledoc`
+  # (`@moduloclear`). Neither can change what the code does, so failing working
+  # code for them only sends the model round again. An undefined attribute
+  # *read* inside a function is nil at runtime, so that one still counts.
+  defp harmless?(warning, all) do
+    cond do
+      warning =~ ~r/module attribute @\w+ was set but never used/ ->
+        true
+
+      warning =~ ~r/module attribute @\w+ in code block has no effect/ ->
+        true
+
+      match = Regex.run(~r/undefined module attribute (@\w+)/, warning) ->
+        attr = List.last(match)
+        Enum.any?(all, &(&1 =~ "module attribute #{attr} in code block has no effect"))
+
+      true ->
+        false
     end
   end
 

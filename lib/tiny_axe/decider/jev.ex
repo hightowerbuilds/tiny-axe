@@ -57,8 +57,7 @@ defmodule TinyAxe.Decider.Jev do
     end
   end
 
-  @doc false
-  def api_key(config \\ Application.get_env(:tiny_axe, :jev, [])) do
+  defp api_key(config) do
     case config[:api_key] do
       key when is_binary(key) -> if (key = String.trim(key)) != "", do: key
       _ -> nil

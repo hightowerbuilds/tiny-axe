@@ -21,7 +21,7 @@ defmodule TinyAxe.Commander do
   just before `:done`.
   """
 
-  alias TinyAxe.{Decider, Files, Location, Ollama, Ops, Organizer, Shell}
+  alias TinyAxe.{Decider, Files, Location, Model, Ollama, Ops, Organizer, Shell}
 
   @max_rounds 4
 
@@ -43,7 +43,7 @@ defmodule TinyAxe.Commander do
       %{role: "user", content: first_message(history, prompt)}
     ]
 
-    case plan(messages, prompt, notify, 1, false) do
+    case plan(messages, TinyAxe.Pipeline.context(history, prompt), notify, 1, false) do
       {:ok, plan, reply} ->
         notify.({:command_plan, plan})
         notify.({:done, summary(reply, plan)})
@@ -58,7 +58,7 @@ defmodule TinyAxe.Commander do
     :ok
   end
 
-  defp plan(messages, _prompt, _notify, round, _reviewed?) when round > @max_rounds do
+  defp plan(messages, _context, _notify, round, _reviewed?) when round > @max_rounds do
     problems = List.last(messages).content |> String.split("\n\n") |> hd()
 
     {:reply,
@@ -66,9 +66,9 @@ defmodule TinyAxe.Commander do
        problems <> "\n\nCould you say more precisely what you'd like?"}
   end
 
-  defp plan(messages, prompt, notify, round, reviewed?) do
+  defp plan(messages, context, notify, round, reviewed?) do
     with {:ok, %{"message" => %{"content" => json}}} <-
-           Ollama.chat(messages, format: @schema, options: [temperature: 0.2]),
+           Model.chat(messages, format: @schema, options: [temperature: 0.2]),
          {:ok, answer} <- JSON.decode(json) do
       commands = answer |> Map.get("commands", []) |> List.wrap() |> Enum.map(&String.trim/1)
       commands = Enum.reject(commands, &(&1 == ""))
@@ -80,7 +80,7 @@ defmodule TinyAxe.Commander do
       else
         case check(Location.current(), commands) do
           {:ok, dir} ->
-            review(dir, commands, reply, messages, prompt, notify, round, reviewed?)
+            review(dir, commands, reply, messages, context, notify, round, reviewed?)
 
           {:error, problems} ->
             notify.({:command_problems, problems})
@@ -90,7 +90,7 @@ defmodule TinyAxe.Commander do
 
             plan(
               messages ++ [user(fix <> "\n\nReply with corrected JSON.")],
-              prompt,
+              context,
               notify,
               round + 1,
               reviewed?
@@ -157,7 +157,7 @@ defmodule TinyAxe.Commander do
     abs != Ops.root() and not Ops.hidden?(abs) and (abs == Files.root() or Ops.changeable?(abs))
   end
 
-  defp review(dir, commands, reply, messages, prompt, notify, round, reviewed?) do
+  defp review(dir, commands, reply, messages, context, notify, round, reviewed?) do
     listing =
       commands |> Enum.with_index(1) |> Enum.map_join("\n", fn {c, i} -> "#{i}. $ #{c}" end)
 
@@ -180,7 +180,8 @@ defmodule TinyAxe.Commander do
       })
 
     state = %{
-      request: prompt,
+      request: context.request,
+      recent_conversation: Map.get(context, :recent_conversation, ""),
       working_folder: Ops.show(dir),
       current_folder: Ops.show(Location.current()),
       commands: listing,
@@ -192,53 +193,59 @@ defmodule TinyAxe.Commander do
 
     case Decider.decide(state, questions) do
       {:ok, answers} ->
-        scores = Enum.map(Enum.with_index(commands), fn {_, i} -> answers[:"cmd_#{i}"].noul end)
-        score = Enum.min([answers.complete.noul, answers.right_folder.noul | scores])
+        scores =
+          Enum.map(Enum.with_index(commands), fn {_, i} -> Decider.p(answers, :"cmd_#{i}") end)
+
+        complete = Decider.p(answers, :complete)
+        right_folder = Decider.p(answers, :right_folder)
+        all = [complete, right_folder | scores]
+        # Any unknown makes the whole review unknown: a weakest link can't be missing.
+        score = if nil in all, do: nil, else: Enum.min(all)
         notify.({:review, score})
+        if score == nil, do: notify.({:decider_unavailable, "reviewing the commands"})
 
         plan = %{
-          request: prompt,
+          request: context.request,
           dir: dir,
           commands: Enum.zip_with(commands, scores, &%{command: &1, review: &2}),
           review: score
         }
 
-        if score < 0.5 and not reviewed? do
+        if is_number(score) and score < Decider.review_threshold() and not reviewed? do
           doubtful =
             for {c, p} <- Enum.zip(commands, scores),
-                p < 0.5,
+                p < Decider.review_threshold(),
                 do: "- probably not needed (#{pct(p)}): $ #{c}"
 
           missing =
-            if answers.complete.noul < 0.5,
-              do: ["- together they may not do everything asked (#{pct(answers.complete.noul)})"],
+            if complete < Decider.review_threshold(),
+              do: ["- together they may not do everything asked (#{pct(complete)})"],
               else: []
 
           missing =
-            if answers.right_folder.noul < 0.5,
+            if right_folder < Decider.review_threshold(),
               do:
-                missing ++
-                  [
-                    "- #{Ops.show(dir)} may be the wrong folder (#{pct(answers.right_folder.noul)})"
-                  ],
+                missing ++ ["- #{Ops.show(dir)} may be the wrong folder (#{pct(right_folder)})"],
               else: missing
 
           feedback =
             "A reviewer checked the commands against the request:\n" <>
               Enum.join(doubtful ++ missing, "\n") <> "\n\nReply with corrected JSON."
 
-          plan(messages ++ [user(feedback)], prompt, notify, round + 1, true)
+          plan(messages ++ [user(feedback)], context, notify, round + 1, true)
         else
           {:ok, plan, reply}
         end
 
-      _ ->
+      {:error, _} ->
+        notify.({:decider_unavailable, "reviewing the commands"})
+
         {:ok,
          %{
-           request: prompt,
+           request: context.request,
            dir: dir,
            commands: Enum.map(commands, &%{command: &1, review: nil}),
-           review: 0.5
+           review: nil
          }, reply}
     end
   end
@@ -256,6 +263,17 @@ defmodule TinyAxe.Commander do
   """
   @spec execute(map(), (term() -> any())) :: :ok
   def execute(plan, notify) do
+    # Re-checked at the moment of running, not only when planned: the folder
+    # or the rules may have changed while the plan waited for approval.
+    case check(plan.dir, Enum.map(plan.commands, & &1.command)) do
+      {:ok, _} -> run_commands(plan, notify)
+      {:error, problems} -> notify.({:cmds_refused, problems})
+    end
+
+    :ok
+  end
+
+  defp run_commands(plan, notify) do
     results =
       plan.commands
       |> Enum.with_index()
@@ -322,10 +340,10 @@ defmodule TinyAxe.Commander do
       }
     }
 
-    case Decider.decide(%{request: request, commands_and_output: ran}, question) do
-      {:ok, %{worked: %{noul: p}}} -> p
-      _ -> nil
-    end
+    # :unavailable (the decider couldn't judge) is not the same as nil (checking is off).
+    %{request: request, commands_and_output: ran}
+    |> Decider.decide(question)
+    |> Decider.p(:worked) || :unavailable
   end
 
   ## What the model sees
@@ -399,5 +417,6 @@ defmodule TinyAxe.Commander do
   end
 
   defp user(content), do: %{role: "user", content: content}
-  defp pct(p), do: "#{round(p * 100)}%"
+  defp pct(p) when is_number(p), do: "#{round(p * 100)}%"
+  defp pct(_), do: "?"
 end

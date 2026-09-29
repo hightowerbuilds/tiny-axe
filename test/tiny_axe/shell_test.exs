@@ -98,6 +98,30 @@ defmodule TinyAxe.ShellTest do
       assert p =~ "outside hidden folders"
     end
 
+    test "approved commands are re-checked when they run, and refused if the rules now say no",
+         %{home: home} do
+      dir = Path.join(home, "work")
+      File.mkdir_p!(dir)
+
+      plan = %{
+        request: "x",
+        dir: dir,
+        commands: [%{command: "touch ran.txt", review: 0.9}],
+        review: 0.9
+      }
+
+      # Between approval and running, the folder becomes hidden.
+      hidden = Path.join(home, ".work")
+      File.rename!(dir, hidden)
+      me = self()
+      Commander.execute(%{plan | dir: hidden}, &send(me, &1))
+
+      assert_received {:cmds_refused, [problem]}
+      assert problem =~ "outside hidden folders"
+      refute_received {:cmd_start, _, _}
+      refute File.exists?(Path.join(hidden, "ran.txt"))
+    end
+
     test "sends a scaffolder aimed at a non-empty folder to a subfolder instead", %{
       project: project
     } do

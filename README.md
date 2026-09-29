@@ -35,7 +35,9 @@ cd ~/code/app && tiny-axe          # opens in the folder you run it from
 tiny-axe --dir ~/notes --model gemma4:12b-it-qat --decider local
 ```
 
-This builds a release (it carries its own Erlang runtime, so it doesn't need the repo or `mix`) into `~/.local/share/tiny-axe/release`, and a launcher into `~/.local/bin/tiny-axe`. Settings, such as `TYPESAFE_API_KEY=…`, live in `~/.config/tiny-axe/env`; the first install copies this repo's `.env` there. Logs and plan journals go to `~/.local/state/tiny-axe/`. Run the install again after pulling changes. In development, `mix tiny_axe` (which starts in your home folder) or `bin/tiny-axe` (which starts where you run it) run straight from the repo.
+tiny-axe needs Ollama. If it isn't running when tiny-axe starts, tiny-axe starts it: through your systemd user service (`systemctl --user start ollama`) if you have one, otherwise by running `ollama serve` in the background (logging to `~/.local/state/tiny-axe/ollama.log`). It's left running when you quit. It also warns you if the configured model isn't downloaded. You can open as many copies of tiny-axe as you like at once.
+
+This builds a release (it carries its own Erlang runtime, so it doesn't need the repo or `mix`) into `~/.local/share/tiny-axe/release`, and a launcher into `~/.local/bin/tiny-axe`. Settings, such as `TYPESAFE_API_KEY=…`, live in `~/.config/tiny-axe/env`; the first install copies this repo's `.env` there. Logs and plan journals go to `~/.local/state/tiny-axe/`. Run the install again after pulling changes. In development, `mix tiny_axe` (which starts in your home folder) or `bin/tiny-axe-dev` (which starts where you run it) run straight from the repo.
 
 Keys: `enter` send · `alt+enter` newline · `esc` cancel · `pgup`/`pgdn` scroll (with an empty prompt also `↑`/`↓`, the mouse wheel, `home`/`end`) · `ctrl+y` copy the newest code block (again for older ones) · `ctrl+z` undo the last file plan · `ctrl+k` compact · `ctrl+t` sidebar · `ctrl+l` clear · `ctrl+c` quit. Proposed file edits appear as a diff: `y` accept · `n` skip · `esc` skip the rest · `↑`/`↓` scroll. Accepted edits are saved together as one plan, so `ctrl+z` undoes them.
 
@@ -73,6 +75,15 @@ Requires Ollama running locally. Settings are in `config/config.exs`.
 See the [harness review](docs/harness-review.md) for an assessment of the methodology,
 current reliability gaps, realistic Gemma/Qwen expectations, and a prioritized
 implementation and evaluation plan.
+
+## Evaluation
+
+`mix tiny_axe.eval` runs fixed tasks (`eval/tasks.exs`) through the real model
+and decider, each in a throwaway home folder, and checks the outcomes
+independently of tiny-axe's own judgment: the files a plan leaves, tests
+written with the task, required facts, the planned command, and the route.
+Summaries go to `eval/results/`. See `mix help tiny_axe.eval` for options
+(`--split`, `--only`, `--repeat`, `--model`, `--decider`, `--think`).
 
 ## License
 

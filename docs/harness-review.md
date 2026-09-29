@@ -4,6 +4,33 @@ Review date: 2026-09-28
 Code baseline: `b30ebcf7445da187301bdb9643333e4f22bb0a3b`  
 Status: assessment and proposed work; recommendations are not implemented by this document.
 
+## Progress
+
+Work done since this review. The findings below are left as written.
+
+| Item | Status | What changed |
+| --- | --- | --- |
+| F6 command boundary | Done | Commands never run in the home folder, a hidden folder, or outside home and the project, whatever the current folder. Checked when planned and again just before running. |
+| F7 edit snapshots | Done | The version of each file given to the model is hashed when it's read. An edit is refused if the file changed while the model was writing, was only partly shown, or was never given to it. |
+| F1 unknown decisions | Done | Coverage below 5% is unknown, not a score. `Decider.p/2` and `yes?/3` never treat unknown as yes. Scores are shown as "score N/100", not as percentages of correctness, and a skipped review says so. |
+| F4 conversation context | Done | Routing, the verifier, and plan and command reviews all see the request, the recent conversation, the summary and the current folder. |
+| F5 request budget | Done | Every model request is fitted into the window (attached material shrinks first, then old turns go), and `@mentioned` files share a budget. |
+| Instrumentation and evaluation | Started | Model and decider calls emit telemetry, and Ollama's load, prompt and generation times are recorded. `mix tiny_axe.eval` runs 17 fixed tasks (11 dev, 6 held out) with independent checks. Grow toward 60–100. |
+| F2 evidence-aware verification | Started | Illustrative snippets are no longer compiled as programs, invalid doctests are reported instead of crashing the checker, harmless attribute warnings don't fail code, and the fix prompt says a failing example may be the wrong part. Measured: a passing code check was right 5/5 times, a failing one only 3/7 (the rest were wrong doctests on correct code). Evidence states and telling wrong examples from wrong code are next. |
+| F3 retrieval and project validation | Open | |
+| P2 tuning | Open | Needs a larger task set first. |
+
+Results are in `eval/results/`. The first runs showed three harness problems,
+each fixed and re-measured:
+
+- "How do I move a file?" was sent to the file organizer.
+- Explanations' illustrative fragments were compiled as programs and "fixed"
+  twice.
+- The model's own doctests contradicted the request.
+
+Two of these came from held-out tasks, so the held-out set is no longer blind
+to them.
+
 ## Assessment
 
 tiny-axe is a promising harness for small, bounded tasks, with thoughtful recovery
