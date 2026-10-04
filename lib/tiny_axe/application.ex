@@ -25,6 +25,17 @@ defmodule TinyAxe.Application do
         TinyAxe.Location,
         # Counts calls that leave the machine and keeps the subscriptions' usage.
         TinyAxe.Escalation,
+        # The user's MCP servers, one supervised connection each (TinyAxe.MCP).
+        {Registry, keys: :unique, name: TinyAxe.MCP.Registry},
+        {DynamicSupervisor, name: TinyAxe.MCP.Supervisor, strategy: :one_for_one},
+        # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
+        TinyAxe.Tools.Gate,
+        {Bandit,
+         plug: TinyAxe.Tools.GatePlug,
+         ip: {127, 0, 0, 1},
+         port: 0,
+         startup_log: false,
+         thousand_island_options: [supervisor_options: [name: TinyAxe.Tools.GateHTTP]]},
         %{
           id: TinyAxe.Ops.Supervisor,
           type: :supervisor,
@@ -37,7 +48,13 @@ defmodule TinyAxe.Application do
           do: [{TinyAxe.TUI, halt_on_exit: true}],
           else: []
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: TinyAxe.Supervisor)
+    result = Supervisor.start_link(children, strategy: :one_for_one, name: TinyAxe.Supervisor)
+
+    # Connecting to MCP servers can take a while; the TUI doesn't wait for it.
+    if Application.get_env(:tiny_axe, :start_tui, false),
+      do: Task.start(fn -> TinyAxe.MCP.start_configured() end)
+
+    result
   end
 
   # Starts Ollama if it isn't running, and checks the model is downloaded. What

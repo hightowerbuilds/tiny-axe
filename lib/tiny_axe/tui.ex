@@ -92,6 +92,8 @@ defmodule TinyAxe.TUI do
        # one first needs to), true or false. And the question being asked.
        remote: nil,
        asking: nil,
+       # An agent's tool call waiting for y / a / n (TinyAxe.Tools.Gate).
+       tool_ask: nil,
        status: "ready",
        # :bottom follows new output; a line number keeps the view on that line.
        scroll: :bottom,
@@ -171,6 +173,40 @@ defmodule TinyAxe.TUI do
     ]
 
     popup(" use a bigger model? ", lines, 0, area)
+  end
+
+  defp overlay(%{tool_ask: ask}, area) when ask != nil do
+    args =
+      case ask.args do
+        args when args == %{} -> ["(no arguments)"]
+        args -> args |> JSON.encode!() |> pretty_json() |> String.split("\n")
+      end
+
+    lines =
+      [
+        Line.new([
+          Span.new("The agent wants to use ", style: %Style{modifiers: [:bold]}),
+          Span.new(ask.tool, style: %Style{fg: :cyan, modifiers: [:bold]})
+        ]),
+        styled(
+          "from the #{ask.server} MCP server · #{TinyAxe.Tools.Policy.describe(ask.class)}",
+          :yellow
+        ),
+        styled(""),
+        ask.description && styled(ask.description, :dark_gray),
+        ask.description && styled(""),
+        styled("With:", nil, [:bold])
+      ]
+      |> Enum.filter(& &1)
+
+    body = Enum.map(args, &styled("  " <> &1))
+
+    footer = [
+      styled(""),
+      styled("y allow once · a allow this tool for the session · n refuse", :dark_gray)
+    ]
+
+    popup(" allow this tool call? ", lines ++ body ++ footer, 0, area)
   end
 
   defp overlay(%{recovery: plan} = state, area) when plan != nil do
@@ -762,6 +798,26 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  # The agent's call waits for this answer in the gate.
+  defp on_event(%Event.Key{code: code}, %{tool_ask: ask} = state) when ask != nil do
+    answer =
+      case code do
+        "y" -> {:once, "allowed #{ask.tool} once"}
+        "a" -> {:session, "allowed #{ask.tool} for this session"}
+        c when c in ["n", "esc"] -> {:deny, "refused #{ask.tool}"}
+        _ -> nil
+      end
+
+    case answer do
+      {reply, meta} ->
+        send(ask.reply_to, {:tool_answer, ask.ref, reply})
+        {:noreply, %{state | tool_ask: nil, status: "working…"} |> add_meta(meta)}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   # While a popup is on screen, keys answer it instead of going to the prompt.
   defp on_event(%Event.Key{code: code}, %{recovery: plan} = state) when plan != nil do
     action =
@@ -1190,6 +1246,9 @@ defmodule TinyAxe.TUI do
   defp cancel(%{run: {_id, pid}} = state) do
     Process.exit(pid, :kill)
 
+    # A tool call waiting for an answer is refused, so the gate lets it go.
+    if ask = state.tool_ask, do: send(ask.reply_to, {:tool_answer, ask.ref, :deny})
+
     # Killing the task doesn't stop the sandboxed command, so kill that directly.
     state =
       case state.running_cmd do
@@ -1210,6 +1269,7 @@ defmodule TinyAxe.TUI do
         streaming: nil,
         compacting: nil,
         asking: nil,
+        tool_ask: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
@@ -1497,6 +1557,26 @@ defmodule TinyAxe.TUI do
   defp apply_event({:answered_by, %{model: label}}, state),
     do: add_meta(state, "→ answered by #{label}, off this machine")
 
+  ## Agent tool calls (TinyAxe.Tools.Gate)
+
+  defp apply_event({:tool_approval, ask}, state),
+    do: %{state | tool_ask: ask, status: "waiting for your answer…"}
+
+  defp apply_event({:tool_call, %{tool: tool, class: class, args: args}}, state) do
+    shown = if args == %{}, do: "", else: " " <> String.slice(JSON.encode!(args), 0, 120)
+    add_meta(state, "🔧 #{tool}#{shown} (#{TinyAxe.Tools.Policy.describe(class)})")
+  end
+
+  # Results that went through need no line of their own; the answer uses them.
+  defp apply_event({:tool_result, %{decision: d, tool: tool, summary: why}}, state)
+       when d in [:refused, :denied, :failed],
+       do: add_meta(state, "✗ #{tool}: #{why}")
+
+  defp apply_event({:tool_result, _}, state), do: state
+
+  defp apply_event({:tool_limit, %{reason: why}}, state),
+    do: add_meta(state, "⚠ the agent was stopped: #{why}")
+
   defp apply_event({:review, _}, state), do: state
   # Which way the request went; the route line already shows it.
   defp apply_event({:task, _}, state), do: state
@@ -1628,6 +1708,13 @@ defmodule TinyAxe.TUI do
   defp apply_event(event, state) do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
+  end
+
+  defp pretty_json(json) do
+    # Two-space indentation for nested arguments; short ones stay on one line.
+    if String.length(json) < 70,
+      do: json,
+      else: json |> :json.decode() |> :json.format() |> IO.iodata_to_binary()
   end
 
   defp once_per_request(state, text) do

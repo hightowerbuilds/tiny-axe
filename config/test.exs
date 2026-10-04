@@ -13,3 +13,6 @@ config :tiny_axe, check_command_outcome: false
 config :tiny_axe,
   claude_cli: Path.expand("../test/support/fake_cli/claude", __DIR__),
   codex_cli: Path.expand("../test/support/fake_cli/codex", __DIR__)
+
+# No user MCP servers in tests; tests start their own fake ones.
+config :tiny_axe, mcp_config: Path.join(System.tmp_dir!(), "tiny_axe_test_mcp.json")

@@ -74,6 +74,13 @@ config :tiny_axe,
   codex_cli: "codex",
   codex_effort: "low"
 
+# Agent tool calls, all through TinyAxe.Tools.Gate: per task at most this many
+# calls and minutes; an outward call waits this long for the user's answer.
+config :tiny_axe, :tools,
+  max_calls: 60,
+  max_minutes: 30,
+  approval_timeout: 600_000
+
 # Models for each role besides the default (:model). Claude and Codex leave the
 # machine: escalation is tried in order when the local model falls short, and
 # the browser is driven by its own model.

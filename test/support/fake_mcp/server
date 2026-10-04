@@ -1,0 +1,86 @@
+#!/usr/bin/env elixir
+# A stand-in MCP server (stdio) for tests of TinyAxe.MCP and the tool gate.
+#
+# Tools:
+#   echo        read-only: returns its text
+#   card        returns text containing a card number (for redaction)
+#   send_note   open-world: "sends" a note (an outward call)
+#   delete_all  something a policy should deny
+#   slow        waits `ms`, then returns
+#   crash       exits the server
+#   ask_client  sends the client a sampling request, and reports how it was answered
+#   calls       how many tool calls this server has run, by name
+
+defmodule Fake do
+  def tools do
+    [
+      tool("echo", %{text: %{type: "string"}}, %{readOnlyHint: true}),
+      tool("card", %{}, %{readOnlyHint: true}),
+      tool("send_note", %{to: %{type: "string"}, text: %{type: "string"}}, %{openWorldHint: true}),
+      tool("delete_all", %{}, %{destructiveHint: true}),
+      tool("slow", %{ms: %{type: "integer"}}, %{readOnlyHint: true}),
+      tool("crash", %{}, %{}),
+      tool("ask_client", %{}, %{readOnlyHint: true}),
+      tool("calls", %{}, %{readOnlyHint: true})
+    ]
+  end
+
+  defp tool(name, props, ann),
+    do: %{name: name, description: "The #{name} tool.", inputSchema: %{type: "object", properties: props}, annotations: ann}
+
+  def emit(msg), do: IO.puts(JSON.encode!(msg))
+  def text(id, t), do: emit(%{jsonrpc: "2.0", id: id, result: %{content: [%{type: "text", text: t}]}})
+
+  def loop(calls) do
+    case IO.gets("") do
+      :eof -> :ok
+      {:error, _} -> :ok
+      line -> line |> String.trim() |> handle(calls) |> loop()
+    end
+  end
+
+  defp handle("", calls), do: calls
+
+  defp handle(line, calls) do
+    case JSON.decode!(line) do
+      %{"method" => "initialize", "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, result: %{protocolVersion: "2025-06-18", capabilities: %{tools: %{}}, serverInfo: %{name: "fake", version: "0"}}})
+        calls
+
+      %{"method" => "tools/list", "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, result: %{tools: tools()}})
+        calls
+
+      %{"method" => "tools/call", "id" => id, "params" => %{"name" => name} = p} ->
+        args = p["arguments"] || %{}
+        calls = Map.update(calls, name, 1, &(&1 + 1))
+
+        case name do
+          "echo" -> text(id, "echo: " <> (args["text"] || ""))
+          "card" -> text(id, "Your card 4242 4242 4242 4242 was charged; order 1234567890.")
+          "send_note" -> text(id, "note sent to #{args["to"]}")
+          "delete_all" -> text(id, "deleted everything")
+          "slow" -> Process.sleep(args["ms"] || 100) && text(id, "slept")
+          "crash" -> System.halt(3)
+          "calls" -> text(id, JSON.encode!(calls))
+          "ask_client" ->
+            emit(%{jsonrpc: "2.0", id: "from-server-1", method: "sampling/createMessage", params: %{}})
+            reply = JSON.decode!(String.trim(IO.gets("")))
+            text(id, if(reply["error"], do: "client declined", else: "client answered"))
+        end
+
+        calls
+
+      %{"method" => _, "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, error: %{code: -32601, message: "method not found"}})
+        calls
+
+      _notification ->
+        calls
+    end
+  end
+end
+
+# A log line on stderr, as real servers print, must not confuse the client.
+IO.puts(:stderr, "fake MCP server starting")
+Fake.loop(%{})
