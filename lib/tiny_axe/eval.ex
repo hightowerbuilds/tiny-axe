@@ -23,9 +23,13 @@ defmodule TinyAxe.Eval do
     tasks
   end
 
-  @doc "Runs one task and returns its result: checks, route, timings, calls."
-  @spec run_task(task()) :: map()
-  def run_task(task) do
+  @doc """
+  Runs one task and returns its result: checks, route, timings, calls.
+  `opts[:escalate]`: whether a task the local model falls short on may go to
+  the escalation ladder (Claude, Codex); off by default, so runs compare.
+  """
+  @spec run_task(task(), keyword()) :: map()
+  def run_task(task, opts \\ []) do
     root = Path.join(System.tmp_dir!(), "tiny_axe_eval_#{System.unique_integer([:positive])}")
     home = Path.join(root, "home")
 
@@ -33,7 +37,8 @@ defmodule TinyAxe.Eval do
       set_up(task, root, home)
       counters = count_calls()
       t0 = System.monotonic_time(:millisecond)
-      events = run_pipeline(task, t0)
+      remote = if Keyword.get(opts, :escalate, false), do: :allowed, else: :denied
+      events = run_pipeline(task, t0, remote)
       total_ms = System.monotonic_time(:millisecond) - t0
       calls = collect_calls(counters)
       applied = approve_plan(events)
@@ -51,6 +56,13 @@ defmodule TinyAxe.Eval do
         # Whether the first attempt would already have passed, when there were retries.
         first_passed: if(length(texts) > 1, do: answer_checks_pass?(task, hd(texts))),
         verdict: verdict(events),
+        # Models the request went up to, and the one that answered, if not local.
+        escalated: for({_, {:escalate, %{to: to}}} <- events, do: to),
+        answered_by:
+          Enum.find_value(events, fn
+            {_, {:answered_by, %{model: m}}} -> m
+            _ -> nil
+          end),
         plan_applied: applied,
         total_ms: total_ms,
         first_output_ms: first_output_ms(events),
@@ -124,13 +136,14 @@ defmodule TinyAxe.Eval do
 
   ## Running and timing
 
-  defp run_pipeline(task, t0) do
+  defp run_pipeline(task, t0, remote) do
     me = self()
 
     Pipeline.run(
       Map.get(task, :history, []),
       task.prompt,
-      &send(me, {:eval_event, System.monotonic_time(:millisecond) - t0, &1})
+      &send(me, {:eval_event, System.monotonic_time(:millisecond) - t0, &1}),
+      remote: remote
     )
 
     drain([])
@@ -159,9 +172,12 @@ defmodule TinyAxe.Eval do
   end
 
   @doc false
-  def count_call([:tiny_axe, what, :call], %{ms: ms}, _meta, table) do
+  def count_call([:tiny_axe, what, :call], %{ms: ms}, meta, table) do
     :ets.update_counter(table, {what, :count}, 1, {{what, :count}, 0})
     :ets.update_counter(table, {what, :ms}, ms, {{what, :ms}, 0})
+
+    # Calls to Claude or Codex, which leave the machine and use a subscription.
+    if meta[:remote], do: :ets.update_counter(table, {what, :remote}, 1, {{what, :remote}, 0})
   end
 
   defp collect_calls({id, table}) do
@@ -177,6 +193,7 @@ defmodule TinyAxe.Eval do
     result = %{
       model: get.({:model, :count}),
       model_ms: get.({:model, :ms}),
+      remote: get.({:model, :remote}),
       decider: get.({:decider, :count}),
       decider_ms: get.({:decider, :ms})
     }
@@ -457,10 +474,14 @@ defmodule TinyAxe.Eval do
       # Retries that turned a failing first attempt into a pass, and the reverse.
       retry_fixed: Enum.count(results, &(&1.first_passed == false and &1.passed)),
       retry_broke: Enum.count(results, &(&1.first_passed == true and not &1.passed)),
+      # Tasks sent up the ladder, and how many of those then passed.
+      escalated: Enum.count(results, &(Map.get(&1, :escalated, []) != [])),
+      escalated_passed: Enum.count(results, &(Map.get(&1, :escalated, []) != [] and &1.passed)),
       mean_attempts: ratio(Enum.sum(Enum.map(results, & &1.attempts)), length(results)),
       median_ms: percentile(latencies, 0.5),
       p90_ms: percentile(latencies, 0.9),
       model_calls: Enum.sum(Enum.map(results, & &1.calls.model)),
+      remote_calls: Enum.sum(Enum.map(results, &Map.get(&1.calls, :remote, 0))),
       decider_calls: Enum.sum(Enum.map(results, & &1.calls.decider))
     }
   end

@@ -23,6 +23,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Session,
         # The current folder, so it too survives a TUI crash.
         TinyAxe.Location,
+        # Counts calls that leave the machine and keeps the subscriptions' usage.
+        TinyAxe.Escalation,
         %{
           id: TinyAxe.Ops.Supervisor,
           type: :supervisor,

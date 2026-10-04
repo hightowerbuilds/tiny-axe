@@ -11,6 +11,8 @@ defmodule Mix.Tasks.TinyAxe.Eval do
       mix tiny_axe.eval --repeat 3         # each task three times
       mix tiny_axe.eval --model gemma3:12b --decider jev
       mix tiny_axe.eval --think            # let the model think before answering
+      mix tiny_axe.eval --escalate         # let tasks the local model falls short on
+                                           # go to Claude/Codex (uses the subscriptions)
 
   A summary is written to `eval/results/`. The full results, answers included,
   go to the state folder (`eval/` in it), not the repo. Held-out tasks are for
@@ -32,7 +34,8 @@ defmodule Mix.Tasks.TinyAxe.Eval do
           model: :string,
           decider: :string,
           tasks: :string,
-          think: :boolean
+          think: :boolean,
+          escalate: :boolean
         ]
       )
 
@@ -72,11 +75,17 @@ defmodule Mix.Tasks.TinyAxe.Eval do
 
     results =
       for task <- tasks, _ <- 1..repeat do
-        r = Eval.run_task(task)
+        r = Eval.run_task(task, escalate: opts[:escalate] || false)
         Mix.shell().info(line(r))
 
         if r.attempts > 1,
           do: Mix.shell().info("      code checks: #{Enum.join(r.code_checks, " → ")}")
+
+        if r.escalated != [],
+          do:
+            Mix.shell().info(
+              "      escalated to #{Enum.join(r.escalated, " → ")}; answered by #{r.answered_by || "the local model"}"
+            )
 
         if r.error, do: Mix.shell().info("      error: #{r.error}")
         for c <- r.checks, not c.ok, do: Mix.shell().info("      ✗ #{c.check}: #{c.why}")
@@ -92,6 +101,12 @@ defmodule Mix.Tasks.TinyAxe.Eval do
       decider: decider,
       num_ctx: TinyAxe.Context.window(),
       think: Application.get_env(:tiny_axe, :think, false),
+      escalate: opts[:escalate] || false,
+      ladder:
+        if(opts[:escalate],
+          do: Enum.map(TinyAxe.Escalation.ladder(), &TinyAxe.Model.label/1),
+          else: []
+        ),
       revision: revision(),
       split: split,
       repeat: repeat
@@ -142,8 +157,9 @@ defmodule Mix.Tasks.TinyAxe.Eval do
     route accuracy #{s.route_accuracy || "–"}
     verifier: #{s.false_acceptances} false acceptances, #{s.false_rejections} false rejections, #{s.unjudged} unjudged
     retries: #{s.retry_fixed} fixed a failing first attempt, #{s.retry_broke} broke a passing one
+    escalation: #{s.escalated} escalated, #{s.escalated_passed} of them passed
     mean attempts #{s.mean_attempts}, median #{secs(s.median_ms)}, p90 #{secs(s.p90_ms)}
-    calls: model #{s.model_calls}, decider #{s.decider_calls}
+    calls: model #{s.model_calls} (#{s.remote_calls} left the machine), decider #{s.decider_calls}
     """
   end
 
@@ -165,6 +181,8 @@ defmodule Mix.Tasks.TinyAxe.Eval do
           :attempts,
           :verdict,
           :first_passed,
+          :escalated,
+          :answered_by,
           :total_ms,
           :calls
         ])

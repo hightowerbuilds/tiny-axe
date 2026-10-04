@@ -88,6 +88,10 @@ defmodule TinyAxe.TUI do
        recovery: List.first(TinyAxe.Ops.Journal.interrupted()),
        # The plan ctrl+z would undo, awaiting y/n.
        confirm_undo: nil,
+       # Whether requests may go to Claude or Codex this session: nil (ask when
+       # one first needs to), true or false. And the question being asked.
+       remote: nil,
+       asking: nil,
        status: "ready",
        # :bottom follows new output; a line number keeps the view on that line.
        scroll: :bottom,
@@ -151,6 +155,24 @@ defmodule TinyAxe.TUI do
   end
 
   # At most one popup at a time, most urgent first.
+  defp overlay(%{asking: ask}, area) when ask != nil do
+    lines = [
+      styled("Send this request to #{ask.to}?", :cyan, [:bold]),
+      styled(""),
+      styled("Why: the local model fell short: #{ask.reason}."),
+      styled(""),
+      styled(
+        "It leaves this machine: the request, the recent conversation, and any files and " <>
+          "web pages it was given go to #{ask.to} on your subscription (never an API key).",
+        :yellow
+      ),
+      styled(""),
+      styled("y yes, for this session · n no, keep everything local this session", :dark_gray)
+    ]
+
+    popup(" use a bigger model? ", lines, 0, area)
+  end
+
   defp overlay(%{recovery: plan} = state, area) when plan != nil do
     done = map_size(plan.done)
 
@@ -306,10 +328,12 @@ defmodule TinyAxe.TUI do
     Line.new([Span.new(text, style: %Style{fg: fg, modifiers: modifiers})])
   end
 
+  # Long lines wrap rather than run off the edge: a command or warning cut off
+  # there is one the user approves without seeing in full.
   defp popup(title, lines, scroll, area) do
     [
       {%Popup{
-         content: %Paragraph{text: lines, scroll: {scroll, 0}},
+         content: %Paragraph{text: lines, scroll: {scroll, 0}, wrap: true},
          block: %Block{
            title: title,
            borders: [:all],
@@ -504,6 +528,23 @@ defmodule TinyAxe.TUI do
     ]
   end
 
+  # Calls that left the machine this session, and Claude's usage once known.
+  defp remote_label do
+    case TinyAxe.Escalation.stats() do
+      %{remote_calls: 0} ->
+        ""
+
+      %{remote_calls: n, quota: quota} ->
+        claude =
+          case quota[:claude] do
+            %{five_hour: five} when is_number(five) -> ", Claude #{round(five * 100)}% of 5h"
+            _ -> ""
+          end
+
+        "  ·  ↗ #{n} off-machine#{claude}"
+    end
+  end
+
   defp ctx_label(state), do: "ctx #{round(Context.fraction(context_tokens(state)) * 100)}%"
 
   defp split(area) do
@@ -523,14 +564,14 @@ defmodule TinyAxe.TUI do
   defp status_widget(%{run: nil} = state) do
     %Paragraph{
       text:
-        " #{state.status}  ·  #{ctx_label(state)}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
+        " #{state.status}  ·  #{ctx_label(state)}#{remote_label()}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
       style: %Style{fg: :dark_gray}
     }
   end
 
   defp status_widget(state) do
     %Throbber{
-      label: " #{state.status}  ·  #{ctx_label(state)}",
+      label: " #{state.status}  ·  #{ctx_label(state)}#{remote_label()}",
       step: state.tick,
       throbber_style: %Style{fg: :cyan}
     }
@@ -696,6 +737,30 @@ defmodule TinyAxe.TUI do
   defp on_event(%Event.Key{kind: "release"}, state), do: {:noreply, state}
 
   defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, cancel(state)}
+
+  # The request waits for this answer; it holds for the rest of the session.
+  defp on_event(%Event.Key{code: code}, %{asking: ask} = state) when ask != nil do
+    case code do
+      "y" ->
+        send(ask.reply_to, {:remote_answer, ask.ref, true})
+
+        {:noreply,
+         %{state | asking: nil, remote: true, status: "asking #{ask.to}…"}
+         |> add_meta(
+           "↗ allowed Claude and Codex for this session: requests that fall short can leave this machine"
+         )}
+
+      c when c in ["n", "esc"] ->
+        send(ask.reply_to, {:remote_answer, ask.ref, false})
+
+        {:noreply,
+         %{state | asking: nil, remote: false}
+         |> add_meta("kept everything on this machine for this session")}
+
+      _ ->
+        {:noreply, state}
+    end
+  end
 
   # While a popup is on screen, keys answer it instead of going to the prompt.
   defp on_event(%Event.Key{code: code}, %{recovery: plan} = state) when plan != nil do
@@ -1096,7 +1161,9 @@ defmodule TinyAxe.TUI do
 
     {:ok, pid} =
       Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
-        TinyAxe.Pipeline.run(history, prompt, &send(tui, {:pipeline, id, &1}))
+        TinyAxe.Pipeline.run(history, prompt, &send(tui, {:pipeline, id, &1}),
+          remote: remote_mode(state)
+        )
       end)
 
     Process.monitor(pid)
@@ -1113,6 +1180,10 @@ defmodule TinyAxe.TUI do
         status: "routing…"
     }
   end
+
+  defp remote_mode(%{remote: nil}), do: :ask
+  defp remote_mode(%{remote: true}), do: :allowed
+  defp remote_mode(%{remote: false}), do: :denied
 
   defp cancel(%{run: nil} = state), do: state
 
@@ -1138,6 +1209,7 @@ defmodule TinyAxe.TUI do
       | run: nil,
         streaming: nil,
         compacting: nil,
+        asking: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
@@ -1405,6 +1477,26 @@ defmodule TinyAxe.TUI do
   defp apply_event({:wrote, %{path: path, check: p}}, state),
     do: add_meta(state, "drafted #{path} (#{p |> review_label() |> elem(0)})")
 
+  ## Escalation to bigger models
+
+  defp apply_event({:ask_remote, ask}, state),
+    do: %{state | asking: ask, status: "waiting for your answer…"}
+
+  defp apply_event({:escalate, %{to: to, reason: why}}, state) do
+    %{state | status: "asking #{to}…"}
+    |> add_meta("↗ #{to}: the local model fell short (#{why})")
+  end
+
+  # Once per request: the same reason usually holds for every rung.
+  defp apply_event({:escalate_skipped, %{reason: why}}, state),
+    do: once_per_request(state, "↗ not using a bigger model: #{why}")
+
+  defp apply_event({:escalate_failed, %{to: to, reason: reason}}, state),
+    do: add_meta(state, "✗ #{to} couldn't answer: #{TinyAxe.Escalation.explain(reason)}")
+
+  defp apply_event({:answered_by, %{model: label}}, state),
+    do: add_meta(state, "→ answered by #{label}, off this machine")
+
   defp apply_event({:review, _}, state), do: state
   # Which way the request went; the route line already shows it.
   defp apply_event({:task, _}, state), do: state
@@ -1529,20 +1621,18 @@ defmodule TinyAxe.TUI do
 
   # Once per request: which decision couldn't be made. The request carries on
   # without it, so the user should know what went unchecked.
-  defp apply_event({:decider_unavailable, what}, state) do
-    meta = {:meta, "⚠ the decider couldn't answer (#{what}); carried on without it"}
-
-    this_request = state.transcript |> Enum.reverse() |> Enum.take_while(&(elem(&1, 0) != :user))
-
-    if meta in this_request,
-      do: state,
-      else: %{state | transcript: state.transcript ++ [meta]}
-  end
+  defp apply_event({:decider_unavailable, what}, state),
+    do: once_per_request(state, "⚠ the decider couldn't answer (#{what}); carried on without it")
 
   # An event this TUI doesn't know is a bug elsewhere; log it rather than crash.
   defp apply_event(event, state) do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
+  end
+
+  defp once_per_request(state, text) do
+    this_request = state.transcript |> Enum.reverse() |> Enum.take_while(&(elem(&1, 0) != :user))
+    if {:meta, text} in this_request, do: state, else: add_meta(state, text)
   end
 
   defp exit_text(0), do: "exited 0"

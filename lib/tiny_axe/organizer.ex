@@ -25,7 +25,7 @@ defmodule TinyAxe.Organizer do
       {:plan, %{request: text, ops: [op], review: probability}}   just before :done
   """
 
-  alias TinyAxe.{Decider, Files, Model, Ollama, Ops}
+  alias TinyAxe.{Decider, Escalation, Files, Model, Ollama, Ops}
 
   @max_rounds 5
   @look_rounds 3
@@ -64,8 +64,15 @@ defmodule TinyAxe.Organizer do
     required: ["look", "mkdir", "copy", "trash", "move", "write", "reply"]
   }
 
-  @spec run([Ollama.message()], String.t(), [Ollama.message()], (term() -> any())) :: :ok
-  def run(history, prompt, web_context, notify) do
+  @doc """
+  Plans a file task. If the local model can't make a working plan in
+  #{@max_rounds} rounds, the escalation ladder (`TinyAxe.Escalation`) may try
+  bigger models, each from the start; `opts[:remote]` says whether they may
+  run off this machine. Documents are still written by the local model.
+  """
+  @spec run([Ollama.message()], String.t(), [Ollama.message()], (term() -> any()), keyword()) ::
+          :ok
+  def run(history, prompt, web_context, notify, opts \\ []) do
     notify.({:stage, "looking around…"})
 
     messages = [
@@ -73,7 +80,35 @@ defmodule TinyAxe.Organizer do
       %{role: "user", content: first_message(history, prompt)}
     ]
 
-    case plan(messages, TinyAxe.Pipeline.context(history, prompt), notify, 1, false) do
+    context = TinyAxe.Pipeline.context(history, prompt)
+
+    result =
+      case plan(messages, context, notify, 1, false) do
+        {:gave_up, reply} ->
+          why = "its file plan still had problems after #{@max_rounds} tries"
+
+          escalated = fn choice, acc ->
+            case plan(messages, Map.put(context, :use, choice), notify, 1, false) do
+              {:gave_up, _} -> {:fell_short, acc}
+              {:error, reason} -> {:error, reason, acc}
+              result -> {:ok, result}
+            end
+          end
+
+          case Escalation.climb(why, Keyword.get(opts, :remote, :denied), notify, nil, escalated) do
+            {:ok, result, choice} ->
+              notify.({:answered_by, %{model: Model.label(choice)}})
+              result
+
+            {:none, _} ->
+              {:reply, reply}
+          end
+
+        result ->
+          result
+      end
+
+    case result do
       {:ok, ops, reply, review} ->
         notify.({:stage, "writing…"})
         steps = Enum.map_join(ops, "\n", &("- " <> Ops.describe(&1)))
@@ -97,14 +132,14 @@ defmodule TinyAxe.Organizer do
     # The last message is tiny-axe's list of what was wrong; pass it on.
     problems = List.last(messages).content |> String.split("\n\n") |> hd()
 
-    {:reply,
+    {:gave_up,
      "I couldn't put together a plan that works. The last attempt's problems:\n\n" <>
        problems <> "\n\nCould you say more precisely what you'd like?"}
   end
 
   defp plan(messages, context, notify, round, reviewed?) do
     with {:ok, %{"message" => %{"content" => json}}} <-
-           Model.chat(messages, format: @schema, options: [temperature: 0.2]),
+           Model.chat(messages, format: @schema, options: [temperature: 0.2], use: context[:use]),
          {:ok, answer} <- JSON.decode(json) do
       look = answer |> Map.get("look", []) |> List.wrap() |> Enum.take(4)
       steps = steps(answer)

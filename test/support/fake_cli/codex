@@ -1,0 +1,61 @@
+#!/usr/bin/env elixir
+# A stand-in for `codex` in tests, so no test uses the real subscription.
+# `codex login status` reports a ChatGPT login; `codex exec --json` answers
+# with what it was given, as JSON (arguments, stdin, folder, the schema file,
+# which API-key variables it could see), in the event format recorded in
+# docs/plan-browser-and-cli-models.md.
+#
+# "SCENARIO:<name>" in the prompt picks a failure: error, usage_limit.
+
+argv = System.argv()
+
+if Enum.take(argv, 2) == ["login", "status"] do
+  IO.puts("Logged in using ChatGPT")
+  System.halt(0)
+end
+
+stdin = case IO.read(:stdio, :eof) do
+  text when is_binary(text) -> text
+  _ -> ""
+end
+
+emit = fn event -> IO.puts(JSON.encode!(event)) end
+scenario = case Regex.run(~r/SCENARIO:(\S+)/, stdin) do
+  [_, s] -> s
+  nil -> nil
+end
+
+schema = case Enum.drop_while(argv, &(&1 != "--output-schema")) do
+  ["--output-schema", file | _] -> File.read!(file)
+  _ -> nil
+end
+
+emit.(%{type: "thread.started", thread_id: "test"})
+emit.(%{type: "turn.started"})
+
+case scenario do
+  "error" ->
+    emit.(%{type: "error", message: "something broke"})
+    emit.(%{type: "turn.failed", error: %{message: "something broke"}})
+    System.halt(1)
+
+  "usage_limit" ->
+    emit.(%{type: "error", message: "You've hit your usage limit. Try again later."})
+    System.halt(1)
+
+  _ ->
+    reply =
+      JSON.encode!(%{
+        args: argv,
+        stdin: stdin,
+        cwd: File.cwd!(),
+        files: File.ls!("."),
+        schema: schema,
+        api_keys:
+          Enum.filter(~w(ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_API_KEY CODEX_API_KEY), &System.get_env/1)
+      })
+
+    emit.(%{type: "item.completed", item: %{id: "item_0", type: "reasoning", text: "thinking"}})
+    emit.(%{type: "item.completed", item: %{id: "item_1", type: "agent_message", text: reply}})
+    emit.(%{type: "turn.completed", usage: %{input_tokens: 11_472, output_tokens: 48}})
+end

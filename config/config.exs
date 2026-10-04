@@ -58,7 +58,28 @@ config :tiny_axe,
   # Shell commands (TinyAxe.Commander) run only after approval, in a sandbox,
   # and are killed after this long.
   commands: true,
-  command_timeout: 600_000
+  command_timeout: 600_000,
+  # Claude and Codex through their subscription CLIs (never an API key), killed
+  # after this long. See TinyAxe.Model.ClaudeCLI and TinyAxe.Model.CodexCLI.
+  cli_timeout: 300_000,
+  # When the local model falls short on evidence (code still failing its check,
+  # no answer the verifier accepts, a plan it couldn't make work), try the
+  # :escalate models in order, each with this many attempts. Claude isn't used
+  # once its subscription has used :quota_stop of either usage window.
+  escalate: true,
+  escalate_attempts: 2,
+  quota_stop: 0.9,
+  claude_cli: "claude",
+  claude_effort: "low",
+  codex_cli: "codex",
+  codex_effort: "low"
+
+# Models for each role besides the default (:model). Claude and Codex leave the
+# machine: escalation is tried in order when the local model falls short, and
+# the browser is driven by its own model.
+config :tiny_axe, :models,
+  escalate: [{:claude, "haiku"}, {:claude, "sonnet"}],
+  browser: {:claude, "haiku"}
 
 config :tiny_axe, :jev, model: "jev-latest"
 

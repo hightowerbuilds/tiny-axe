@@ -17,7 +17,9 @@ defmodule TinyAxe.Pipeline do
   4. **Verify** — the Decider judges whether the response addresses the request,
      seeing the check result too. Below the acceptance threshold, regenerate.
 
-  At most `:max_attempts` generations per request.
+  At most `:max_attempts` generations per request with the local model. If
+  none is good enough, the escalation ladder (`TinyAxe.Escalation`) may try
+  bigger models, `:escalate_attempts` each.
 
   Progress is reported through `notify`, a 1-arity function receiving:
 
@@ -33,6 +35,10 @@ defmodule TinyAxe.Pipeline do
       {:stage, status_label}
       {:check, {:ran, result} | {:skipped, reason}}
       {:verify, answers}
+      {:escalate, %{to: label, reason: why}}   the local model fell short; trying a bigger one
+      {:escalate_skipped, %{to: label, reason: why}} | {:escalate_failed, %{to: label, reason: term}}
+      {:ask_remote, %{to: label, reason: why, reply_to: pid, ref: ref}}   answer with {:remote_answer, ref, boolean}
+      {:answered_by, %{model: label}}   the answer came from a model off this machine
       {:usage, %{prompt_tokens: n, output_tokens: n, prompt_chars: n}}   after each generation
       {:chose, %{attempt: n, score: p, attempts: n}}   # answering with an earlier attempt
       {:edits, [%{path: p, abs: abs, old: old | nil, new: new}]}   # just before :done
@@ -41,7 +47,7 @@ defmodule TinyAxe.Pipeline do
       {:error, reason}
   """
 
-  alias TinyAxe.{CodeCheck, Decider, Files, Location, Model, Ollama, Ops, Web}
+  alias TinyAxe.{CodeCheck, Decider, Escalation, Files, Location, Model, Ollama, Ops, Web}
 
   @route_questions %{
     kind: %{
@@ -123,8 +129,15 @@ defmodule TinyAxe.Pipeline do
   answer or this message, so don't mention either.
   """
 
-  @spec run([Ollama.message()], String.t(), (term() -> any())) :: :ok
-  def run(history, prompt, notify) do
+  @doc """
+  Handles one request. `opts`: `:remote` (`:ask`, `:allowed` or `:denied`,
+  the default), whether a request that falls short may go to a model off this
+  machine (see `TinyAxe.Escalation`).
+  """
+  @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
+  def run(history, prompt, notify, opts \\ []) do
+    remote = Keyword.get(opts, :remote, :denied)
+
     # The router sees the conversation and where tiny-axe is, so "now run it"
     # or "put those there" can be understood, and a request that means
     # somewhere else can be told apart.
@@ -141,9 +154,14 @@ defmodule TinyAxe.Pipeline do
       notify.({:task, task})
 
       case task do
-        :command -> TinyAxe.Commander.run(history, prompt, notify)
-        :organize -> TinyAxe.Organizer.run(history, prompt, web_context, notify)
-        :answer -> answer(route, kind, history, prompt, web_context, request, notify)
+        :command ->
+          TinyAxe.Commander.run(history, prompt, notify, remote: remote)
+
+        :organize ->
+          TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
+
+        :answer ->
+          answer(route, kind, history, prompt, web_context, request, notify, remote)
       end
     else
       {:error, reason} -> notify.({:error, reason})
@@ -165,36 +183,75 @@ defmodule TinyAxe.Pipeline do
     end
   end
 
-  defp answer(route, kind, history, prompt, web_context, request, notify) do
+  # The local model tries first. If it falls short, the escalation ladder
+  # (TinyAxe.Escalation) tries bigger models, each starting afresh; if they
+  # fall short too, the highest-rated attempt from any of them is the answer.
+  defp answer(route, kind, history, prompt, web_context, request, notify, remote) do
     {file_context, request, notify} = maybe_files(route, history, prompt, request, notify)
 
     messages =
       [%{role: "system", content: system_prompt(kind)} | history] ++
         web_context ++ file_context ++ [%{role: "user", content: prompt}]
 
-    attempt(%{messages: messages, request: request, notify: notify, best: nil}, 1)
+    run = %{messages: messages, request: request, notify: notify, best: nil, last: nil, n: 0}
+
+    case rung(run, nil, config(:max_attempts, 3)) do
+      {:done, text, _run} ->
+        notify.({:done, text})
+
+      {:fell_short, why, run} ->
+        escalated = fn choice, run ->
+          case rung(%{run | messages: messages}, choice, config(:escalate_attempts, 2)) do
+            {:done, text, _run} -> {:ok, text}
+            {:fell_short, _why, run} -> {:fell_short, run}
+            {:error, reason, run} -> {:error, reason, run}
+          end
+        end
+
+        case Escalation.climb(why, remote, notify, run, escalated) do
+          {:ok, text, choice} ->
+            notify.({:answered_by, %{model: Model.label(choice)}})
+            notify.({:done, text})
+
+          {:none, run} ->
+            finish(run)
+        end
+
+      {:error, reason, _run} ->
+        notify.({:error, reason})
+    end
   end
 
-  # One request's retry loop. `run` holds what every attempt shares: the messages,
-  # `request` (the verifier's view of the task), `notify`, and `best`, the
-  # highest-rated verified attempt so far.
-  defp attempt(run, n, temperature \\ 0.4) do
+  # One model's attempts at the request (`use`: nil for the local model), at
+  # most `max`. Returns `{:done, text, run}` for an answer to give,
+  # `{:fell_short, why, run}` when none was good enough, or
+  # `{:error, reason, run}`. `run` holds what every attempt shares: the
+  # messages, `request` (the verifier's view of the task), `notify`, `n` (the
+  # attempt number across all models), `last` (the latest attempt) and `best`
+  # (the highest-rated verified attempt, from any model).
+  defp rung(run, use, max, tried \\ 0, temperature \\ 0.4) do
+    n = run.n + 1
+    run = %{run | n: n}
     run.notify.({:attempt, n})
 
     with {:ok, text} <-
            Model.stream_chat(run.messages, &run.notify.({:delta, &1}),
              options: [temperature: temperature],
+             use: use,
              on_usage: &run.notify.({:usage, &1}),
              on_trim: &run.notify.({:trimmed, &1})
            ) do
+      run = %{run | last: %{text: text, n: n, use: use}}
       run.notify.({:stage, "checking code…"})
       check = CodeCheck.run(text)
       run.notify.({:check, check})
-      last? = n >= config(:max_attempts, 3)
+      last? = tried + 1 >= max
 
       case check do
-        {:ran, %{status: :failed}} when last? ->
-          finish(run, text, n)
+        {:ran, %{status: :failed} = result} when last? ->
+          {:fell_short,
+           "the code still failed its check (#{result.summary}) after #{plural(tried + 1, "attempt")}",
+           run}
 
         {:ran, %{status: :failed} = result} ->
           # Concrete feedback beats resampling, so keep temperature low.
@@ -203,17 +260,17 @@ defmodule TinyAxe.Pipeline do
             %{role: "user", content: fix_prompt(result)}
           ]
 
-          attempt(%{run | messages: run.messages ++ fix}, n + 1, 0.3)
+          rung(%{run | messages: run.messages ++ fix}, use, max, tried + 1, 0.3)
 
         _ ->
-          verify_and_finish(run, text, check, n, last?, temperature)
+          verify_and_judge(run, text, check, {use, max, tried, temperature})
       end
     else
-      {:error, reason} -> run.notify.({:error, reason})
+      {:error, reason} -> {:error, reason, run}
     end
   end
 
-  defp verify_and_finish(run, text, check, n, last?, temperature) do
+  defp verify_and_judge(run, text, check, {use, _max, _tried, _temperature} = where) do
     run.notify.({:stage, "verifying…"})
 
     case verify(run.request, text, check) do
@@ -225,27 +282,28 @@ defmodule TinyAxe.Pipeline do
         if addresses == nil do
           # No verdict: say so and answer, rather than resample on nothing.
           run.notify.({:decider_unavailable, "verifying the answer"})
-          run.notify.({:done, text})
+          {:done, text, run}
         else
           # An answer that claims to have done what it can't is only as good as its honesty.
           score = min(addresses, 1 - claim)
-
-          run |> remember(text, n, score) |> judge(text, score, claim, n, last?, temperature)
+          run |> remember(text, score, use) |> judge(text, score, claim, where)
         end
 
       {:error, reason} ->
-        run.notify.({:error, reason})
+        {:error, reason, run}
     end
   end
 
-  # Accept, give up with the best attempt, send back a false claim, or resample.
-  defp judge(run, text, score, claim, n, last?, temperature) do
+  # Accept, report falling short, send back a false claim, or resample.
+  defp judge(run, text, score, claim, {use, max, tried, temperature}) do
     cond do
       score >= config(:accept_threshold, 0.7) ->
-        run.notify.({:done, text})
+        {:done, text, run}
 
-      last? ->
-        finish(run, text, n)
+      tried + 1 >= max ->
+        {:fell_short,
+         "no answer reached the verifier's threshold (the best scored #{round(run.best.score * 100)}/100)",
+         run}
 
       claim >= config(:false_claim_threshold, 0.5) ->
         fix = [
@@ -253,27 +311,37 @@ defmodule TinyAxe.Pipeline do
           %{role: "user", content: @false_claim_fix}
         ]
 
-        attempt(%{run | messages: run.messages ++ fix}, n + 1, 0.3)
+        rung(%{run | messages: run.messages ++ fix}, use, max, tried + 1, 0.3)
 
       true ->
         # No concrete feedback to give, so nudge sampling for a different answer.
-        attempt(run, n + 1, min(temperature + 0.25, 1.1))
+        rung(run, use, max, tried + 1, min(temperature + 0.25, 1.1))
     end
   end
 
-  defp remember(%{best: best} = run, text, n, score) do
+  defp remember(%{best: best} = run, text, score, use) do
     if best == nil or score > best.score,
-      do: %{run | best: %{text: text, n: n, score: score}},
+      do: %{run | best: %{text: text, n: run.n, score: score, use: use}},
       else: run
   end
 
-  # Out of attempts: answer with the highest-rated one, which may be an earlier attempt.
-  defp finish(%{best: %{n: best_n} = best} = run, _text, n) when best_n != n do
-    run.notify.({:chose, %{attempt: best_n, score: best.score, attempts: n}})
+  # Out of attempts everywhere: answer with the highest-rated one, which may be
+  # an earlier attempt, or else the last one.
+  defp finish(%{best: %{} = best, last: last} = run) do
+    if best.n != last.n,
+      do: run.notify.({:chose, %{attempt: best.n, score: best.score, attempts: last.n}})
+
+    if best.use, do: run.notify.({:answered_by, %{model: Model.label(best.use)}})
     run.notify.({:done, best.text})
   end
 
-  defp finish(run, text, _n), do: run.notify.({:done, text})
+  defp finish(%{last: %{} = last} = run) do
+    if last.use, do: run.notify.({:answered_by, %{model: Model.label(last.use)}})
+    run.notify.({:done, last.text})
+  end
+
+  defp plural(1, word), do: "1 #{word}"
+  defp plural(n, word), do: "#{n} #{word}s"
 
   defp fix_prompt(%{language: lang, summary: summary, output: output}) do
     """

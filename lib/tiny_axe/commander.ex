@@ -21,7 +21,7 @@ defmodule TinyAxe.Commander do
   just before `:done`.
   """
 
-  alias TinyAxe.{Decider, Files, Location, Model, Ollama, Ops, Organizer, Shell}
+  alias TinyAxe.{Decider, Escalation, Files, Location, Model, Ollama, Ops, Organizer, Shell}
 
   @max_rounds 4
 
@@ -34,8 +34,14 @@ defmodule TinyAxe.Commander do
     required: ["commands", "reply"]
   }
 
-  @spec run([Ollama.message()], String.t(), (term() -> any())) :: :ok
-  def run(history, prompt, notify) do
+  @doc """
+  Plans commands. If the local model can't make ones that pass the checks in
+  #{@max_rounds} rounds, the escalation ladder (`TinyAxe.Escalation`) may try
+  bigger models, each from the start; `opts[:remote]` says whether they may
+  run off this machine.
+  """
+  @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
+  def run(history, prompt, notify, opts \\ []) do
     notify.({:stage, "planning commands…"})
 
     messages = [
@@ -43,7 +49,35 @@ defmodule TinyAxe.Commander do
       %{role: "user", content: first_message(history, prompt)}
     ]
 
-    case plan(messages, TinyAxe.Pipeline.context(history, prompt), notify, 1, false) do
+    context = TinyAxe.Pipeline.context(history, prompt)
+
+    result =
+      case plan(messages, context, notify, 1, false) do
+        {:gave_up, reply} ->
+          why = "its commands still had problems after #{@max_rounds} tries"
+
+          escalated = fn choice, acc ->
+            case plan(messages, Map.put(context, :use, choice), notify, 1, false) do
+              {:gave_up, _} -> {:fell_short, acc}
+              {:error, reason} -> {:error, reason, acc}
+              result -> {:ok, result}
+            end
+          end
+
+          case Escalation.climb(why, Keyword.get(opts, :remote, :denied), notify, nil, escalated) do
+            {:ok, result, choice} ->
+              notify.({:answered_by, %{model: Model.label(choice)}})
+              result
+
+            {:none, _} ->
+              {:reply, reply}
+          end
+
+        result ->
+          result
+      end
+
+    case result do
       {:ok, plan, reply} ->
         notify.({:command_plan, plan})
         notify.({:done, summary(reply, plan)})
@@ -61,14 +95,14 @@ defmodule TinyAxe.Commander do
   defp plan(messages, _context, _notify, round, _reviewed?) when round > @max_rounds do
     problems = List.last(messages).content |> String.split("\n\n") |> hd()
 
-    {:reply,
+    {:gave_up,
      "I couldn't put together commands that work. The last attempt's problems:\n\n" <>
        problems <> "\n\nCould you say more precisely what you'd like?"}
   end
 
   defp plan(messages, context, notify, round, reviewed?) do
     with {:ok, %{"message" => %{"content" => json}}} <-
-           Model.chat(messages, format: @schema, options: [temperature: 0.2]),
+           Model.chat(messages, format: @schema, options: [temperature: 0.2], use: context[:use]),
          {:ok, answer} <- JSON.decode(json) do
       commands = answer |> Map.get("commands", []) |> List.wrap() |> Enum.map(&String.trim/1)
       commands = Enum.reject(commands, &(&1 == ""))

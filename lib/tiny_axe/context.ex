@@ -29,8 +29,14 @@ defmodule TinyAxe.Context do
     @overhead + Enum.sum(Enum.map(messages, &(estimate(&1.content, ratio) + 4)))
   end
 
-  @doc "Updates the ratio from a measured request, smoothing out one-off prompts."
+  @doc """
+  Updates the ratio from a measured request, smoothing out one-off prompts.
+  Only the local model's counts calibrate it: Claude and Codex count with
+  other tokenizers and add prompts of their own.
+  """
   @spec calibrate(float(), map()) :: float()
+  def calibrate(ratio, %{backend: backend}) when backend in [:claude, :codex], do: ratio
+
   def calibrate(ratio, %{prompt_tokens: tokens, prompt_chars: chars}) when chars > 200,
     do: 0.5 * ratio + 0.5 * (tokens / chars)
 
