@@ -7,7 +7,8 @@ defmodule TinyAxe.Web do
       requests; Bing always answers but returns junk for niche technical terms,
       so it goes last. Google blocks scripted requests outright.
     * `fetch/2` downloads a page and extracts its readable text. Pages that only
-      render with JavaScript are retried in headless Chrome when it's installed.
+      render with JavaScript are read in tiny-axe's browser (`TinyAxe.Browser`)
+      when it's running, or else in a one-off headless Chrome.
   """
 
   @type result :: %{title: String.t(), url: String.t(), snippet: String.t()}
@@ -155,14 +156,9 @@ defmodule TinyAxe.Web do
       page = extract(html, url)
 
       page =
-        if String.length(page.text) < @min_text do
-          case chrome_dump(url) do
-            {:ok, rendered} -> extract(rendered, url)
-            _ -> page
-          end
-        else
-          page
-        end
+        if String.length(page.text) < @min_text,
+          do: rendered(url, page),
+          else: page
 
       {:ok, %{page | text: truncate(page.text, max_chars)}}
     end
@@ -243,6 +239,22 @@ defmodule TinyAxe.Web do
     body = [Req.Response.get_private(resp, :body, []) | data]
     resp = Req.Response.put_private(resp, :body, body)
     if IO.iodata_length(body) > @max_body, do: {:halt, {req, resp}}, else: {:cont, {req, resp}}
+  end
+
+  # A page that renders with JavaScript: tiny-axe's own browser when it's
+  # running (it redacts as it reads), else a one-off headless Chrome.
+  defp rendered(url, page) do
+    if TinyAxe.Browser.running?() do
+      case TinyAxe.Browser.read(url) do
+        {:ok, text} when byte_size(text) > 0 -> %{page | text: text}
+        _ -> page
+      end
+    else
+      case chrome_dump(url) do
+        {:ok, html} -> extract(html, url)
+        _ -> page
+      end
+    end
   end
 
   defp chrome_dump(url) do

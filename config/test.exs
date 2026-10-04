@@ -16,3 +16,6 @@ config :tiny_axe,
 
 # No user MCP servers in tests; tests start their own fake ones.
 config :tiny_axe, mcp_config: Path.join(System.tmp_dir!(), "tiny_axe_test_mcp.json")
+
+# Tests start their own browser servers (test/tiny_axe/browser_test.exs).
+config :tiny_axe, :browser, enabled: true, headless: true

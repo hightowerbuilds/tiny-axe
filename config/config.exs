@@ -81,6 +81,13 @@ config :tiny_axe, :tools,
   max_minutes: 30,
   approval_timeout: 600_000
 
+# tiny-axe's own browser (TinyAxe.Browser): Chrome via Playwright, in its own
+# profile, reached by agents through the tool gate. Headless while it only
+# reads; :profile and :playwright_root are found automatically if unset.
+config :tiny_axe, :browser,
+  enabled: true,
+  headless: true
+
 # Models for each role besides the default (:model). Claude and Codex leave the
 # machine: escalation is tried in order when the local model falls short, and
 # the agent (requests that need tools: MCP servers, the browser) is driven by

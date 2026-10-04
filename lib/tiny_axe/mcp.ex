@@ -42,7 +42,7 @@ defmodule TinyAxe.MCP do
   def configured do
     with {:ok, raw} <- File.read(config_path()),
          {:ok, %{"mcpServers" => servers}} when is_map(servers) <- JSON.decode(raw) do
-      for {name, config} <- servers, valid_name?(name), into: %{} do
+      for {name, config} <- servers, valid_name?(name), not reserved?(name), into: %{} do
         {name, expand(config)}
       end
     else
@@ -126,6 +126,17 @@ defmodule TinyAxe.MCP do
 
   @spec call(String.t(), String.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   defdelegate call(server, tool, args, timeout \\ 120_000), to: Client
+
+  # tiny-axe's own browser (TinyAxe.Browser) runs under this name.
+  defp reserved?("browser") do
+    Logger.warning(
+      "MCP server name \"browser\" is tiny-axe's own; rename yours in #{config_path()}"
+    )
+
+    true
+  end
+
+  defp reserved?(_name), do: false
 
   defp valid_name?(name) do
     ok = is_binary(name) and name =~ ~r/\A[A-Za-z0-9-]{1,30}\z/

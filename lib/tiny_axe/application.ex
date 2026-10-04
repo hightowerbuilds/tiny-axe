@@ -52,7 +52,11 @@ defmodule TinyAxe.Application do
 
     # Connecting to MCP servers can take a while; the TUI doesn't wait for it.
     if Application.get_env(:tiny_axe, :start_tui, false),
-      do: Task.start(fn -> TinyAxe.MCP.start_configured() end)
+      do:
+        Task.start(fn ->
+          TinyAxe.MCP.start_configured()
+          if TinyAxe.Browser.available?(), do: TinyAxe.Browser.start()
+        end)
 
     result
   end
