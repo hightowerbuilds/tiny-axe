@@ -40,7 +40,7 @@ defmodule TinyAxe.Model.CodexCLI do
   end
 
   defp call(messages, _on_delta, opts) do
-    with :ok <- subscription() do
+    with :ok <- ensure_subscription() do
       {system, prompt} = CLI.transcript(messages)
 
       prompt =
@@ -84,10 +84,14 @@ defmodule TinyAxe.Model.CodexCLI do
 
     ["exec", "-m", Keyword.get(opts, :model) || @default_model] ++
       ["-c", ~s(model_reasoning_effort="#{effort}")] ++
-      Enum.flat_map(@disabled, &["--disable", &1]) ++
+      off_flags() ++
       ~w(--ephemeral --skip-git-repo-check -s read-only --ignore-rules --json) ++
       if(schema_file, do: ["--output-schema", schema_file], else: []) ++ ["-"]
   end
+
+  @doc "The flags that switch off everything that would let Codex act on its own."
+  @spec off_flags() :: [String.t()]
+  def off_flags, do: Enum.flat_map(@disabled, &["--disable", &1])
 
   defp write_schema(nil), do: nil
 
@@ -143,8 +147,12 @@ defmodule TinyAxe.Model.CodexCLI do
     end
   end
 
-  # Checked once per run of tiny-axe; only a ChatGPT login is remembered.
-  defp subscription do
+  @doc """
+  `:ok` once Codex reports a ChatGPT login (checked once per run of tiny-axe;
+  only a ChatGPT login is remembered), or why it can't be used.
+  """
+  @spec ensure_subscription() :: :ok | {:error, term()}
+  def ensure_subscription do
     key = {__MODULE__, :subscription, exe()}
 
     if :persistent_term.get(key, false) do

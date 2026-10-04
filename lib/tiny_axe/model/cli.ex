@@ -33,6 +33,9 @@ defmodule TinyAxe.Model.CLI do
     * `{:exited, status, acc, noise}` when it finished (`noise`: its non-JSON lines)
     * `{:stopped, acc}` when `handle` stopped it
     * `{:error, :not_installed | :timeout}`
+
+  `opts`: `:timeout`, and `:env` (extra `{name, value}` variables; API keys
+  are dropped even here).
   """
   @spec run(String.t(), [String.t()], String.t(), handle(), term(), keyword()) ::
           {:exited, non_neg_integer(), term(), [String.t()]}
@@ -61,7 +64,7 @@ defmodule TinyAxe.Model.CLI do
               :exit_status,
               :stderr_to_stdout,
               {:cd, work},
-              {:env, env()},
+              {:env, env(Keyword.get(opts, :env, []))},
               {:args, ["-c", ~s(f=$1; shift; exec "$@" < "$f"), "sh", prompt_file, path | args]}
             ])
 
@@ -79,8 +82,12 @@ defmodule TinyAxe.Model.CLI do
     end
   end
 
-  defp env do
-    Enum.map(@api_keys, &{String.to_charlist(&1), false}) ++ [{~c"NO_COLOR", ~c"1"}]
+  # `extra` adds variables (e.g. the gate's token), but never an API key.
+  defp env(extra) do
+    extra =
+      for {k, v} <- extra, k not in @api_keys, do: {String.to_charlist(k), String.to_charlist(v)}
+
+    Enum.map(@api_keys, &{String.to_charlist(&1), false}) ++ [{~c"NO_COLOR", ~c"1"} | extra]
   end
 
   defp collect(port, handle, {acc, buffer, noise}, deadline) do

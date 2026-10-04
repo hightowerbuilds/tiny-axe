@@ -94,6 +94,8 @@ defmodule TinyAxe.TUI do
        asking: nil,
        # An agent's tool call waiting for y / a / n (TinyAxe.Tools.Gate).
        tool_ask: nil,
+       # Whether this request is an agent run: its answer goes after its tool lines.
+       agent_run: false,
        status: "ready",
        # :bottom follows new output; a line number keeps the view on that line.
        scroll: :bottom,
@@ -161,11 +163,12 @@ defmodule TinyAxe.TUI do
     lines = [
       styled("Send this request to #{ask.to}?", :cyan, [:bold]),
       styled(""),
-      styled("Why: the local model fell short: #{ask.reason}."),
+      styled("Why: #{ask.reason}."),
       styled(""),
       styled(
-        "It leaves this machine: the request, the recent conversation, and any files and " <>
-          "web pages it was given go to #{ask.to} on your subscription (never an API key).",
+        "It leaves this machine: the request, the recent conversation, any files and web " <>
+          "pages it was given, and what its tools return go to #{ask.to} on your " <>
+          "subscription (never an API key).",
         :yellow
       ),
       styled(""),
@@ -1233,6 +1236,7 @@ defmodule TinyAxe.TUI do
         streaming: nil,
         scroll: :bottom,
         copy_back: 0,
+        agent_run: false,
         status: "routing…"
     }
   end
@@ -1559,6 +1563,14 @@ defmodule TinyAxe.TUI do
 
   ## Agent tool calls (TinyAxe.Tools.Gate)
 
+  defp apply_event({:agent, %{driver: driver, servers: servers}}, state) do
+    %{state | agent_run: true, streaming: "", status: "#{driver} is working…"}
+    |> add_meta("🤖 #{driver} is working, with: #{Enum.join(servers, ", ")}")
+  end
+
+  defp apply_event({:agent_local, why}, state),
+    do: add_meta(state, "the local model will drive instead (#{why})")
+
   defp apply_event({:tool_approval, ask}, state),
     do: %{state | tool_ask: ask, status: "waiting for your answer…"}
 
@@ -1653,8 +1665,10 @@ defmodule TinyAxe.TUI do
   defp apply_event({:done, text}, state) do
     turn = [%{role: "user", content: state.pending_prompt}, %{role: "assistant", content: text}]
 
-    # The answer goes above the check/verifier lines that judged it.
-    {before, judged} = Enum.split(state.transcript, state.attempt_meta_from)
+    # The answer goes above the check/verifier lines that judged it; an agent's
+    # answer goes after the tool calls that led to it.
+    from = if state.agent_run, do: length(state.transcript), else: state.attempt_meta_from
+    {before, judged} = Enum.split(state.transcript, from)
 
     %{
       state

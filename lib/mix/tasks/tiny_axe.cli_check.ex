@@ -2,7 +2,7 @@ defmodule Mix.Tasks.TinyAxe.CliCheck do
   @shortdoc "Check that Claude and Codex work through their subscription CLIs"
   @moduledoc """
   Sends one short request to each model tiny-axe uses through the `claude`
-  and `codex` CLIs (the `:escalate` and `:browser` roles), the way tiny-axe
+  and `codex` CLIs (the `:escalate` and `:agent` roles), the way tiny-axe
   sends them: on the subscription, never an API key, with no tools. Reports
   the model that answered, how long it took, and Claude's usage windows.
 
@@ -31,7 +31,7 @@ defmodule Mix.Tasks.TinyAxe.CliCheck do
   end
 
   defp configured do
-    [Model.role(:escalate), Model.role(:browser)]
+    [Model.role(:escalate), Model.role(:agent)]
     |> List.flatten()
     |> Enum.filter(&Model.remote?/1)
     |> Enum.uniq()

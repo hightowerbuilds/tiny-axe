@@ -45,9 +45,10 @@ defmodule TinyAxe.Model do
 
   @doc """
   The model for a role: `:escalate` (a list, tried in order when the local
-  model falls short) or `:browser`. `config :tiny_axe, :models`.
+  model falls short) or `:agent` (drives requests that need tools).
+  `config :tiny_axe, :models`.
   """
-  @spec role(:escalate | :browser) :: [choice()] | choice() | nil
+  @spec role(:escalate | :agent) :: [choice()] | choice() | nil
   def role(role), do: Application.get_env(:tiny_axe, :models, []) |> Keyword.get(role)
 
   @doc "Whether a model runs somewhere other than this machine."
@@ -100,10 +101,13 @@ defmodule TinyAxe.Model do
   # The backend a call uses, with its model put in `:model`.
   defp impl(opts) do
     case Keyword.get(opts, :use) do
-      nil -> {Application.get_env(:tiny_axe, :model_backend, TinyAxe.Ollama), opts}
-      {:ollama, model} -> {TinyAxe.Ollama, Keyword.put(opts, :model, model)}
+      nil -> {local(), opts}
+      # The local backend as configured (tests script it).
+      {:ollama, model} -> {local(), Keyword.put(opts, :model, model)}
       {:claude, model} -> {TinyAxe.Model.ClaudeCLI, Keyword.put(opts, :model, model)}
       {:codex, model} -> {TinyAxe.Model.CodexCLI, Keyword.put(opts, :model, model)}
     end
   end
+
+  defp local, do: Application.get_env(:tiny_axe, :model_backend, TinyAxe.Ollama)
 end

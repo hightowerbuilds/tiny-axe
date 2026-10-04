@@ -179,6 +179,18 @@ defmodule TinyAxe.ToolGateTest do
       refute File.read!(Path.join(Tools.Journal.dir(task.id), "calls.jsonl")) =~ "4242 4242"
     end
 
+    test "a call missing a required argument goes back to the agent, unasked and unsent", %{
+      server: s
+    } do
+      task = open(s)
+      result = call_tool(task, "#{s}__send_note", %{text: "no recipient"}, :once)
+
+      assert result["isError"] == true
+      assert text(result) =~ "needs to"
+      refute_received {:asked, _}
+      refute Map.has_key?(downstream_calls(task, s), "send_note")
+    end
+
     test "a task is stopped at its call limit", %{server: s} do
       task = open(s, max_calls: 2)
       call_tool(task, "#{s}__echo", %{text: "1"})

@@ -83,10 +83,19 @@ config :tiny_axe, :tools,
 
 # Models for each role besides the default (:model). Claude and Codex leave the
 # machine: escalation is tried in order when the local model falls short, and
-# the browser is driven by its own model.
+# the agent (requests that need tools: MCP servers, the browser) is driven by
+# its own model: {:claude, _} or {:codex, _} run that CLI's agent loop with the
+# tool gate as their only tools; {:ollama, _} runs tiny-axe's own loop.
 config :tiny_axe, :models,
   escalate: [{:claude, "haiku"}, {:claude, "sonnet"}],
-  browser: {:claude, "haiku"}
+  agent: {:claude, "haiku"}
+
+# The agent: how long a run may take, how hard Claude/Codex think, and how many
+# turns tiny-axe's own loop gives the local model.
+config :tiny_axe,
+  agent_timeout: 1_800_000,
+  agent_effort: "medium",
+  local_agent_steps: 12
 
 config :tiny_axe, :jev, model: "jev-latest"
 

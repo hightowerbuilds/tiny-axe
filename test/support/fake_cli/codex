@@ -20,6 +20,44 @@ stdin = case IO.read(:stdio, :eof) do
 end
 
 emit = fn event -> IO.puts(JSON.encode!(event)) end
+
+# As a driver: "SCENARIO:tool:<name>:<json>" makes one tool call through the
+# gate, the way the real CLI would, and the answer includes its result.
+call_gate = fn url, token, name, args ->
+  :inets.start()
+  body = JSON.encode!(%{jsonrpc: "2.0", id: 1, method: "tools/call", params: %{name: name, arguments: args}})
+  headers = [{~c"authorization", String.to_charlist("Bearer " <> token)}]
+
+  case :httpc.request(:post, {String.to_charlist(url), headers, ~c"application/json", body}, [timeout: 60_000], []) do
+    {:ok, {{_, 200, _}, _, reply}} ->
+      result = JSON.decode!(to_string(reply))["result"]
+      %{"error" => result["isError"] == true, "text" => Enum.map_join(result["content"], " ", &(&1["text"] || ""))}
+
+    other ->
+      %{"error" => true, "text" => inspect(other)}
+  end
+end
+
+tool_call = fn stdin, url, token ->
+  case Regex.run(~r/SCENARIO:tool:([\w-]+):(\{.*?\})(?:\s|$)/s, stdin) do
+    [_, name, args] when is_binary(url) -> call_gate.(url, token, name, JSON.decode!(args))
+    _ -> nil
+  end
+end
+
+# The gate's address from -c mcp_servers.tinyaxe.url=..., its token from the
+# environment variable named by bearer_token_env_var, as Codex reads them.
+setting = fn key ->
+  Enum.find_value(argv, fn arg ->
+    case Regex.run(~r/\Amcp_servers\.tinyaxe\.#{key}="(.*)"\z/, arg) do
+      [_, value] -> value
+      nil -> nil
+    end
+  end)
+end
+
+gate_url = setting.("url")
+gate_token = (var = setting.("bearer_token_env_var")) && System.get_env(var)
 scenario = case Regex.run(~r/SCENARIO:(\S+)/, stdin) do
   [_, s] -> s
   nil -> nil
@@ -46,6 +84,7 @@ case scenario do
   _ ->
     reply =
       JSON.encode!(%{
+        tool_result: tool_call.(stdin, gate_url, gate_token),
         args: argv,
         stdin: stdin,
         cwd: File.cwd!(),

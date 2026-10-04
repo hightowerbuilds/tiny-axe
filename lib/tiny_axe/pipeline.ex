@@ -143,7 +143,7 @@ defmodule TinyAxe.Pipeline do
     # somewhere else can be told apart.
     state = context(history, prompt)
 
-    with {:ok, route} <- Decider.decide(state, @route_questions) do
+    with {:ok, route} <- Decider.decide(state, route_questions()) do
       notify.({:route, route})
       # An unknown task kind gets the plain question prompt.
       kind = route.kind.choice || :question
@@ -160,6 +160,9 @@ defmodule TinyAxe.Pipeline do
         :organize ->
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
 
+        :agent ->
+          TinyAxe.Agent.run(history, prompt, notify, remote: remote)
+
         :answer ->
           answer(route, kind, history, prompt, web_context, request, notify, remote)
       end
@@ -170,17 +173,36 @@ defmodule TinyAxe.Pipeline do
     :ok
   end
 
-  # Commands go to the Commander and file tasks (moving, organising, writing
-  # documents) to the Organizer; when both look likely, the likelier wins.
+  # With MCP servers connected, the router also asks whether the request needs
+  # them; their names make the question concrete.
+  defp route_questions do
+    case TinyAxe.MCP.running() do
+      [] ->
+        @route_questions
+
+      servers ->
+        Map.put(@route_questions, :tools, %{
+          type: :noul,
+          instructions:
+            "Does the request need one of tiny-axe's connected services to act or look " <>
+              "something up (#{Enum.join(servers, ", ")}), rather than only an answer, edits " <>
+              "to project files, organising files, or shell commands?"
+        })
+    end
+  end
+
+  # Commands go to the Commander, file tasks (moving, organising, writing
+  # documents) to the Organizer, and requests that need connected services to
+  # the agent; when several look likely, the likeliest wins.
   defp task(route) do
     command = if config(:commands, true), do: Decider.p(route, :command) || 0, else: 0
     organize = if config(:file_ops, true), do: Decider.p(route, :organize) || 0, else: 0
+    agent = if TinyAxe.Agent.available?(), do: Decider.p(route, :tools) || 0, else: 0
 
-    cond do
-      command >= config(:route_threshold, 0.5) and command >= organize -> :command
-      organize >= config(:route_threshold, 0.5) -> :organize
-      true -> :answer
-    end
+    [command: command, organize: organize, agent: agent]
+    |> Enum.filter(fn {_task, p} -> p >= config(:route_threshold, 0.5) end)
+    |> Enum.max_by(&elem(&1, 1), fn -> {:answer, 0} end)
+    |> elem(0)
   end
 
   # The local model tries first. If it falls short, the escalation ladder

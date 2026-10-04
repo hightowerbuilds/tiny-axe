@@ -63,7 +63,7 @@ defmodule TinyAxe.Escalation do
   defp climb([choice | rest], why, mode, notify, acc, fun) do
     label = Model.label(choice)
 
-    case permit(choice, why, mode, notify) do
+    case permit(choice, "the local model fell short: #{why}", mode, notify) do
       {:ok, mode} ->
         notify.({:escalate, %{to: label, reason: why}})
 

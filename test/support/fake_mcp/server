@@ -16,7 +16,7 @@ defmodule Fake do
     [
       tool("echo", %{text: %{type: "string"}}, %{readOnlyHint: true}),
       tool("card", %{}, %{readOnlyHint: true}),
-      tool("send_note", %{to: %{type: "string"}, text: %{type: "string"}}, %{openWorldHint: true}),
+      tool("send_note", %{to: %{type: "string"}, text: %{type: "string"}}, %{openWorldHint: true}, ["to", "text"]),
       tool("delete_all", %{}, %{destructiveHint: true}),
       tool("slow", %{ms: %{type: "integer"}}, %{readOnlyHint: true}),
       tool("crash", %{}, %{}),
@@ -25,8 +25,8 @@ defmodule Fake do
     ]
   end
 
-  defp tool(name, props, ann),
-    do: %{name: name, description: "The #{name} tool.", inputSchema: %{type: "object", properties: props}, annotations: ann}
+  defp tool(name, props, ann, required \\ []),
+    do: %{name: name, description: "The #{name} tool.", inputSchema: %{type: "object", properties: props, required: required}, annotations: ann}
 
   def emit(msg), do: IO.puts(JSON.encode!(msg))
   def text(id, t), do: emit(%{jsonrpc: "2.0", id: id, result: %{content: [%{type: "text", text: t}]}})

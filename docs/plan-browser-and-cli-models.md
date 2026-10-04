@@ -1,10 +1,10 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-10-04): Phases 0–4 are done: probing, the Claude and Codex
-backends, escalation, probing MCP, and the MCP client and gate. Part B was rewritten on 2026-10-04 to
+Status (2026-10-04): Phases 0–5 are done: probing, the Claude and Codex
+backends, escalation, probing MCP, the MCP client and gate, and the drivers. Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 5, the
-drivers.
+strongest agent loop, with every call through one gate. Next is Phase 6, the
+browser server's read tools.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -503,7 +503,8 @@ Each phase ends with its tests passing, as with the file operations.
    no browser yet:
    - policies, the approval popup, limits and the per-task journal
    - tested against a fake MCP server
-5. **Drivers:** the Claude Code loop through the gate, and the Gemma loop.
+5. **Drivers (done; see "Phase 5: what was built"):** the Claude Code loop
+   through the gate, and the Gemma loop.
    The TUI shows tool calls as they happen.
 6. **The browser server, read tools:** snapshots, screenshots and extraction
    with redaction, on the fixture site. Answers can read the web through the
@@ -524,9 +525,9 @@ Each phase ends with its tests passing, as with the file operations.
 
 ## Open decisions (2026-10-04)
 
-- **The browser's driver:** start with Claude Sonnet (recommended, for
-  capability) and let the eval decide whether Haiku is enough for simple
-  reads.
+- **The agent's driver** (`config :tiny_axe, :models, agent:`, Haiku for now):
+  Claude Sonnet is recommended for capability, and the eval can decide whether
+  Haiku is enough for simple reads.
 - **The first third-party MCP servers** (Phase 8): the user picks.
 
 ## Decisions (2026-09-28)
@@ -790,4 +791,56 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
   - **Stdin:** a CLI's stdin must be closed or redirected. Codex waits forever
     on an open pipe, and Claude waits 3 s. The CLI runner already sends the
     prompt from a file.
+
+## Phase 5: what was built (2026-10-04)
+
+- **`TinyAxe.Agent`** runs a request that needs tools.
+  - It opens a gate task, lets a driver work, and always closes the task, so
+    the token stops working.
+  - The driver is `config :tiny_axe, :models, agent:`, which replaces the
+    old `browser:` role.
+  - A driver off this machine needs your say-so for the session (the same
+    consent as escalation). Without it, the local model drives, and the
+    transcript says so.
+  - If the local driver falls short, the escalation ladder takes over with
+    Claude's own loop.
+- **`ClaudeDriver`** runs `claude -p` with the Phase 3 driver flags.
+  - The gate's address and token are in a 0600 file, removed afterwards.
+  - `MCP_TOOL_TIMEOUT=900000` outlasts the gate's 10-minute approval wait. A
+    400-second tool call was fine even without it.
+  - Text streams as it works; the answer is the final message.
+  - Any key source other than the subscription is stopped.
+  - `--effort` is `:agent_effort` (medium).
+- **`CodexDriver`** runs `codex exec` with its own tools off. The gate is
+  added over HTTP, and its token arrives through an environment variable,
+  never the command line.
+- **`LocalDriver`** is tiny-axe's own loop for Gemma: a fixed JSON shape (a
+  tool and its arguments, or an answer).
+  - It calls the gate over HTTP like any client.
+  - The loop is short: 12 turns.
+  - A made-up tool name is caught before it reaches the gate.
+  - Three failed calls in a row count as falling short.
+  - An image result is described as one it can't see, with an instruction
+    not to describe it.
+- **The gate** now refuses a call missing a required argument, before asking
+  the user, so the agent can fix it.
+- **The pipeline** adds a "tools" routing question only when MCP servers are
+  connected, naming them. A request that needs them goes to the agent.
+- **The TUI** shows "🤖 Claude haiku is working, with: …". An agent's answer
+  goes after the tool calls that led to it.
+- **Tests:** 13 new, 204 in all. The fake `claude` and `codex` now read the
+  gate's address and token the way the real CLIs do and call through it, so
+  each driver is tested end to end without the subscription. The consent test
+  and the token-revocation test were shown to fail with their code removed.
+- **Checked with the real models**, on one task (echo, read a swatch image,
+  send a note):
+  - **Claude Haiku as the driver:** did the whole task correctly. It saw the
+    image, and the note waited for approval.
+  - **Gemma, before the fixes** (33.7 s): it said the swatch was "blue" (it
+    can't see images), sent the note without a recipient, then called a tool
+    named `tool` nine times. It ran out of steps, escalated, and Haiku
+    finished correctly.
+  - **Gemma, after the fixes** (9.7 s): it said it couldn't see the image.
+    The gate refused the note for its missing recipient, and Gemma reported
+    honestly what it couldn't do.
 

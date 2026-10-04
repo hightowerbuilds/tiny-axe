@@ -8,7 +8,8 @@ defmodule TinyAxe.Tools.Gate do
   Every call:
 
     1. **limits** — at most `:max_calls` calls and `:max_minutes` per task, and
-       never the same call three times in a row
+       never the same call three times in a row; a call missing a required
+       argument goes back to the agent
     2. **class** — `TinyAxe.Tools.Policy` decides read, local, outward, commit
        or refused; the model never does
     3. **approval** — an outward call waits for the user (`{:tool_approval, ...}`,
@@ -124,7 +125,13 @@ defmodule TinyAxe.Tools.Gate do
         {:ok, allowed} ->
           class = Policy.classify(tool.definition, tool.policy)
           task.notify.({:tool_call, %{tool: name, class: class, args: Redact.deep(args)}})
-          decide(task, tool, args, class, allowed)
+
+          # A call missing what the tool requires goes back to the agent to fix,
+          # before the user is asked about it.
+          case missing(tool.definition, args) do
+            [] -> decide(task, tool, args, class, allowed)
+            keys -> {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}
+          end
       end
 
     result = Redact.result(result)
@@ -150,6 +157,11 @@ defmodule TinyAxe.Tools.Gate do
     )
 
     result
+  end
+
+  defp missing(definition, args) do
+    required = get_in(definition, ["inputSchema", "required"]) || []
+    Enum.reject(required, &(Map.get(args, &1) not in [nil, ""]))
   end
 
   defp decide(_task, _tool, _args, :refused, _allowed),
@@ -239,7 +251,13 @@ defmodule TinyAxe.Tools.Gate do
   def init(:ok), do: {:ok, %{}}
 
   @impl true
-  def handle_call({:open, task}, _from, tasks), do: {:reply, :ok, Map.put(tasks, task.id, task)}
+  def handle_call({:open, task}, _from, tasks) do
+    # A run that was killed never closed its task; forget it once well expired.
+    now = System.monotonic_time(:millisecond)
+    tasks = Map.reject(tasks, fn {_id, t} -> now > t.deadline + :timer.minutes(5) end)
+    {:reply, :ok, Map.put(tasks, task.id, task)}
+  end
+
   def handle_call({:close, id}, _from, tasks), do: {:reply, :ok, Map.delete(tasks, id)}
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
 

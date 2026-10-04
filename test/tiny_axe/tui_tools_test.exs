@@ -94,4 +94,25 @@ defmodule TinyAxe.TUIToolsTest do
     # A call that went through needs no line of its own.
     assert length(metas) == 3
   end
+
+  test "an agent run says who's driving, and its answer follows its tool calls" do
+    state =
+      %{running() | pending_prompt: "post the release notes"}
+      |> event({:agent, %{driver: "Claude haiku", servers: ["github"]}})
+      |> event({:tool_call, %{tool: "github__get_release", class: :read, args: %{}}})
+      |> event({:delta, "Posting…"})
+      |> event({:answered_by, %{model: "Claude haiku"}})
+      |> event({:done, "Posted the notes."})
+
+    entries = Enum.drop(state.transcript, 1)
+
+    assert [
+             {:meta, "🤖 Claude haiku is working, with: github"},
+             {:meta, "🔧 github__get_release (only reads)"},
+             {:meta, "→ answered by Claude haiku, off this machine"},
+             {:assistant, "Posted the notes."}
+           ] = entries
+
+    assert state.run == nil
+  end
 end
