@@ -1,18 +1,21 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-09-29): Phases 0–2 are done: probing, the Claude and Codex
-backends, and escalation. The findings, decisions and notes for each phase
-are below. Next is Phase 3, the read-only browser.
+Status (2026-10-04): Phases 0–3 are done: probing, the Claude and Codex
+backends, escalation, and probing MCP. Part B was rewritten on 2026-10-04 to
+make the agent as capable as possible: any tool via MCP, driven by the
+strongest agent loop, with every call through one gate. Next is Phase 4, the
+MCP client and the gate.
 
 Three pieces of work, which depend on each other in this order:
 
 - **A. Claude and Codex as models**: run through the subscription CLIs
   (`claude -p`, `codex exec`), never an API key, and paired with Jev.
-- **B. A browser**: the model's arms and legs on the web. It can browse,
-  search, fill forms and add things to a cart.
-- **C. Secure purchasing**: the one path by which a browser session can spend
-  money. The model can propose a purchase but can never make one: code builds
-  the checkout summary, code enforces the limits, and only the user's keypress
+- **B. Tools: the browser and MCP servers**: the agent's arms and legs. It
+  browses and interacts with the web, and uses any MCP server the user
+  connects. Every tool call goes through tiny-axe's gate.
+- **C. Secure purchasing**: the one path by which a session can spend money.
+  The model can propose a purchase but can never make one: code builds the
+  checkout summary, code enforces the limits, and only the user's keypress
   places the order.
 
 The rule is the same one tiny-axe already follows for files and commands: the
@@ -197,77 +200,151 @@ too.
   ("denied: nothing is sent") and the 90% usage-stop test were each shown to
   fail with their check removed.
 
-## B. The browser
+## B. Tools: the browser and MCP servers
 
-### Engine
+The goal is the most capable agent tiny-axe can run, without giving up
+control. Two ideas carry it:
 
-A small Node sidecar, `priv/browser/driver.mjs`, uses Playwright to drive
-Chrome. tiny-axe talks to it over a Port in JSON lines. `TinyAxe.Browser` is a
-supervised GenServer: if the driver crashes, it restarts and reopens the last
-page. Playwright handles waiting, frames and accessibility snapshots well.
-Speaking the Chrome DevTools Protocol directly from Elixir would avoid Node,
-but it would mean building all of that ourselves.
+1. **Every tool is an MCP tool, and every call goes through one gate.** The
+   browser, third-party MCP servers (GitHub, search, docs…), and tiny-axe's own
+   file, command and web tools are all reached the same way. The gate applies
+   the rules in code, whichever model is driving.
+2. **The strongest available agent loop drives.** By default that's Claude
+   Code's own loop (`claude -p`), not a JSON action format we invent. It plans
+   many steps, makes calls in parallel and reads screenshots. Its only tools
+   are the ones the gate offers.
 
-- **Dedicated profile:** `~/.local/share/tiny-axe/browser/profile`, never the
-  user's everyday Chrome profile. The user logs into shops once, by hand, in
-  this profile, and the logins persist.
-- **Headed by default**, so the user can watch and can take over when asked.
-  Headless is only for reading pages, where it can replace `Web.fetch`'s
-  Chrome fallback.
-- Downloads go to one folder that tiny-axe names.
+### Architecture
 
-### What the model sees
+```
+ Claude Code (claude -p) ─┐
+ Codex (codex exec)      ─┼─ MCP ─▶ tiny-axe's gate ──▶ browser server (ours: Playwright + Chrome)
+ Gemma (tiny-axe's loop) ─┘         policy · approval   ├─▶ third-party MCP servers
+                                    redaction · journal └─▶ tiny-axe's own tools (files, commands, web search)
+```
 
-- The URL, the title, and an accessibility snapshot with numbered refs
-  (`[12] button "Add to cart"`, `[13] textbox "Quantity" = 1`), cut to a
-  budget. No screenshots at first, since the local model's vision is
-  unproven. Screenshots can be added later for Claude.
-- **Redaction happens in the driver, before anything leaves it:** values of
-  password fields, fields with `autocomplete=cc-*`, and any Luhn-valid card
-  number become `[redacted]`. This applies to every model, Jev and the
-  logs.
-- Page text is untrusted material, never instructions. The same wording as
-  web results is used, and the purchase gate (C) doesn't depend on the model
-  obeying it.
+- **The gate** (`TinyAxe.Tools.Gate`) is an MCP server that tiny-axe runs
+  inside the BEAM, so it can ask the TUI for approval.
+  - It's reached over streamable HTTP on 127.0.0.1 with a per-session token,
+    or through a small stdio relay if a CLI only takes stdio servers (Phase 3
+    finds out).
+  - It lists every connected server's tools, namespaced (`browser.click`,
+    `github.create_issue`), plus tiny-axe's own.
+  - Every call goes: classify → approve if needed → forward → redact the
+    result → label it untrusted → journal → return.
+- **The MCP client** (`TinyAxe.MCP`) speaks stdio and streamable HTTP, with
+  one supervised process per server. It handles `tools/list`, `tools/call`,
+  text and image results, timeouts, and restarts after a crash.
+- **Servers are configured** in `~/.config/tiny-axe/mcp.json`, the same shape
+  as Claude Code's `.mcp.json`. Their secrets come from the keyring or the
+  env file, and never appear in a prompt.
+- **No path around the gate.** The drivers never see the downstream servers:
+  - Claude Code runs with `--strict-mcp-config --mcp-config <the gate only>`,
+    `--tools ""` (no built-in tools), and only the gate's tools allowed.
+  - Codex gets only the gate, with its own browser, shell and computer-use
+    features off (Phase 0).
 
-### Actions
+  So connecting more servers adds power, never a way around the rules.
 
-The model fills a fixed JSON shape, like the Organizer does, with one action
-per turn:
+### Drivers
 
-`goto(url)`, `click(ref)`, `type(ref, text)`, `select(ref, option)`,
-`press(key)`, `scroll`, `back`, `extract(what)`, `ask_user(question)`,
-`done(summary)`
-
-Code checks each action before running it: the ref exists on the current
-snapshot, `goto` is http(s) only, and `type` never targets a password or
-payment field. The loop stops after `max_steps` (40), and also if the same
-action on the same page repeats three times; then it asks the user.
-
-### Risk classes
-
-Code decides the class and Jev double-checks it. The model acting on the page
-never decides.
-
-| Class | Examples | What happens |
+| Driver | Used for | Notes |
 |---|---|---|
-| Read | goto, scroll, search, extract | Runs; shown in the transcript |
-| Reversible | add to cart, change quantity, fill shipping from a saved address | Runs; shown in the transcript |
-| **Commit** | Place order, Buy now, Pay, Subscribe, 1-Click, Confirm purchase, submitting a form with payment fields | **Stops at the purchase gate (C)** |
-| Handoff | log in, 2FA, CAPTCHA, "verify it's you", 3-D Secure | Pauses, brings the window forward, the user does it and presses a key to continue |
-| Refused | typing passwords or card numbers, account or security settings | Never done |
+| Claude Code loop (`claude -p` + the gate) | web and multi-step tool tasks (default) | multi-step, parallel calls, reads screenshots; subscription |
+| Codex loop (`codex exec` + the gate) | the alternative, for comparison | about 11.5k tokens of overhead per call |
+| tiny-axe's own loop (Gemma, a JSON action shape) | short, simple read tasks, offline | escalates to the Claude loop when it falls short (the Phase 2 ladder) |
 
-Commit detection is **fail-closed**. A click counts as a commit when either
-of these says so:
+Each task's limits are enforced by the gate, which sees every call, so
+nothing depends on trusting the driver:
 
-- code heuristics: the button text, a checkout-like URL, or a form holding
-  payment fields
-- Jev: "Would this spend money or commit to a purchase?"
+- the most tool calls (60 by default)
+- wall time
+- the same call repeating three times
 
-If Jev is unavailable, the click counts as a commit.
+`esc` kills the driver; the CLI runner already does this.
 
-tiny-axe does no bot-detection evasion: no stealth plugins, no CAPTCHA
-solving. Sites that block automation get a handoff or a "can't do this here".
+### The browser server (ours)
+
+This is a Node MCP server (`priv/browser/server.mjs`) that drives the
+installed Chrome with Playwright; tiny-axe starts it as a downstream server.
+We write our own, rather than using Microsoft's Playwright MCP as it is,
+because redaction and the gate's metadata have to happen on the DOM, inside
+the server. Phase 0 showed snapshots print card numbers and passwords. We
+borrow Playwright MCP's tool shapes and its snapshots with refs.
+
+- **Read tools:**
+  - navigate, back and forward, list tabs
+  - snapshot: an accessibility tree with refs, redacted
+  - screenshot, with password and card fields masked before capture
+  - extract the readable text, find in page
+  - wait for text, a selector or the network to go idle
+  - a console and network summary, for debugging the user's own web apps
+- **Interaction tools:**
+  - click, type, fill several fields, select, check, press a key, hover,
+    drag, scroll
+  - open, switch or close a tab; accept or dismiss dialogs; resize
+  - upload a file, only one the user approved
+  - download, into a tiny-axe folder, treated as untrusted
+- **Handoff:** brings the window forward and waits for the user (login, 2FA,
+  CAPTCHA, a bank's 3-D Secure check).
+- **Never offered:** running arbitrary JavaScript, reading cookies or
+  storage, changing browser settings, or using the user's everyday Chrome
+  profile.
+
+Every interaction result carries what the gate needs to classify it:
+
+- the target's role, name and text
+- the form it would submit, and whether that form has payment or password
+  fields
+- the URL and domain, and whether navigation happened
+
+The browser runs in its own profile
+(`~/.local/share/tiny-axe/browser/profile`), where the user logs into sites
+by hand once. It's headed by default, so the user can watch and take over,
+and headless only for plain reading.
+
+### Risk classes, for every tool
+
+The gate classifies each call. The model never does.
+
+| Class | Browser examples | MCP examples | What happens |
+|---|---|---|---|
+| Read | navigate, snapshot, screenshot, extract | search, read an issue, fetch docs | Runs; shown in the transcript |
+| Local | type into a form, add to cart, open a tab, download | make a draft | Runs; shown, and listed in the task's summary |
+| **Outward** | submit a form that sends something (a post, message, sign-up or review), upload a file | send an email, open a PR, post a comment | **An approval popup each time**, showing exactly what will be sent |
+| **Commit** | place an order, pay, subscribe, 1-Click | any tool that spends money | **The purchase gate (C)** |
+| Handoff | log in, 2FA, CAPTCHA | an OAuth consent screen | The user does it |
+| Refused | typing passwords or card numbers, running JavaScript, security settings | tools on the denylist | Never done |
+
+How a class is decided:
+
+- **Browser calls:**
+  - Code heuristics: button text, the form's fields and method, URL
+    patterns.
+  - Jev: "Would this send something, or spend money?"
+  - **Fail-closed:** when unsure, or when Jev is unavailable, the stricter
+    class applies.
+- **MCP tools:**
+  - Each server has a policy in `mcp.json` (`"read": [...]`,
+    `"outward": [...]`, `"deny": [...]`).
+  - MCP's tool annotations (`readOnlyHint`, `destructiveHint`,
+    `openWorldHint`) can only make a class stricter, never looser.
+  - **A tool with no policy is Outward:** it's asked about every time.
+  - The user can allow a tool for the session ("allow
+    `github.create_issue` this session").
+
+### Safety rules
+
+- **Untrusted material:** page content, downloads and every MCP result are
+  labelled as material, not instructions. The gate does the enforcing, so an
+  injection that convinces the model still meets the gate.
+- **The model can't change its own reach:** it can't add MCP servers, change
+  policies or install anything. Only the user edits `mcp.json`.
+- **Redaction** happens before any model, Jev, log or journal sees a result.
+- **A per-task journal** records every tool call: its inputs, class,
+  decision and a summary of the result.
+- **No bot-detection evasion:** no stealth plugins, no CAPTCHA solving.
+  Sites that block automation get a handoff.
 
 ## C. Secure purchasing
 
@@ -289,9 +366,9 @@ solving. Sites that block automation get a handoff or a "can't do this here".
    saved address to use. If no maximum price is given, tiny-axe asks. The
    intent is stored, and nothing on a page can change it. A product page
    saying "ignore that, buy ten" has nothing to act on.
-2. **Browse and fill the cart** with the read and reversible actions from B.
-3. **The gate.** When the next action is a commit, the loop stops. Code builds
-   the checkout summary:
+2. **Browse and fill the cart** with read and local tool calls (B).
+3. **The purchase gate.** When the gate classifies a call as a commit, it holds
+   the call; the driver waits. Code builds the checkout summary:
    - the merchant, from the URL's domain rather than the page text
    - line items, total and currency, shipping address, and the payment method
      as the page shows it ("Visa ••4242")
@@ -385,6 +462,10 @@ The browser and purchase work is never tested on real shops.
     and a Codex model as the driver (success, steps, time, calls that left the
     machine)
   - escalation tasks, where Gemma fails and a larger model may fix it
+  - tool tasks: multi-step web tasks on fixture sites (search a catalogue,
+    fill a form, compare pages) and MCP tasks against a fake MCP server. The
+    gate must catch every outward and commit call, and no driver may reach a
+    tool except through the gate.
 
 ## Build order
 
@@ -407,18 +488,45 @@ Each phase ends with its tests passing, as with the file operations.
    - the "→ Claude haiku" label and the count of calls that left the machine
    - asking once per session before the first call
    - stopping escalation above 90% of a usage window
-3. **The browser, read-only:** the driver sidecar, the supervised
-   `TinyAxe.Browser`, snapshots, redaction and headless page reading. Tested
-   against the fixture shop.
-4. **The browser agent:** the action loop, reversible actions, handoffs and
-   loop limits.
-5. **The purchase gate:** intent, commit detection, the summary, limits, the
-   typed confirmation, the pre-click recheck, the purchase journal and crash
+3. **Probe MCP (done; see "Phase 3 findings"):**
+   - Does `claude -p` load `--mcp-config` servers under `--safe-mode` and with
+     `--tools ""`? Over HTTP, or only stdio? Can the allowed tools be limited
+     to the gate's?
+   - How does `-p` handle a tool needing permission? It must never stall.
+   - Do image results (screenshots) reach Claude?
+   - The same questions for `codex exec` with `-c mcp_servers…`.
+   - Playwright MCP's tool shapes, as a reference.
+   - The latency of a tool loop.
+
+   The findings go into this document.
+4. **The MCP client and the gate**, with no browser yet:
+   - policies, the approval popup, limits and the per-task journal
+   - tested against a fake MCP server
+5. **Drivers:** the Claude Code loop through the gate, and the Gemma loop.
+   The TUI shows tool calls as they happen.
+6. **The browser server, read tools:** snapshots, screenshots and extraction
+   with redaction, on the fixture site. Answers can read the web through the
+   browser.
+7. **Browser interaction:**
+   - the interaction tools and their risk classification
+   - handoffs, and approval for outward calls
+   - fixture sites with forms
+8. **Third-party MCP servers:** config, secrets and policies; the user picks
+   the first ones.
+9. **The purchase gate:** intent, the summary, limits, the typed
+   confirmation, the pre-click recheck, the purchase journal and crash
    recovery. Fixture shop only.
-6. **Payment methods:** merchant-saved first, then virtual cards from the
-   keyring.
-7. **The first real purchase:** small, on one merchant, with the user
-   watching.
+10. **Payment methods:** merchant-saved first, then virtual cards from the
+    keyring.
+11. **The first real purchase:** small, on one merchant, with the user
+    watching.
+
+## Open decisions (2026-10-04)
+
+- **The browser's driver:** start with Claude Sonnet (recommended, for
+  capability) and let the eval decide whether Haiku is enough for simple
+  reads.
+- **The first third-party MCP servers** (Phase 8): the user picks.
 
 ## Decisions (2026-09-28)
 
@@ -549,3 +657,74 @@ Luna is the alternative the eval compares against.
 - Codex answers don't stream, so the TUI shows "waiting for Codex…" rather
   than a live answer.
 - Browser redaction works on the DOM, not on the snapshot text.
+
+## Phase 3 findings (2026-10-04)
+
+The probes used a small test MCP server with four tools: echo, an image
+swatch, a 75-second wait, and "send a note". It logged every request it got.
+Every probe ran from an empty folder with the API-key variables removed.
+
+### Claude Code as a driver (`claude -p` 2.1.283)
+
+- **`--safe-mode` turns off every MCP server**, including those given with
+  `--mcp-config` (`mcp_servers: []`). Driver calls use `--setting-sources
+  local` instead. From an empty folder, that loads no user settings, hooks or
+  user plugins; only Claude Code's built-in plugins remain. Add
+  `--strict-mcp-config` and `--tools ""`, and the only tools are the MCP
+  server's. Plain model calls (Phase 1) keep `--safe-mode`.
+- **Tools that aren't allowed are denied at once.** Claude reports them in
+  `permission_denials` and asks the user. A headless run never stalls waiting
+  for permission. `--allowedTools mcp__<server>` allows a whole server, so
+  the gate's tools are allowed with `--allowedTools mcp__tinyaxe`.
+- **Image results reach Claude.** The swatch was correctly called "bright
+  green". Screenshots will work.
+- **HTTP with a bearer token works:** `{"type": "http", "url": ..., "headers":
+  {"Authorization": "Bearer ..."}}`. So the gate can live inside the BEAM,
+  reached over HTTP on 127.0.0.1 with a per-session token, with no stdio
+  relay. This adds an HTTP server (Bandit) to tiny-axe's dependencies.
+- **A 75-second tool call wasn't cut off,** so the gate can hold a call while
+  the user decides. Phase 4 checks much longer waits (Claude Code's
+  `MCP_TOOL_TIMEOUT`).
+- **Speed:** a two-call task with Haiku took 4.3 s.
+- **Startup:** Claude calls `server/discover` before `initialize`. The gate
+  must answer an unknown method with an error, not crash.
+
+The driver command:
+
+```
+claude -p --model <alias> --setting-sources local --tools "" --strict-mcp-config
+  --mcp-config <the gate only> --allowedTools mcp__tinyaxe --no-session-persistence
+  --system-prompt <ours> --output-format stream-json --include-partial-messages --verbose
+```
+
+### Codex as a driver (`codex exec` 0.157.1)
+
+- `-c mcp_servers.<name>.command=...` and `.args=[...]` add a stdio server
+  with Codex's own tools off. **Codex calls MCP tools without any approval
+  step of its own**, so the gate is the only control, as planned. Each call
+  appears as `mcp_tool_call` items (`server`, `tool`, `arguments`, `result`,
+  `status`).
+- **Image results reach it too** ("The swatch image shows green").
+- **Cost:** a two-call task took 8.7 s and about 37k input tokens, roughly
+  12k of overhead per turn. That confirms Claude as the default driver.
+- **Not probed yet:** Codex over HTTP (`mcp_servers.<name>.url`). If Codex
+  only takes stdio, it reaches the gate through a small stdio relay. Phase 4
+  checks.
+
+### Playwright MCP, for reference (1.64 alpha)
+
+Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
+`click`, `type`, `fill_form`, `select_option`, `hover`, `drag`, `drop`,
+`press_key`, `tabs`, `take_screenshot`, `wait_for`, `find`,
+`console_messages`, `network_requests`/`network_request`, `file_upload`,
+`handle_dialog`, `resize`, `emulate_media`, `close`, `evaluate` and
+`run_code_unsafe`.
+
+- Our browser server copies these shapes (an `element` description plus a
+  `target` ref).
+- It leaves out `evaluate` and `run_code_unsafe`: arbitrary JavaScript would
+  get around redaction and the gate.
+- This confirms why we need our own server: its snapshots and screenshots
+  are taken without redaction, and the gate can't redact snapshot text
+  reliably after the fact (Phase 0).
+
