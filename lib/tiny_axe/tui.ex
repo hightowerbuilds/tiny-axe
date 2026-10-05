@@ -178,6 +178,25 @@ defmodule TinyAxe.TUI do
     popup(" use a bigger model? ", lines, 0, area)
   end
 
+  # The agent needs the user to do something in the browser window.
+  defp overlay(%{tool_ask: %{class: :handoff} = ask}, area) do
+    lines = [
+      styled("Your turn in the browser", :cyan, [:bold]),
+      styled(""),
+      styled("The agent needs you to: #{ask[:reason] || "do something in the browser"}."),
+      styled(""),
+      styled(
+        "Do it in the browser window (tiny-axe never types passwords or card numbers), " <>
+          "then come back here.",
+        :yellow
+      ),
+      styled(""),
+      styled("y done · n I won't", :dark_gray)
+    ]
+
+    popup(" over to you ", lines, 0, area)
+  end
+
   defp overlay(%{tool_ask: ask}, area) when ask != nil do
     args =
       case ask.args do
@@ -195,6 +214,7 @@ defmodule TinyAxe.TUI do
           "from the #{ask.server} MCP server · #{TinyAxe.Tools.Policy.describe(ask.class)}",
           :yellow
         ),
+        ask[:reason] && styled("It #{ask.reason}.", :yellow, [:bold]),
         styled(""),
         ask.description && styled(ask.description, :dark_gray),
         ask.description && styled(""),
@@ -204,10 +224,12 @@ defmodule TinyAxe.TUI do
 
     body = Enum.map(args, &styled("  " <> &1))
 
-    footer = [
-      styled(""),
-      styled("y allow once · a allow this tool for the session · n refuse", :dark_gray)
-    ]
+    keys =
+      if Map.get(ask, :session_ok, true),
+        do: "y allow once · a allow this tool for the session · n refuse",
+        else: "y allow · n refuse"
+
+    footer = [styled(""), styled(keys, :dark_gray)]
 
     popup(" allow this tool call? ", lines ++ body ++ footer, 0, area)
   end
@@ -803,12 +825,28 @@ defmodule TinyAxe.TUI do
 
   # The agent's call waits for this answer in the gate.
   defp on_event(%Event.Key{code: code}, %{tool_ask: ask} = state) when ask != nil do
+    handoff? = ask[:class] == :handoff
+    session_ok? = Map.get(ask, :session_ok, true)
+
     answer =
       case code do
-        "y" -> {:once, "allowed #{ask.tool} once"}
-        "a" -> {:session, "allowed #{ask.tool} for this session"}
-        c when c in ["n", "esc"] -> {:deny, "refused #{ask.tool}"}
-        _ -> nil
+        "y" when handoff? ->
+          {:once, "you did it in the browser"}
+
+        "y" ->
+          {:once, "allowed #{ask.tool} once"}
+
+        "a" when not handoff? and session_ok? ->
+          {:session, "allowed #{ask.tool} for this session"}
+
+        c when c in ["n", "esc"] and handoff? ->
+          {:deny, "you didn't do it in the browser"}
+
+        c when c in ["n", "esc"] ->
+          {:deny, "refused #{ask.tool}"}
+
+        _ ->
+          nil
       end
 
     case answer do
@@ -1574,9 +1612,10 @@ defmodule TinyAxe.TUI do
   defp apply_event({:tool_approval, ask}, state),
     do: %{state | tool_ask: ask, status: "waiting for your answer…"}
 
-  defp apply_event({:tool_call, %{tool: tool, class: class, args: args}}, state) do
+  defp apply_event({:tool_call, %{tool: tool, class: class, args: args} = call}, state) do
     shown = if args == %{}, do: "", else: " " <> String.slice(JSON.encode!(args), 0, 120)
-    add_meta(state, "🔧 #{tool}#{shown} (#{TinyAxe.Tools.Policy.describe(class)})")
+    why = if call[:reason], do: ": #{call.reason}", else: ""
+    add_meta(state, "🔧 #{tool}#{shown} (#{describe_class(class)}#{why})")
   end
 
   # Results that went through need no line of their own; the answer uses them.
@@ -1723,6 +1762,9 @@ defmodule TinyAxe.TUI do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
   end
+
+  defp describe_class(:handoff), do: "needs you in the browser"
+  defp describe_class(class), do: TinyAxe.Tools.Policy.describe(class)
 
   defp pretty_json(json) do
     # Two-space indentation for nested arguments; short ones stay on one line.

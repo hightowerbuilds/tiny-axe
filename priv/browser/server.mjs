@@ -69,6 +69,7 @@ function track(page) {
   page.on("console", (m) => push(consoleLog.get(page), `${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => push(consoleLog.get(page), `error: ${e.message}`));
   page.on("response", (r) => push(network.get(page), `${r.request().method()} ${r.status()} ${r.url()}`));
+  watchDialogs(page);
   page.on("close", () => {
     const i = pages.indexOf(page);
     if (i >= 0) pages.splice(i, 1);
@@ -77,6 +78,48 @@ function track(page) {
 }
 
 function push(list, item) { list.push(item); if (list.length > 200) list.shift(); }
+
+// A dialog (alert, confirm, prompt) waits here until browser_handle_dialog.
+let dialog = null;
+let dialogPage = null;
+function watchDialogs(page) {
+  page.on("dialog", (d) => { dialog = d; dialogPage = page; });
+}
+
+async function dismissDialog() {
+  if (dialog) { const d = dialog; dialog = null; dialogPage = null; await d.dismiss().catch(() => {}); }
+}
+
+// An action that may open a dialog: a dialog freezes the page's script, so
+// the action can't finish until it's answered; return as soon as one opens.
+async function acting(fn) {
+  const action = fn().then(() => "done");
+  action.catch(() => {});
+  let timer;
+  const opened = new Promise((resolve) => {
+    timer = setInterval(() => { if (dialog) resolve("dialog"); }, 50);
+  });
+  try {
+    if ((await Promise.race([action, opened])) === "done") await action;
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+// A handoff needs a window the user can see: a headless browser is reopened
+// headed, with the same profile (so logins carry over) and the same pages.
+async function headed() {
+  if (process.env.TINY_AXE_BROWSER_NO_WINDOW === "1") return;
+  if (!context || process.env.TINY_AXE_BROWSER_HEADLESS === "0") return;
+  const urls = pages.map((p) => p.url()).filter((u) => u.startsWith("http"));
+  await context.close().catch(() => {});
+  context = null;
+  process.env.TINY_AXE_BROWSER_HEADLESS = "0";
+  const ctx = await browser();
+  for (const u of urls) { const p = await ctx.newPage(); await p.goto(u).catch(() => {}); }
+  for (const p of [...pages]) if (p.url() === "about:blank" && pages.length > 1) await p.close().catch(() => {});
+  current = Math.max(pages.length - 1, 0);
+}
 
 async function page() {
   const ctx = await browser();
@@ -159,6 +202,68 @@ function checkUrl(url) {
 
 class UserError extends Error {}
 
+// ---------- acting ----------
+
+function target(p, ref) {
+  if (!ref) throw new UserError("give the element's ref from the snapshot, e.g. e12");
+  return p.locator(`aria-ref=${ref}`);
+}
+
+// Never types into a password or card field, whatever the gate decided.
+async function refuseSensitive(loc) {
+  const sensitive = await loc.evaluate((el, sel) => el.matches(sel), SENSITIVE).catch(() => false);
+  if (sensitive) throw new UserError("tiny-axe never types into password or card fields; the user does that");
+}
+
+// After an action: give a navigation it started time to begin, let the page
+// settle, then show it.
+async function after(p, note = "") {
+  if (!dialog) {
+    await p.waitForTimeout(250);
+    await p.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
+    await p.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+  }
+  // While a dialog is open the page's script is frozen: nothing on it can be
+  // read until the dialog is answered.
+  if (dialog && dialogPage === p) {
+    return text(`Page: ${p.url()}${note}\nA ${dialog.type()} dialog is open: "${redact(dialog.message())}". Answer it with browser_handle_dialog before anything else on this page.`);
+  }
+  return text(`${await header(p)}${note}\n\n${untrusted(await snapshot(p))}`);
+}
+
+// What the gate needs to classify an action on an element (or the focused one).
+async function inspect(p, ref) {
+  if (dialog) return { dialog: { type: dialog.type(), message: dialog.message() }, page: p.url() };
+  const loc = ref ? target(p, ref) : p.locator(":focus");
+  const info = await loc.first().evaluate((el, sel) => {
+    const abs = (u) => { try { return new URL(u, location.href).href; } catch { return null; } };
+    const form = el.form || el.closest("form");
+    const isSubmit = (el.tagName === "BUTTON" && (el.type || "submit") === "submit") ||
+      (el.tagName === "INPUT" && ["submit", "image"].includes(el.type));
+    const fields = form ? [...form.elements].map((f) => ({ tag: f.tagName.toLowerCase(), type: f.type || "", name: f.name || "", autocomplete: f.autocomplete || "" })) : [];
+    return {
+      tag: el.tagName.toLowerCase(),
+      type: el.type || "",
+      role: el.getAttribute("role") || "",
+      text: (el.innerText || el.value && el.type === "submit" && el.value || el.getAttribute("aria-label") || el.title || "").trim().slice(0, 200),
+      href: el.closest("a[href]") ? abs(el.closest("a[href]").getAttribute("href")) : null,
+      sensitive: el.matches(sel),
+      isSubmit,
+      inForm: !!form,
+      form: form ? {
+        action: abs(form.getAttribute("action") || location.href),
+        method: (form.getAttribute("method") || "get").toLowerCase(),
+        fields,
+        hasPassword: fields.some((f) => f.type === "password"),
+        hasPayment: [...form.querySelectorAll(sel)].some((f) => f.type !== "password"),
+        label: (form.getAttribute("aria-label") || form.querySelector("h1,h2,h3,legend")?.innerText || "").trim().slice(0, 100),
+      } : null,
+      page: location.href,
+    };
+  }, SENSITIVE);
+  return { ...info, dialog: dialog ? { type: dialog.type(), message: dialog.message() } : null };
+}
+
 // ---------- tools ----------
 
 const ro = { readOnlyHint: true };
@@ -171,6 +276,8 @@ const TOOLS = {
     annotations: { readOnlyHint: true, openWorldHint: true },
     async run({ url }) {
       const p = await page();
+      // Leaving a page answers its open dialog with Cancel.
+      await dismissDialog();
       await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
       await p.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
@@ -182,6 +289,7 @@ const TOOLS = {
     annotations: ro,
     async run() {
       const p = await page();
+      await dismissDialog();
       await p.goBack({ waitUntil: "domcontentloaded", timeout: 30000 });
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
     },
@@ -283,6 +391,150 @@ const TOOLS = {
       return text(`${await header(p)}\n\n${untrusted(redact(log.slice(-50).join("\n") || "(no messages)"))}`);
     },
   },
+  browser_click: {
+    description: "Click an element, by its ref from the snapshot. Returns the page afterwards.",
+    inputSchema: obj({ element: { type: "string", description: "what the element is, in words" }, ref: { type: "string" }, doubleClick: { type: "boolean" } }, ["ref"]),
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    async run({ ref, doubleClick }) {
+      const p = await page();
+      const loc = target(p, ref);
+      await acting(() => doubleClick ? loc.dblclick({ timeout: 10000 }) : loc.click({ timeout: 10000 }));
+      return after(p);
+    },
+  },
+  browser_type: {
+    description: "Type text into a field, by its ref (it replaces what's there). With submit, press Enter afterwards.",
+    inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" } }, ["ref", "text"]),
+    annotations: { readOnlyHint: false },
+    async run({ ref, text: value, submit }) {
+      const p = await page();
+      const loc = target(p, ref);
+      await refuseSensitive(loc);
+      await loc.fill(String(value), { timeout: 10000 });
+      if (submit) await acting(() => loc.press("Enter"));
+      return after(p);
+    },
+  },
+  browser_fill_form: {
+    description: "Fill several fields at once: a list of {ref, value}. Text fields get the text, checkboxes true/false, selects an option.",
+    inputSchema: obj({ fields: { type: "array", items: obj({ ref: { type: "string" }, value: {} }, ["ref", "value"]) } }, ["fields"]),
+    annotations: { readOnlyHint: false },
+    async run({ fields }) {
+      const p = await page();
+      for (const { ref, value } of fields || []) {
+        const loc = target(p, ref);
+        await refuseSensitive(loc);
+        const kind = await loc.evaluate((el) => el.tagName === "SELECT" ? "select" : (["checkbox", "radio"].includes(el.type) ? "check" : "text"));
+        if (kind === "select") await loc.selectOption(String(value), { timeout: 10000 });
+        else if (kind === "check") await loc.setChecked(value === true || value === "true", { timeout: 10000 });
+        else await loc.fill(String(value), { timeout: 10000 });
+      }
+      return after(p);
+    },
+  },
+  browser_select_option: {
+    description: "Choose option(s) in a select, by its ref.",
+    inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, values: { type: "array", items: { type: "string" } } }, ["ref", "values"]),
+    annotations: { readOnlyHint: false },
+    async run({ ref, values }) {
+      const p = await page();
+      await target(p, ref).selectOption(values, { timeout: 10000 });
+      return after(p);
+    },
+  },
+  browser_press_key: {
+    description: "Press a key (e.g. Enter, Escape, ArrowDown) in the page.",
+    inputSchema: obj({ key: { type: "string" } }, ["key"]),
+    annotations: { readOnlyHint: false },
+    async run({ key }) {
+      const p = await page();
+      await acting(() => p.keyboard.press(String(key)));
+      return after(p);
+    },
+  },
+  browser_hover: {
+    description: "Move the mouse over an element, by its ref (opens menus that open on hover).",
+    inputSchema: obj({ element: { type: "string" }, ref: { type: "string" } }, ["ref"]),
+    annotations: { readOnlyHint: false },
+    async run({ ref }) {
+      const p = await page();
+      await target(p, ref).hover({ timeout: 10000 });
+      return after(p);
+    },
+  },
+  browser_scroll: {
+    description: 'Scroll the page "down" or "up" (loads more on pages that load as you scroll).',
+    inputSchema: obj({ direction: { type: "string", enum: ["down", "up"] } }, ["direction"]),
+    annotations: { readOnlyHint: true },
+    async run({ direction }) {
+      const p = await page();
+      await p.mouse.wheel(0, direction === "up" ? -800 : 800);
+      await p.waitForTimeout(400);
+      return after(p);
+    },
+  },
+  browser_tab_new: {
+    description: "Open a new tab, optionally at a URL, and switch to it.",
+    inputSchema: obj({ url: { type: "string" } }),
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    async run({ url }) {
+      const ctx = await browser();
+      const p = await ctx.newPage();
+      current = pages.indexOf(p);
+      if (url) await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
+      return after(p);
+    },
+  },
+  browser_tab_close: {
+    description: "Close a tab by its index (from browser_tabs).",
+    inputSchema: obj({ index: { type: "integer" } }, ["index"]),
+    annotations: { readOnlyHint: false },
+    async run({ index }) {
+      if (!(index >= 0 && index < pages.length)) throw new UserError(`there's no tab ${index}`);
+      await pages[index].close();
+      return text(`Closed tab ${index}.`);
+    },
+  },
+  browser_handle_dialog: {
+    description: "Answer the open dialog: accept (OK) or not (Cancel), with text for a prompt.",
+    inputSchema: obj({ accept: { type: "boolean" }, promptText: { type: "string" } }, ["accept"]),
+    annotations: { readOnlyHint: false },
+    async run({ accept, promptText }) {
+      if (!dialog) throw new UserError("no dialog is open");
+      const d = dialog; dialog = null; dialogPage = null;
+      if (accept) await d.accept(promptText); else await d.dismiss();
+      return after(await page(), ` · dialog ${accept ? "accepted" : "dismissed"}`);
+    },
+  },
+  browser_file_upload: {
+    description: "Give a file input files from this computer (the user is asked first), by its ref.",
+    inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, paths: { type: "array", items: { type: "string" } } }, ["ref", "paths"]),
+    annotations: { readOnlyHint: false, openWorldHint: true },
+    async run({ ref, paths }) {
+      const p = await page();
+      await target(p, ref).setInputFiles(paths, { timeout: 10000 });
+      return after(p);
+    },
+  },
+  browser_handoff: {
+    description: "Ask the user to do something themselves in the browser window: log in, a 2FA code, a CAPTCHA, a bank check. Give the reason.",
+    inputSchema: obj({ reason: { type: "string" } }, ["reason"]),
+    annotations: { readOnlyHint: true },
+    async run() {
+      await headed();
+      const p = await page();
+      await p.bringToFront().catch(() => {});
+      return text(`${await header(p)}\nThe browser window is in front of the user.`);
+    },
+  },
+  browser_inspect: {
+    description: "For tiny-axe's gate only: what an element is and what acting on it would do.",
+    inputSchema: obj({ ref: { type: "string" } }),
+    annotations: { readOnlyHint: true },
+    async run({ ref }) {
+      return text(JSON.stringify(await inspect(await page(), ref)));
+    },
+  },
   browser_network_requests: {
     description: "The current page's recent network requests: method, status and URL.",
     inputSchema: obj(),
@@ -304,6 +556,9 @@ function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
 // One tool call at a time: two overlapping snapshots would each blank the
 // fields, and the second would "restore" the first one's blanks.
 let queue = Promise.resolve();
+
+// What can still be done while a dialog has the page frozen.
+const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read"]);
 function serial(fn) {
   const run = queue.then(fn, fn);
   queue = run.catch(() => {});
@@ -325,7 +580,12 @@ async function handle(msg) {
       const tool = TOOLS[params?.name];
       if (!tool) return send({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: `no tool ${params?.name}` }] } });
       try {
-        return send({ jsonrpc: "2.0", id, result: await serial(() => tool.run(params.arguments || {})) });
+        return send({ jsonrpc: "2.0", id, result: await serial(() => {
+          if (dialog && !DIALOG_SAFE.has(params.name)) {
+            throw new UserError(`a ${dialog.type()} dialog is open ("${redact(dialog.message())}"): answer it with browser_handle_dialog first`);
+          }
+          return tool.run(params.arguments || {});
+        }) });
       } catch (e) {
         const why = e instanceof UserError ? e.message : `the browser couldn't do that: ${e.message.split("\n")[0]}`;
         return send({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: redact(why) }] } });

@@ -115,4 +115,53 @@ defmodule TinyAxe.TUIToolsTest do
 
     assert state.run == nil
   end
+
+  describe "browser actions" do
+    defp browser_ask(state, class, reason) do
+      ref = make_ref()
+
+      ask = %{
+        tool: "browser__browser_click",
+        server: "browser",
+        description: "Click an element.",
+        args: %{"ref" => "e12", "element" => "Send message"},
+        class: class,
+        reason: reason,
+        session_ok: false,
+        reply_to: self(),
+        ref: ref
+      }
+
+      {event(state, {:tool_approval, ask}), ref}
+    end
+
+    test "say what the click would do, and offer only y or n" do
+      {state, ref} =
+        browser_ask(running(), :outward, ~s(submits the form "Contact us" to example.com (POST\)))
+
+      screen = draw(state)
+
+      assert screen =~ ~s(It submits the form "Contact us" to example.com (POST\).)
+      assert screen =~ "y allow · n refuse"
+      refute screen =~ "allow this tool for the session"
+
+      # "a" (for the session) does nothing here.
+      {:noreply, state} = TUI.handle_event(key("a"), state)
+      refute_received {:tool_answer, ^ref, _}
+      assert state.tool_ask != nil
+    end
+
+    test "a handoff asks the user to do it in the window" do
+      {state, ref} = browser_ask(running(), :handoff, "sign in to the shop")
+      screen = draw(state)
+
+      assert screen =~ "Your turn in the browser"
+      assert screen =~ "The agent needs you to: sign in to the shop."
+      assert screen =~ "y done · n I won't"
+
+      {:noreply, state} = TUI.handle_event(key("y"), state)
+      assert_received {:tool_answer, ^ref, :once}
+      assert List.last(state.transcript) == {:meta, "you did it in the browser"}
+    end
+  end
 end

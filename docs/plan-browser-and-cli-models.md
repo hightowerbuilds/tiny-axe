@@ -1,11 +1,11 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-10-04): Phases 0–6 are done: probing, the Claude and Codex
-backends, escalation, probing MCP, the MCP client and gate, the drivers, and
-the browser's read tools. Part B was rewritten on 2026-10-04 to
+Status (2026-10-04): Phases 0–7 are done: probing, the Claude and Codex
+backends, escalation, probing MCP, the MCP client and gate, the drivers, the
+browser's read tools, and browser interaction. Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 7,
-browser interaction.
+strongest agent loop, with every call through one gate. Next is Phase 8,
+third-party MCP servers.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -510,7 +510,7 @@ Each phase ends with its tests passing, as with the file operations.
 6. **The browser server, read tools (done; see "Phase 6: what was built"):** snapshots, screenshots and extraction
    with redaction, on the fixture site. Answers can read the web through the
    browser.
-7. **Browser interaction:**
+7. **Browser interaction (done; see "Phase 7: what was built"):**
    - the interaction tools and their risk classification
    - handoffs, and approval for outward calls
    - fixture sites with forms
@@ -894,4 +894,68 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
   elixir-lang.org, waited, and took a full-page screenshot through the gate
   (3 read calls, 15 s). It answered with the newest version on the page (Elixir
   v1.20) and described the page's colours from the image.
+
+## Phase 7: what was built (2026-10-04)
+
+- **Interaction tools** in the browser server:
+  - `browser_click`, `browser_type` (optionally pressing Enter),
+    `browser_fill_form`, `browser_select_option`, `browser_press_key`,
+    `browser_hover`, `browser_scroll`
+  - `browser_tab_new` and `browser_tab_close`
+  - `browser_handle_dialog`, `browser_file_upload`, `browser_handoff`
+
+  Elements are named by their snapshot ref (`aria-ref=…`). The server
+  refuses to type into password or card fields, whatever the gate decides.
+- **`browser_inspect`** tells the gate what an action's target is: link or
+  submit button, the form's method and action, payment and password fields,
+  the label, and any open dialog. The gate hides it from agents and refuses
+  it if an agent calls it anyway.
+- **`TinyAxe.Tools.BrowserPolicy`** classes each action from that
+  inspection; the reason is shown when the user is asked. In order:
+  - **Links and GET forms** are reads, unless the URL's query string is over
+    200 characters, which makes them outward. This closes the "navigation
+    as a way out" gap.
+  - **POST forms, password forms** ("signs in") and buttons whose words
+    send something are outward. Accepting a dialog (quoting it) and uploads
+    are outward too.
+  - **Payment forms** and purchase words (place order, buy, pay, subscribe…)
+    are commit, which stays refused until the purchase gate exists.
+  - **Typing into password or card fields** is refused.
+  - **Known undoable labels** (add to cart, next, show more, filters, cookie
+    banners…) are local.
+  - **Any other button** goes to Jev: "would this spend money / send or
+    change something?" If Jev doesn't answer, the stricter class applies.
+- **The gate:**
+  - Browser tools are classed per action.
+  - Outward browser actions are asked about every time, with no "allow for
+    the session", since allowing click would allow every click.
+  - A handoff first brings the browser window forward. If the browser is
+    headless, it's reopened headed with the same profile and pages. The gate
+    then asks the user to do the step and tells the agent whether they did.
+- **Dialogs:** a confirm or alert dialog freezes the page's script.
+  - An action returns as soon as a dialog opens.
+  - Only safe tools run while it's open (answer it, navigate away, tabs);
+    others are refused with "answer the dialog first".
+  - Leaving the page answers the dialog with Cancel.
+  - An action waits for any navigation it started before returning.
+- **The TUI:**
+  - The approval popup shows the reason ("It submits the form "Contact us"
+    to … (POST).") and, for browser actions, only `y`/`n`.
+  - A handoff popup: "Your turn in the browser… y done · n I won't".
+- **Tests:** 19 new, 232 in all.
+  - **Interaction tests** run through the gate against fixture pages (a
+    contact form, a search, a shop, a login, a dialog, a long-query link).
+    The fixture site records everything sent to it, so the tests check what
+    actually happened.
+  - **Pure `BrowserPolicy` tests** need no browser.
+  - **Shown to bite:** the tests failed when purchase detection, POST forms
+    asking, or fail-closed was removed.
+- **Checked with the real agent** (Claude Haiku), on the fixture site: "add the
+  mug to the cart, buy it, then send the shop a message".
+  - **First run:** real Jev scored "Add to cart" as possibly spending money,
+    so it was refused as a purchase. The scripted tests had missed this. The
+    known-undoable labels came from this run.
+  - **Second run:** add to cart ran, "Buy now" was refused without being
+    clicked, and the contact form waited for approval and was sent. The site
+    received only the message.
 

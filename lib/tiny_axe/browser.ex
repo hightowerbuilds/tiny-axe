@@ -26,7 +26,7 @@ defmodule TinyAxe.Browser do
 
   @read ~w(browser_navigate browser_navigate_back browser_snapshot browser_take_screenshot
            browser_extract browser_read browser_find browser_tabs browser_wait_for
-           browser_console_messages browser_network_requests)
+           browser_console_messages browser_network_requests browser_scroll)
 
   def name, do: @name
 
@@ -60,9 +60,14 @@ defmodule TinyAxe.Browser do
       "env" => %{
         "PW_ROOT" => playwright_root(),
         "TINY_AXE_BROWSER_PROFILE" => Keyword.get(opts, :profile, profile(settings)),
-        "TINY_AXE_BROWSER_HEADLESS" => if(headless, do: "1", else: "0")
+        "TINY_AXE_BROWSER_HEADLESS" => if(headless, do: "1", else: "0"),
+        # Tests: a handoff doesn't open a window.
+        "TINY_AXE_BROWSER_NO_WINDOW" =>
+          if(Keyword.get(opts, :no_window, false), do: "1", else: "0")
       },
-      "policy" => %{"read" => @read}
+      # "browser": classed per action by TinyAxe.Tools.BrowserPolicy; the gate
+      # alone uses browser_inspect.
+      "policy" => %{"read" => @read, "browser" => true, "hidden" => ["browser_inspect"]}
     }
   end
 

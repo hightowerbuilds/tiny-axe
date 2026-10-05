@@ -73,8 +73,12 @@ defmodule TinyAxe.BrowserTest do
   test "the page's own values are put back after a snapshot", %{site: site, server: s} do
     call(s, "browser_navigate", %{url: site <> "/checkout"})
     call(s, "browser_snapshot")
-    call(s, "browser_wait_for", %{seconds: 0.3})
-    assert text(call(s, "browser_extract")) =~ "card field length: 19"
+
+    # The page rewrites the length on a timer, which can lag under load.
+    assert Enum.any?(1..15, fn _ ->
+             call(s, "browser_wait_for", %{seconds: 0.2})
+             text(call(s, "browser_extract")) =~ "card field length: 19"
+           end)
   end
 
   test "screenshots are images, with the sensitive fields masked", %{site: site, server: s} do

@@ -28,7 +28,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{MCP, Tools}
-  alias TinyAxe.Tools.{Policy, Redact}
+  alias TinyAxe.Tools.{BrowserPolicy, Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
 
@@ -101,6 +101,7 @@ defmodule TinyAxe.Tools.Gate do
   @spec tools(map()) :: [map()]
   def tools(task) do
     for t <- MCP.tools(task.servers),
+        not hidden?(t),
         Policy.classify(t.definition, t.policy) != :refused do
       Map.take(t.definition, ["description", "inputSchema", "annotations", "title"])
       |> Map.put("name", t.name)
@@ -123,14 +124,20 @@ defmodule TinyAxe.Tools.Gate do
           {:refused, refusal(why)}
 
         {:ok, allowed} ->
-          class = Policy.classify(tool.definition, tool.policy)
-          task.notify.({:tool_call, %{tool: name, class: class, args: Redact.deep(args)}})
-
           # A call missing what the tool requires goes back to the agent to fix,
-          # before the user is asked about it.
+          # before anything is inspected or the user is asked.
           case missing(tool.definition, args) do
-            [] -> decide(task, tool, args, class, allowed)
-            keys -> {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}
+            [] ->
+              {class, reason} = classify(tool, args)
+
+              task.notify.(
+                {:tool_call, %{tool: name, class: class, reason: reason, args: Redact.deep(args)}}
+              )
+
+              decide(task, tool, args, {class, reason}, allowed)
+
+            keys ->
+              {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}
           end
       end
 
@@ -159,33 +166,109 @@ defmodule TinyAxe.Tools.Gate do
     result
   end
 
+  # Browser actions are classed by what they'd do on the page (the gate looks
+  # first, with browser_inspect); other tools by their server's policy.
+  defp classify(tool, args) do
+    cond do
+      hidden?(tool) ->
+        {:refused, "that tool is for tiny-axe only"}
+
+      tool.policy["browser"] == true ->
+        BrowserPolicy.classify(tool.tool, args, &look_at(tool.server, &1))
+        |> then(fn {class, reason} ->
+          {Policy.stricter(class_floor(tool), class) |> keep_special(class), reason}
+        end)
+
+      true ->
+        {Policy.classify(tool.definition, tool.policy), nil}
+    end
+  end
+
+  # A browser tool's own policy class is a floor (e.g. never below read); a
+  # handoff stays a handoff.
+  defp class_floor(_tool), do: :read
+  defp keep_special(_stricter, :handoff), do: :handoff
+  defp keep_special(stricter, _class), do: stricter
+
+  defp look_at(server, ref) do
+    args = if ref, do: %{"ref" => ref}, else: %{}
+
+    with {:ok, %{"content" => [%{"text" => json} | _]} = result} <-
+           MCP.call(server, "browser_inspect", args, 15_000),
+         false <- result["isError"] == true,
+         {:ok, meta} <- JSON.decode(json) do
+      meta
+    else
+      _ -> nil
+    end
+  end
+
+  defp hidden?(tool), do: tool.tool in List.wrap(tool.policy["hidden"])
+
   defp missing(definition, args) do
     required = get_in(definition, ["inputSchema", "required"]) || []
     Enum.reject(required, &(Map.get(args, &1) not in [nil, ""]))
   end
 
-  defp decide(_task, _tool, _args, :refused, _allowed),
-    do: {:refused, refusal("tiny-axe doesn't allow this tool")}
+  defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
+    do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
 
-  defp decide(_task, _tool, _args, :commit, _allowed),
+  defp decide(_task, _tool, _args, {:commit, _reason}, _allowed),
     do: {:refused, refusal("spending money isn't enabled in tiny-axe yet")}
 
-  defp decide(task, tool, args, :outward, false) do
-    case ask(task, tool, args) do
+  # The user does it in the browser window; the agent hears whether they did.
+  defp decide(task, tool, args, {:handoff, reason}, _allowed) do
+    case MCP.call(tool.server, tool.tool, args) do
+      {:ok, _shown} ->
+        case ask(task, tool, args, :handoff, reason) do
+          :deny ->
+            {:denied, refusal("the user didn't do it")}
+
+          _ ->
+            {:approved,
+             %{
+               "content" => [
+                 %{
+                   "type" => "text",
+                   "text" =>
+                     "The user says they've done it. Take a fresh snapshot to see the page."
+                 }
+               ]
+             }}
+        end
+
+      {:error, reason} ->
+        {:failed, refusal("the browser couldn't show its window: #{inspect(reason)}")}
+    end
+  end
+
+  # Browser actions are asked about every time: allowing "click" for the
+  # session would allow every click.
+  defp decide(task, tool, args, {:outward, reason}, false) do
+    ask_and_forward(task, tool, args, reason)
+  end
+
+  defp decide(task, %{policy: %{"browser" => true}} = tool, args, {:outward, reason}, _allowed),
+    do: ask_and_forward(task, tool, args, reason)
+
+  defp decide(_task, tool, args, {class, _reason}, _allowed),
+    do: forward(tool, args, if(class == :outward, do: :allowed_for_session, else: :ran))
+
+  defp ask_and_forward(task, tool, args, reason) do
+    case ask(task, tool, args, :outward, reason) do
       :once ->
         forward(tool, args, :approved)
 
       :session ->
-        GenServer.call(__MODULE__, {:allow, task.id, tool.name})
+        if tool.policy["browser"] != true,
+          do: GenServer.call(__MODULE__, {:allow, task.id, tool.name})
+
         forward(tool, args, :approved)
 
       :deny ->
         {:denied, refusal("the user said no to this call")}
     end
   end
-
-  defp decide(_task, tool, args, class, _allowed),
-    do: forward(tool, args, if(class == :outward, do: :allowed_for_session, else: :ran))
 
   defp forward(tool, args, decision) do
     case MCP.call(tool.server, tool.tool, args) do
@@ -195,22 +278,23 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   # Waits for the user in the caller (the HTTP request), so other calls go on.
-  defp ask(task, tool, args) do
+  defp ask(task, tool, args, class, reason) do
     ref = make_ref()
     timeout = Application.get_env(:tiny_axe, :tools, [])[:approval_timeout] || :timer.minutes(10)
 
-    task.notify.(
-      {:tool_approval,
-       %{
-         tool: tool.name,
-         server: tool.server,
-         description: tool.definition["description"],
-         args: Redact.deep(args),
-         class: :outward,
-         reply_to: self(),
-         ref: ref
-       }}
-    )
+    task.notify.({:tool_approval,
+     %{
+       tool: tool.name,
+       server: tool.server,
+       description: tool.definition["description"],
+       args: Redact.deep(args),
+       class: class,
+       reason: reason,
+       # Browser actions are asked about one by one.
+       session_ok: tool.policy["browser"] != true and class == :outward,
+       reply_to: self(),
+       ref: ref
+     }})
 
     receive do
       {:tool_answer, ^ref, answer} when answer in [:once, :session, :deny] -> answer
