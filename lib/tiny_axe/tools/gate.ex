@@ -287,6 +287,8 @@ defmodule TinyAxe.Tools.Gate do
 
   defp purchase(task, tool, args, reason) do
     id = Purchases.start(task.intent)
+    # The user watches every purchase: the window is shown before they're asked.
+    TinyAxe.Browser.show(tool.server)
     target = look_at(tool.server, args["ref"])
 
     case Purchases.summary(tool.server) do

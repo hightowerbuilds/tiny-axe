@@ -70,7 +70,12 @@ defmodule TinyAxe.Browser do
       "policy" => %{
         "read" => @read,
         "browser" => true,
-        "hidden" => ["browser_inspect", "browser_checkout_summary", "browser_fill_card"]
+        "hidden" => [
+          "browser_inspect",
+          "browser_checkout_summary",
+          "browser_fill_card",
+          "browser_show"
+        ]
       }
     }
   end
@@ -86,6 +91,16 @@ defmodule TinyAxe.Browser do
       {:ok, %{"isError" => true} = result} -> {:error, {:browser, text(result)}}
       {:ok, result} -> {:ok, result |> text() |> body()}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Makes the browser window visible (reopening it headed if it was headless)."
+  @spec show(String.t()) :: :ok | {:error, term()}
+  def show(server \\ @name) do
+    case MCP.call(server, "browser_show", %{}, 60_000) do
+      {:ok, %{"isError" => true} = r} -> {:error, text(r)}
+      {:ok, _} -> :ok
+      error -> error
     end
   end
 

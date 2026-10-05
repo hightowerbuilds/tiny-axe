@@ -669,7 +669,10 @@ defmodule TinyAxe.TUI do
         do: "",
         else: " ↓#{max_top(state, size) - view_top(state, size)} lines below · end to follow ·"
 
-    "#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()} "
+    # Never on without it showing.
+    buying = if TinyAxe.Purchases.enabled?(), do: " · 💳 purchases on", else: ""
+
+    "#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()}#{buying} "
   end
 
   defp status_widget(%{run: nil} = state) do

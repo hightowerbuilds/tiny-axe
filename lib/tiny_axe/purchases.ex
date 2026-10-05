@@ -47,8 +47,68 @@ defmodule TinyAxe.Purchases do
     "pounds" => "GBP"
   }
 
+  @doc """
+  The purchase settings: `config :tiny_axe, :purchases`, overridden by
+  `~/.config/tiny-axe/purchases.json` (`mix tiny_axe.purchases`), so they can be
+  changed without touching code, in an installed copy too.
+  """
   @spec settings() :: keyword()
-  def settings, do: Application.get_env(:tiny_axe, :purchases, [])
+  def settings, do: Keyword.merge(Application.get_env(:tiny_axe, :purchases, []), file_settings())
+
+  @spec config_path() :: String.t()
+  def config_path do
+    Application.get_env(:tiny_axe, :purchases_config) ||
+      Path.join(
+        System.get_env("XDG_CONFIG_HOME") || Path.expand("~/.config"),
+        "tiny-axe/purchases.json"
+      )
+  end
+
+  defp file_settings do
+    with {:ok, raw} <- File.read(config_path()),
+         {:ok, %{} = json} <- JSON.decode(raw) do
+      [
+        enabled: json["enabled"],
+        per_order_max: json["per_order_max"],
+        daily_max: json["daily_max"],
+        currency: json["currency"],
+        merchants:
+          case json["shops"] do
+            "any" -> :any
+            list when is_list(list) -> list
+            _ -> nil
+          end,
+        cards:
+          json["cards"] &&
+            Enum.map(json["cards"], fn c ->
+              %{
+                label: c["label"],
+                keyring: c["keyring"],
+                merchants: if(c["shops"] in [nil, "any"], do: :any, else: c["shops"])
+              }
+            end)
+      ]
+      |> Enum.reject(fn {_k, v} -> v == nil end)
+    else
+      _ -> []
+    end
+  end
+
+  @doc "Changes `purchases.json` (keeping what it doesn't change); readable only by the user."
+  @spec update_file((map() -> map())) :: :ok
+  def update_file(fun) do
+    path = config_path()
+
+    current =
+      case File.read(path) do
+        {:ok, raw} -> JSON.decode!(raw)
+        {:error, _} -> %{}
+      end
+
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, current |> fun.() |> :json.format() |> IO.iodata_to_binary())
+    File.chmod!(path, 0o600)
+  end
 
   @spec enabled?() :: boolean()
   def enabled?, do: settings()[:enabled] == true

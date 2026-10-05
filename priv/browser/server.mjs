@@ -652,6 +652,17 @@ const TOOLS = {
       return text(JSON.stringify({ filled }));
     },
   },
+  browser_show: {
+    description: "For tiny-axe only: make the browser window visible and bring it to the front.",
+    inputSchema: obj(),
+    annotations: { readOnlyHint: true },
+    async run() {
+      await headed();
+      const p = await page();
+      await p.bringToFront().catch(() => {});
+      return text("shown");
+    },
+  },
   browser_inspect: {
     description: "For tiny-axe's gate only: what an element is and what acting on it would do.",
     inputSchema: obj({ ref: { type: "string" } }),

@@ -23,3 +23,6 @@ config :tiny_axe, :browser, enabled: true, headless: true
 # A fake keyring (test/support/fake_secret_tool), so tests never read the real one.
 config :tiny_axe,
   secret_tool: Path.expand("../test/support/fake_secret_tool/secret-tool", __DIR__)
+
+# No user purchase settings file in tests.
+config :tiny_axe, purchases_config: Path.join(System.tmp_dir!(), "tiny_axe_test_purchases.json")

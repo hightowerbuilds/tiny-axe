@@ -6,8 +6,9 @@ browser's read tools, browser interaction, third-party MCP servers, the
 purchase gate and payment methods. All of it is tested on the fixture shop
 only; purchases are off by default. Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 11,
-the first real purchase, with the user watching.
+strongest agent loop, with every call through one gate. Phase 11, the first
+real purchase, is prepared (see "Phase 11: preparation"). It's waiting for the
+user, who chooses the shop and the item and buys while watching.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -1135,4 +1136,51 @@ config :tiny_axe, :purchases, cards: [%{label: "Privacy card ••1234", keyrin
   - **A checkout with empty card fields:** the popup said the virtual card
     would be filled after confirmation. The shop received the card's number,
     expiry, CVC and name, which no model ever saw.
+
+## Phase 11: preparation (2026-10-04)
+
+The real purchase is the user's to make: they choose the shop, the item and
+the card, type the total, and watch. tiny-axe makes no real purchase on its
+own. Built to get ready:
+
+- **Decision 6, a visible browser for every purchase:**
+  - When a request has a purchase intent, the browser window is shown from
+    the start. The gate also shows it before every purchase summary.
+  - A hidden `browser_show` tool does this, reopening a headless browser
+    headed, with the same profile and pages.
+  - Checked for real: example.com was reopened visibly in 674 ms, in one
+    tab, on the same page.
+- **`mix tiny_axe.browser [url]`** opens tiny-axe's own profile in a window.
+  The user logs into the shop and saves a card or address there by hand;
+  nothing is automated.
+- **`~/.config/tiny-axe/purchases.json`** overrides the config, so purchases
+  can be switched on in an installed copy without touching code. It's
+  managed by `mix tiny_axe.purchases`:
+  - `on` and `off`
+  - `limits --per-order --daily --currency`
+  - `shops any|<list>`
+  - `card add LABEL --keyring KEY [--shops …]` and `card remove`
+  - with no arguments, the status: limits, today's spending, each card and
+    whether its details are in the keyring (never what they are), and the
+    recent purchases with what happened to each
+- **The TUI's title shows "💳 purchases on"** whenever they are.
+- **Tests:** 5 new, 282 in all.
+
+### The first real purchase: a checklist
+
+1. **Choose something small** (under $10) from a shop you already use, and
+   how to pay: a card saved at the shop, typing it yourself, or a virtual
+   card.
+2. **Set tight limits and switch on:** `mix tiny_axe.purchases limits
+   --per-order 15 --daily 15`, then `mix tiny_axe.purchases on`.
+3. **With tiny-axe closed, log in:** `mix tiny_axe.browser
+   https://<the shop>`. Save a card there, if that's how you'll pay.
+4. **Update the installed copy** with `mix tiny_axe.install` (or use `mix
+   tiny_axe` from the repo).
+5. **Ask:** "buy <the item> at <the shop>, under $10". Watch the window.
+   Check the red popup (shop, items, total, address, card) before typing the
+   total.
+6. **Afterwards:** check the receipt in `~/.local/state/tiny-axe/purchases/`
+   and `mix tiny_axe.purchases`, then `mix tiny_axe.purchases off` until
+   next time.
 

@@ -43,6 +43,9 @@ defmodule TinyAxe.Agent do
     context = history |> Enum.take(-4) |> Enum.map_join("\n", & &1.content)
     intent = TinyAxe.Purchases.intent(prompt, context)
 
+    # A purchase is watched from the start: the browser window is shown.
+    if intent && TinyAxe.Browser.running?(), do: TinyAxe.Browser.show()
+
     case Gate.open_task(notify, intent: intent) do
       {:ok, task} ->
         try do
