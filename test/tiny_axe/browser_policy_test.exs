@@ -158,6 +158,11 @@ defmodule TinyAxe.BrowserPolicyTest do
     assert {:refused, _} = BrowserPolicy.classify("browser_inspect", %{}, dialog)
   end
 
+  test "choosing an option is local, whatever its label says" do
+    for type <- ["radio", "checkbox"],
+        do: assert(click(button("Pay with PayPal", %{"type" => type})) == {:local, nil})
+  end
+
   test "if the target can't be seen, a click is asked about" do
     assert {:outward, why} = click(nil)
     assert why =~ "couldn't see"

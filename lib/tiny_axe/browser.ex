@@ -70,7 +70,7 @@ defmodule TinyAxe.Browser do
       "policy" => %{
         "read" => @read,
         "browser" => true,
-        "hidden" => ["browser_inspect", "browser_checkout_summary"]
+        "hidden" => ["browser_inspect", "browser_checkout_summary", "browser_fill_card"]
       }
     }
   end

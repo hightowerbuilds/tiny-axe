@@ -291,6 +291,8 @@ defmodule TinyAxe.Tools.Gate do
 
     case Purchases.summary(tool.server) do
       {:ok, summary} ->
+        summary = Map.put(summary, "paying_with", Purchases.paying_with(summary))
+
         Purchases.event(id, %{
           t: "summary",
           summary: summary,
@@ -365,48 +367,87 @@ defmodule TinyAxe.Tools.Gate do
           why
       end
 
-    if changed do
-      Purchases.event(id, %{t: "changed", why: changed})
-      task.notify.({:purchase_changed, changed})
+    filled = if changed == nil, do: fill_virtual_card(tool.server, summary, id), else: :ok
 
-      {:refused,
-       refusal("#{changed} while the user was deciding, so nothing was bought. Look again")}
-    else
-      # Write-ahead: if tiny-axe dies after this, the next start says the order
-      # may have gone through, and it is never clicked again.
-      Purchases.event(id, %{t: "clicking"})
+    cond do
+      changed ->
+        Purchases.event(id, %{t: "changed", why: changed})
+        task.notify.({:purchase_changed, changed})
 
-      case MCP.call(tool.server, tool.tool, args) do
-        {:ok, result} ->
-          Purchases.event(id, %{t: "clicked"})
-          receipt = receipt(tool.server, id)
+        {:refused,
+         refusal("#{changed} while the user was deciding, so nothing was bought. Look again")}
 
-          task.notify.(
-            {:purchased,
-             Map.merge(receipt, %{
-               host: summary["host"],
-               total_text: summary["total_text"],
-               id: id
-             })}
-          )
+      filled != :ok ->
+        task.notify.({:purchase_changed, filled})
+        {:refused, refusal("#{filled}, so nothing was bought")}
 
-          note = %{
-            "type" => "text",
-            "text" =>
-              "tiny-axe placed the order after the user confirmed it" <>
-                if(receipt.order, do: "; order #{receipt.order}.", else: ".")
-          }
+      true ->
+        click_and_receipt(task, tool, args, id, summary)
+    end
+  end
 
-          {:approved, Map.update(result, "content", [note], &[note | &1])}
+  # A virtual card is filled in only now: after the user confirmed and the page
+  # was read again, on the shop they confirmed. Its details go straight to the
+  # browser; only "filled" or "not filled" is recorded.
+  defp fill_virtual_card(server, summary, id) do
+    case Purchases.payment(summary) do
+      {:virtual, card} ->
+        args = %{"expect_host" => summary["host"], "card" => card.details}
 
-        {:error, reason} ->
-          Purchases.event(id, %{t: "click_failed", error: inspect(reason)})
+        case MCP.call(server, "browser_fill_card", args, 30_000) do
+          {:ok, %{"isError" => true}} ->
+            Purchases.event(id, %{t: "card_not_filled"})
+            "the virtual card couldn't be filled in"
 
-          {:failed,
-           refusal(
-             "the click failed (#{inspect(reason)}); the order may or may not have gone through, so check the page"
-           )}
-      end
+          {:ok, _} ->
+            Purchases.event(id, %{t: "card_filled", card: card.label})
+            :ok
+
+          {:error, _} ->
+            Purchases.event(id, %{t: "card_not_filled"})
+            "the virtual card couldn't be filled in"
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp click_and_receipt(task, tool, args, id, summary) do
+    # Write-ahead: if tiny-axe dies after this, the next start says the order
+    # may have gone through, and it is never clicked again.
+    Purchases.event(id, %{t: "clicking"})
+
+    case MCP.call(tool.server, tool.tool, args) do
+      {:ok, result} ->
+        Purchases.event(id, %{t: "clicked"})
+        receipt = receipt(tool.server, id)
+
+        task.notify.(
+          {:purchased,
+           Map.merge(receipt, %{
+             host: summary["host"],
+             total_text: summary["total_text"],
+             id: id
+           })}
+        )
+
+        note = %{
+          "type" => "text",
+          "text" =>
+            "tiny-axe placed the order after the user confirmed it" <>
+              if(receipt.order, do: "; order #{receipt.order}.", else: ".")
+        }
+
+        {:approved, Map.update(result, "content", [note], &[note | &1])}
+
+      {:error, reason} ->
+        Purchases.event(id, %{t: "click_failed", error: inspect(reason)})
+
+        {:failed,
+         refusal(
+           "the click failed (#{inspect(reason)}); the order may or may not have gone through, so check the page"
+         )}
     end
   end
 

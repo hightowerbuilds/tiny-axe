@@ -173,8 +173,86 @@ defmodule TinyAxe.Purchases do
            "#{money(today + (total || 0), currency)} of #{money(s[:daily_max] || 200, currency)} today"}
       ),
       merchant_check(summary["host"]),
-      items_check(intent, summary)
+      items_check(intent, summary),
+      payment_check(summary)
     ]
+  end
+
+  @doc """
+  How an order would be paid, from what the checkout page shows:
+
+    * `{:saved, text}` — a card saved at the shop, as the page shows it
+      (the chosen one, if there are several)
+    * `{:entered, text}` — card fields the user filled in themselves (a handoff)
+    * `{:virtual, card}` — empty card fields, and a virtual card in the
+      keyring for this shop: tiny-axe fills it in after the user confirms
+    * `{:none, why}` — no way tiny-axe will pay
+  """
+  @spec payment(map()) ::
+          {:saved | :entered, String.t()} | {:virtual, map()} | {:none, String.t()}
+  def payment(summary) do
+    fields = summary["card_fields"] || 0
+
+    cond do
+      fields > 0 and summary["card_fields_empty"] == true ->
+        case card_for(summary["host"]) do
+          nil ->
+            {:none,
+             "the page needs card details, which tiny-axe never types: use a card saved at " <>
+               "the shop, hand off to type it yourself, or add a virtual card"}
+
+          card ->
+            {:virtual, card}
+        end
+
+      fields > 0 ->
+        {:entered, "the card details you entered"}
+
+      is_binary(summary["payment"]) ->
+        {:saved, summary["payment"]}
+
+      true ->
+        {:none, "tiny-axe can't see how this would be paid"}
+    end
+  end
+
+  @doc "In words, for the user: how the order would be paid."
+  @spec paying_with(map()) :: String.t()
+  def paying_with(summary) do
+    case payment(summary) do
+      {:saved, text} -> text
+      {:entered, text} -> text
+      {:virtual, card} -> "#{card.label} (a virtual card; tiny-axe fills it in after you confirm)"
+      {:none, _} -> "(not shown)"
+    end
+  end
+
+  defp payment_check(summary) do
+    case payment(summary) do
+      {:none, why} -> {:fail, why}
+      _ -> {:ok, "paying with #{paying_with(summary)}"}
+    end
+  end
+
+  @doc """
+  The first virtual card in `config :tiny_axe, :purchases, cards: [...]` allowed
+  at this shop, with its details read from the keyring (a JSON secret with
+  `number`, `exp_month`, `exp_year`, `cvc`, `name`). Its details are passed
+  only to the browser's card filling, and never logged, journaled or shown.
+  """
+  @spec card_for(String.t() | nil) :: map() | nil
+  def card_for(host) do
+    Enum.find_value(settings()[:cards] || [], fn card ->
+      merchants = card[:merchants] || :any
+
+      with true <- merchants == :any or host in List.wrap(merchants),
+           secret when secret != "" <- MCP.keyring(card[:keyring]),
+           {:ok, %{"number" => _} = details} <- JSON.decode(secret) do
+        %{label: card[:label] || "virtual card", details: details}
+      else
+        _ -> nil
+      end
+    end)
   end
 
   defp merchant_check(host) do

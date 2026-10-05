@@ -19,6 +19,10 @@ defmodule TinyAxe.FixtureSite do
       follows `set_price/1` (checked every 200 ms), where it ships, the card as
       shown, and "Place order", which POSTs `/place-order` and shows an order
       number
+    * `/order-saved` — the same, paying with one of two cards saved at the
+      shop (radio buttons; the second is chosen)
+    * `/order-card` — the same, with empty card fields to fill in; the order
+      POST carries them (so a test can see they arrived)
 
   Everything sent to the site is recorded: `submissions/0`.
   """
@@ -185,6 +189,38 @@ defmodule TinyAxe.FixtureSite do
     <script>setInterval(() => fetch('/price').then(r => r.text()).then(t => {
       document.getElementById('total').textContent = t;
     }), 200);</script>
+    """)
+  end
+
+  get "/order-saved" do
+    price = Agent.get(__MODULE__.Price, & &1)
+
+    html(conn, """
+    <title>Checkout</title><main><h1>Review your order</h1>
+    <p>Blue mug × 1 — #{dollars(price)}</p><p>Shipping: $4.00</p>
+    <p>Order total: #{dollars(price + 4.0)}</p>
+    <p>Ship to:</p><p>Sam Lee</p><p>1 High St, Springfield</p>
+    <form method="post" action="/place-order"><fieldset><legend>Payment</legend>
+    <label><input type="radio" name="card" value="visa"> Visa ending in 4242</label>
+    <label><input type="radio" name="card" value="mc" checked> Mastercard ending in 5555</label>
+    </fieldset><button>Place order</button></form></main>
+    """)
+  end
+
+  get "/order-card" do
+    price = Agent.get(__MODULE__.Price, & &1)
+
+    html(conn, """
+    <title>Checkout</title><main><h1>Review your order</h1>
+    <p>Blue mug × 1 — #{dollars(price)}</p><p>Shipping: $4.00</p>
+    <p>Order total: #{dollars(price + 4.0)}</p>
+    <p>Ship to:</p><p>Sam Lee</p><p>1 High St, Springfield</p>
+    <form method="post" action="/place-order"><h2>Card details</h2>
+    <label>Name on card <input name="ccname" autocomplete="cc-name"></label>
+    <label>Card number <input name="ccnumber" autocomplete="cc-number"></label>
+    <label>Expiry <input name="ccexp" autocomplete="cc-exp" placeholder="MM/YY"></label>
+    <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
+    <button>Place order</button></form></main>
     """)
   end
 

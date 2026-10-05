@@ -98,6 +98,11 @@ defmodule TinyAxe.Tools.BrowserPolicy do
 
   defp click(nil), do: {:outward, "tiny-axe couldn't see what this would click"}
 
+  # Choosing an option (a saved card, a size, a delivery slot) changes nothing
+  # until a form is sent, whatever its label says ("Pay with PayPal").
+  defp click(%{"type" => type, "isSubmit" => false}) when type in ["radio", "checkbox"],
+    do: {:local, nil}
+
   defp click(%{"href" => href, "isSubmit" => false}) when is_binary(href), do: url_class(href)
   defp click(%{"isSubmit" => true, "form" => %{} = form} = meta), do: submission(form, meta)
 

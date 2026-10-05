@@ -33,7 +33,9 @@ defmodule TinyAxe.PurchaseGateTest do
         File.rm_rf(profile)
       end)
 
-      %{site: site, server: name}
+      # The browser server's log, to check card numbers never reach it.
+      log = Path.join([TinyAxe.Ops.Journal.state_dir(), "mcp", "#{name}.log"])
+      %{site: site, server: name, server_log: log}
     else
       {:skip, "Node, Playwright or Chrome isn't available"}
     end
@@ -121,9 +123,9 @@ defmodule TinyAxe.PurchaseGateTest do
   defp text(%{"content" => content}),
     do: content |> Enum.filter(&(&1["type"] == "text")) |> Enum.map_join("\n", & &1["text"])
 
-  # Opens the checkout and clicks "Place order".
-  defp buy(ctx, task, answer \\ :confirm, before \\ fn -> :ok end) do
-    page = text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order"}))
+  # Opens a checkout and clicks "Place order".
+  defp buy(ctx, task, answer \\ :confirm, before \\ fn -> :ok end, path \\ "/order") do
+    page = text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> path}))
     [_, ref] = Regex.run(~r/button "Place order" \[ref=(\w+)\]/, page)
 
     call(
@@ -133,6 +135,13 @@ defmodule TinyAxe.PurchaseGateTest do
       answer,
       before
     )
+  end
+
+  # Clicks "Place order" on the page as it is (without loading it again).
+  defp place_order(ctx, task, answer \\ :confirm) do
+    page = text(call(task, "#{ctx.server}__browser_snapshot", %{}))
+    [_, ref] = Regex.run(~r/button "Place order" \[ref=(\w+)\]/, page)
+    call(task, "#{ctx.server}__browser_click", %{ref: ref, element: "Place order"}, answer)
   end
 
   defp placed, do: for({"/place-order", _} <- FixtureSite.submissions(), do: :order)
@@ -246,5 +255,125 @@ defmodule TinyAxe.PurchaseGateTest do
     task = open_task(ctx, @intent, [name])
     result = call(task, "#{name}__send_note", %{to: "shop", text: "pay"})
     assert text(result) =~ "only tiny-axe's browser can buy things"
+  end
+
+  describe "payment" do
+    @card_number "4111 1111 1111 1111"
+
+    defp cards(cards), do: limits(per_order_max: 100.0, daily_max: 200.0, cards: cards)
+
+    defp gate_events do
+      receive do
+        {:gate, e} -> [e | gate_events()]
+      after
+        0 -> []
+      end
+    end
+
+    test "a card saved at the shop: the chosen one is shown; choosing another is local", ctx do
+      task = open_task(ctx, @intent)
+
+      page =
+        text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-saved"}))
+
+      # Choosing the Visa: a radio button, so it just runs.
+      [_, visa] = Regex.run(~r/radio "Visa ending in 4242" \[ref=(\w+)\]/, page)
+      call(task, "#{ctx.server}__browser_click", %{ref: visa})
+      refute_received {:gate, {:tool_approval, _}}
+
+      place_order(ctx, task)
+      assert_received {:asked, %{summary: %{"paying_with" => "Visa ending in 4242"}}}
+      assert placed() == [:order]
+    end
+
+    test "card fields and no virtual card: refused; tiny-axe never types card details", ctx do
+      result = buy(ctx, open_task(ctx, @intent), :confirm, fn -> :ok end, "/order-card")
+      assert text(result) =~ "the page needs card details, which tiny-axe never types"
+      assert placed() == []
+    end
+
+    test "a virtual card is filled in only after the user confirms, and is seen nowhere else",
+         ctx do
+      cards([%{label: "Test virtual card", keyring: "card-test", merchants: :any}])
+      result = buy(ctx, open_task(ctx, @intent), :confirm, fn -> :ok end, "/order-card")
+
+      assert_received {:asked, %{summary: %{"paying_with" => paying}}}
+      assert paying =~ "Test virtual card (a virtual card"
+      assert text(result) =~ "tiny-axe placed the order"
+
+      # It reached the shop…
+      assert [{"/place-order", %{"ccnumber" => @card_number, "cvc" => "737", "ccexp" => "12/30"}}] =
+               FixtureSite.submissions()
+
+      # …and nowhere else: not the transcript's events, the result, the purchase
+      # journal and receipt, the tool journal, or the browser server's log.
+      {id, events} = journal()
+      assert "card_filled" in events
+      refute inspect(gate_events(), limit: :infinity) =~ "4111"
+      refute inspect(result, limit: :infinity) =~ "4111"
+
+      for file <- File.ls!(Purchases.dir(id)),
+          file != "receipt.png",
+          do: refute(File.read!(Path.join(Purchases.dir(id), file)) =~ "4111", file)
+
+      for dir <- Path.wildcard(Path.join(TinyAxe.Ops.Journal.state_dir(), "tasks/*")),
+          do: refute(File.read!(Path.join(dir, "calls.jsonl")) =~ "4111")
+
+      if File.exists?(ctx.server_log), do: refute(File.read!(ctx.server_log) =~ "4111")
+    end
+
+    test "a virtual card only for other shops isn't used", ctx do
+      cards([%{label: "Test virtual card", keyring: "card-test", merchants: ["other.example"]}])
+      result = buy(ctx, open_task(ctx, @intent), :confirm, fn -> :ok end, "/order-card")
+      assert text(result) =~ "needs card details"
+      assert placed() == []
+    end
+
+    test "card details the user typed themselves (a handoff) are paid with", ctx do
+      task = open_task(ctx, @intent)
+      call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-card"})
+
+      # The user fills the card in the browser window.
+      {:ok, _} =
+        MCP.call(ctx.server, "browser_fill_card", %{
+          "expect_host" => "127.0.0.1",
+          "card" => %{
+            "number" => @card_number,
+            "exp_month" => "1",
+            "exp_year" => "2031",
+            "cvc" => "123"
+          }
+        })
+
+      place_order(ctx, task)
+      assert_received {:asked, %{summary: %{"paying_with" => "the card details you entered"}}}
+      assert placed() == [:order]
+    end
+
+    test "card filling refuses any shop but the one confirmed", ctx do
+      task = open_task(ctx, @intent)
+      call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-card"})
+
+      {:ok, result} =
+        MCP.call(ctx.server, "browser_fill_card", %{
+          "expect_host" => "shop.example",
+          "card" => %{"number" => @card_number}
+        })
+
+      assert result["isError"] == true
+      assert text(result) =~ "the page is on 127.0.0.1, not shop.example"
+    end
+
+    test "agents can't call the card filling", ctx do
+      task = open_task(ctx, @intent)
+
+      result =
+        call(task, "#{ctx.server}__browser_fill_card", %{
+          expect_host: "127.0.0.1",
+          card: %{number: @card_number}
+        })
+
+      assert text(result) =~ "for tiny-axe only"
+    end
   end
 end

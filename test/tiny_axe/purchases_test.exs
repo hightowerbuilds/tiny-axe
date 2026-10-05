@@ -43,7 +43,8 @@ defmodule TinyAxe.PurchasesTest do
     "total" => 16.0,
     "total_text" => "$16.00",
     "currency" => "USD",
-    "items" => ["Blue mug × 1 — $12.00"]
+    "items" => ["Blue mug × 1 — $12.00"],
+    "payment" => "Visa ending in 4242"
   }
   @intent %{request: "buy the blue mug, under $50", max: 50.0, currency: "USD"}
 
@@ -169,6 +170,68 @@ defmodule TinyAxe.PurchasesTest do
       Purchases.event(done, %{t: "clicking"})
       Purchases.event(done, %{t: "receipt", order: "X1"})
       assert Purchases.uncertain() == []
+    end
+  end
+
+  describe "payment" do
+    @card [label: "Test virtual card", keyring: "card-test", merchants: :any]
+
+    defp with_cards(cards),
+      do:
+        Application.put_env(:tiny_axe, :purchases,
+          enabled: true,
+          currency: "USD",
+          merchants: :any,
+          cards: cards
+        )
+
+    test "a card saved at the shop, as the page shows it" do
+      assert Purchases.payment(
+               %{@summary | "items" => []}
+               |> Map.put("payment", "Visa ending in 4242")
+             ) ==
+               {:saved, "Visa ending in 4242"}
+    end
+
+    test "card fields the user filled in themselves" do
+      assert {:entered, _} =
+               Purchases.payment(
+                 Map.merge(@summary, %{"card_fields" => 4, "card_fields_empty" => false})
+               )
+    end
+
+    test "empty card fields: a virtual card from the keyring, if one is allowed at this shop" do
+      empty = Map.merge(@summary, %{"card_fields" => 4, "card_fields_empty" => true})
+
+      assert {:none, why} = Purchases.payment(empty)
+      assert why =~ "never types"
+
+      with_cards([Map.new(@card)])
+
+      assert {:virtual,
+              %{label: "Test virtual card", details: %{"number" => "4111 1111 1111 1111"}}} =
+               Purchases.payment(empty)
+
+      assert Purchases.paying_with(empty) =~
+               "Test virtual card (a virtual card; tiny-axe fills it in after you confirm)"
+
+      # Only at the shops it's for.
+      with_cards([Map.new(Keyword.put(@card, :merchants, ["other.example"]))])
+      assert {:none, _} = Purchases.payment(empty)
+
+      # Not in the keyring: no card.
+      with_cards([Map.new(Keyword.put(@card, :keyring, "missing"))])
+      assert {:none, _} = Purchases.payment(empty)
+    end
+
+    test "no way to pay that tiny-axe can see fails the checks" do
+      unpaid = Map.delete(@summary, "payment")
+      assert {:none, _} = Purchases.payment(unpaid)
+
+      assert "tiny-axe can't see how this would be paid" in for(
+               {:fail, w} <- Purchases.checks(@intent, unpaid),
+               do: w
+             )
     end
   end
 end

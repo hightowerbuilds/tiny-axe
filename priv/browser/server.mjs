@@ -294,7 +294,21 @@ async function checkout(p) {
   const shipAt = lines.findIndex((l) => /ship(ping)? to|deliver(y|ing)? to|shipping address|delivery address/i.test(l));
   const shipTo = shipAt >= 0 ? lines.slice(shipAt, shipAt + 3).join(", ") : null;
 
-  const payment = lines.find((l) => /(visa|mastercard|amex|american express|discover|card)\b.*(ending|••|\*\*|x{2,}).*\d{4}/i.test(l)) || null;
+  // A card saved at the shop: the chosen option counts, not the first one listed.
+  const CARD = /(visa|mastercard|amex|american express|discover|card)\b.*(ending|••|\*\*|x{2,}).*\d{4}/i;
+  const chosen = await p.evaluate((pattern) => {
+    const re = new RegExp(pattern, "i");
+    for (const input of document.querySelectorAll("input[type=radio]:checked")) {
+      const label = (input.labels && input.labels[0] ? input.labels[0].innerText : "").trim();
+      if (re.test(label)) return label;
+    }
+    return null;
+  }, CARD.source);
+  const payment = chosen || lines.find((l) => CARD.test(l)) || null;
+
+  // Card fields on the page: how many, and whether any is still empty. Never
+  // their values.
+  const cards = await cardFields(p);
 
   return {
     host: new URL(p.url()).hostname,
@@ -306,7 +320,55 @@ async function checkout(p) {
     items,
     ship_to: shipTo,
     payment,
+    card_fields: cards.count,
+    card_fields_empty: cards.empty,
   };
+}
+
+const CARD_FIELDS = {
+  number: 'input[autocomplete~="cc-number"], input[name*="cardnumber" i], input[name*="card_number" i], input[name="ccnumber" i]',
+  exp: 'input[autocomplete~="cc-exp"]',
+  exp_month: 'input[autocomplete~="cc-exp-month"]',
+  exp_year: 'input[autocomplete~="cc-exp-year"]',
+  cvc: 'input[autocomplete~="cc-csc"], input[name*="cvc" i], input[name*="cvv" i]',
+  name: 'input[autocomplete~="cc-name"]',
+};
+
+async function cardFields(p) {
+  let count = 0, empty = false;
+  for (const f of p.frames()) {
+    try {
+      const r = await f.evaluate((sels) => {
+        const els = sels.flatMap((s) => [...document.querySelectorAll(s)]).filter((el, i, all) => all.indexOf(el) === i);
+        return { count: els.length, empty: els.some((el) => !el.value) };
+      }, [CARD_FIELDS.number, CARD_FIELDS.exp, CARD_FIELDS.exp_month, CARD_FIELDS.exp_year, CARD_FIELDS.cvc]);
+      count += r.count; empty = empty || r.empty;
+    } catch {}
+  }
+  return { count, empty };
+}
+
+// Fills card fields with a virtual card from the user's keyring, for the
+// purchase gate only, after the user confirmed, on the shop they confirmed.
+// The values are never echoed back.
+async function fillCard(p, card, expectHost) {
+  const host = new URL(p.url()).hostname;
+  if (host !== expectHost) throw new UserError(`the page is on ${host}, not ${expectHost}; the card wasn't filled`);
+  const yy = String(card.exp_year).slice(-2), mm = String(card.exp_month).padStart(2, "0");
+  const values = { number: card.number, exp: `${mm}/${yy}`, exp_month: mm, exp_year: String(card.exp_year), cvc: card.cvc, name: card.name || "" };
+  let filled = 0;
+  for (const f of p.frames()) {
+    for (const [key, sel] of Object.entries(CARD_FIELDS)) {
+      const loc = f.locator(sel);
+      const n = await loc.count().catch(() => 0);
+      for (let i = 0; i < n; i++) {
+        if (!values[key]) continue;
+        await loc.nth(i).fill(String(values[key]), { timeout: 5000 }).catch(() => {});
+        filled++;
+      }
+    }
+  }
+  return filled;
 }
 
 // ---------- tools ----------
@@ -578,6 +640,16 @@ const TOOLS = {
     annotations: { readOnlyHint: true },
     async run() {
       return text(JSON.stringify(await checkout(await page())));
+    },
+  },
+  browser_fill_card: {
+    description: "For tiny-axe's purchase gate only: fill the card fields with a virtual card.",
+    inputSchema: obj({ expect_host: { type: "string" }, card: { type: "object" } }, ["expect_host", "card"]),
+    annotations: { readOnlyHint: false },
+    async run({ expect_host, card }) {
+      const filled = await fillCard(await page(), card || {}, expect_host);
+      if (filled === 0) throw new UserError("there were no card fields to fill");
+      return text(JSON.stringify({ filled }));
     },
   },
   browser_inspect: {

@@ -175,7 +175,7 @@ defmodule TinyAxe.TUI do
         Enum.map(s["items"] || [], &styled("  · " <> &1)) ++
         [
           s["ship_to"] && styled("Ship to: #{s["ship_to"]}"),
-          s["payment"] && styled("Paying with: #{s["payment"]}"),
+          styled("Paying with: #{s["paying_with"] || s["payment"] || "(not shown)"}"),
           styled("")
         ] ++
         Enum.map(ask.checks, fn

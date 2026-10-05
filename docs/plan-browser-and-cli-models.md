@@ -1,12 +1,13 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-10-04): Phases 0–9 are done: probing, the Claude and Codex
+Status (2026-10-04): Phases 0–10 are done: probing, the Claude and Codex
 backends, escalation, probing MCP, the MCP client and gate, the drivers, the
-browser's read tools, browser interaction, third-party MCP servers, and the
-purchase gate (fixture shop only; purchases are off by default). Part B was rewritten on 2026-10-04 to
+browser's read tools, browser interaction, third-party MCP servers, the
+purchase gate and payment methods. All of it is tested on the fixture shop
+only; purchases are off by default. Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 10,
-payment methods.
+strongest agent loop, with every call through one gate. Next is Phase 11,
+the first real purchase, with the user watching.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -525,7 +526,7 @@ Each phase ends with its tests passing, as with the file operations.
 9. **The purchase gate (done; see "Phase 9: what was built"):** intent, the summary, limits, the typed
    confirmation, the pre-click recheck, the purchase journal and crash
    recovery. Fixture shop only.
-10. **Payment methods:** merchant-saved first, then virtual cards from the
+10. **Payment methods (done; see "Phase 10: what was built"):** merchant-saved first, then virtual cards from the
     keyring.
 11. **The first real purchase:** small, on one merchant, with the user
     watching.
@@ -1073,4 +1074,65 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
     TA-1001, receipt saved).
   - **"Buy me the blue mug" (no maximum):** refused before asking, and the
     shop received nothing.
+
+## Phase 10: what was built (2026-10-04)
+
+**How an order is paid** (`Purchases.payment/1`, now one of the purchase
+checks):
+
+1. **A card saved at the shop.**
+   - The checkout summary reads the chosen saved card (the checked radio
+     button's label), not just the first card listed.
+   - Choosing an option (a radio or checkbox) is a local click, whatever its
+     label says ("Pay with PayPal"). So "pay with my Visa" is an agent clicking
+     a radio, then "Place order".
+2. **Card details you typed yourself** (a handoff). The summary reports how
+   many card fields there are and whether any is empty, never their values.
+   Filled fields count as "the card details you entered".
+3. **A virtual card from your keyring**, used when the card fields are empty.
+   - Cards are configured in `config :tiny_axe, :purchases, cards: [%{label:,
+     keyring:, merchants: :any | [...]}]`.
+   - The details are a JSON secret in the keyring: `number`, `exp_month`,
+     `exp_year`, `cvc`, `name`.
+   - The first card allowed at this shop is used.
+   - It's filled by a hidden browser tool, `browser_fill_card`, only after
+     you've typed the total and the page has been read again, only on the
+     shop in the summary (the browser checks the host itself), and before the
+     write-ahead `clicking`. If it can't be filled, nothing is clicked.
+   - The journal records only "card_filled", with the card's label.
+4. **Otherwise the purchase is refused:** "the page needs card details, which
+   tiny-axe never types: use a card saved at the shop, hand off to type it
+   yourself, or add a virtual card". No visible way to pay is refused too.
+
+The popup's "Paying with" line says which of these will happen.
+
+To add a virtual card (single-use or locked to one shop, from your bank or a
+card service):
+
+```
+secret-tool store --label="tiny-axe card" service tiny-axe key card-1
+# paste: {"number":"…","exp_month":"12","exp_year":"2030","cvc":"…","name":"…"}
+```
+
+```elixir
+config :tiny_axe, :purchases, cards: [%{label: "Privacy card ••1234", keyring: "card-1", merchants: :any}]
+```
+
+- **Tests:** 12 new, 277 in all.
+  - The fixture shop gained a checkout with two saved cards and one with
+    empty card fields.
+  - The fake keyring has a test card.
+  - One test checks the card number reached the shop and appeared nowhere
+    else: not in the gate's events, the result, the purchase journal and
+    receipt, the tool journal, or the browser server's log.
+  - **Shown to bite:** the tests failed when the payment check was removed,
+    when card details were written to the journal, and when the browser's
+    shop check was removed.
+- **Checked with the real agent and the real Jev**, on the fixture shop:
+  - **"…pay with my Visa, not the Mastercard":** Claude clicked the Visa
+    radio (local). The popup said "paying with: Visa ending in 4242", and the
+    shop received `card=visa`.
+  - **A checkout with empty card fields:** the popup said the virtual card
+    would be filled after confirmation. The shop received the card's number,
+    expiry, CVC and name, which no model ever saw.
 
