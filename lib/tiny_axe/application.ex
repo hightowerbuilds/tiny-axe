@@ -85,6 +85,9 @@ defmodule TinyAxe.Application do
           ["✗ #{reason}. Requests will fail until Ollama is running (try `ollama serve`)."]
       end
 
+    # Orders that may have gone through while tiny-axe wasn't watching.
+    notes = notes ++ TinyAxe.Purchases.uncertain()
+
     Application.put_env(:tiny_axe, :startup_notes, notes)
   end
 

@@ -1,11 +1,12 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-10-04): Phases 0–8 are done: probing, the Claude and Codex
+Status (2026-10-04): Phases 0–9 are done: probing, the Claude and Codex
 backends, escalation, probing MCP, the MCP client and gate, the drivers, the
-browser's read tools, browser interaction, and third-party MCP servers. Part B was rewritten on 2026-10-04 to
+browser's read tools, browser interaction, third-party MCP servers, and the
+purchase gate (fixture shop only; purchases are off by default). Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 9,
-the purchase gate.
+strongest agent loop, with every call through one gate. Next is Phase 10,
+payment methods.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -521,7 +522,7 @@ Each phase ends with its tests passing, as with the file operations.
      seen private material, at least outward.
 8. **Third-party MCP servers (done; see "Phase 8: what was built"):** config, secrets and policies; the user picks
    the first ones.
-9. **The purchase gate:** intent, the summary, limits, the typed
+9. **The purchase gate (done; see "Phase 9: what was built"):** intent, the summary, limits, the typed
    confirmation, the pre-click recheck, the purchase journal and crash
    recovery. Fixture shop only.
 10. **Payment methods:** merchant-saved first, then virtual cards from the
@@ -1003,4 +1004,73 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
   - Claude Haiku as the agent stored "my favourite mug is the blue one…"
     (`create_entities`, local, 12.7 s). A separate run recalled it with
     `search_nodes` (5.3 s).
+
+## Phase 9: what was built (2026-10-04)
+
+- **`TinyAxe.Purchases`** is off unless `config :tiny_axe, :purchases,
+  enabled: true`. The limits are $100 per order, $200 per day, USD, any
+  shop.
+- **Intent:**
+  - Jev decides whether the request asks to buy something. No answer means
+    no.
+  - The maximum is parsed from your own words: "under $50", "no more than
+    £30", "budget of 25 euros".
+  - It's fixed when the agent starts and handed to the gate, so nothing on a
+    page can change it.
+  - No maximum means no purchase: the agent is told to ask you for one.
+- **The summary:** a hidden browser tool, `browser_checkout_summary`, reads
+  the checkout page in code, from the page's text and never from a model:
+  - the shop, from the URL
+  - the grand total (a "total" line that isn't a subtotal) and its currency
+  - the item lines
+  - the shipping address
+  - the card as the page shows it
+
+  It's redacted like everything else.
+- **Checks**, any failure of which blocks the purchase:
+  - within your maximum
+  - the expected currency
+  - within the per-order cap
+  - within what's left of the daily cap (spending that clicked today, UTC)
+  - the shop is on the allowlist, if there is one
+  - Jev agrees the items are what you asked for (no answer fails)
+
+  A failed check is refused without asking you, and the reason goes to the
+  agent and the transcript.
+- **Approval:** a red popup shows the summary and the checks. Only typing the
+  exact total (`16.00`) and pressing enter buys. `y` doesn't; esc and
+  cancelling refuse.
+- **Recheck, then click:**
+  - Code reads the page again. If the shop, the total or the button changed,
+    nothing is clicked and the purchase goes back to you.
+  - The journal then gets `clicking` (write-ahead), and code clicks the
+    reviewed button.
+  - Then `clicked`, then a receipt in `<state>/purchases/<id>/`: the
+    confirmation page's text, a full-page screenshot and the order number.
+- **Crash safety:** a purchase that reached `clicking` with no receipt is
+  reported at the next start ("an order may have been placed at … for …;
+  check your orders… it won't be placed again"), once. It's never clicked
+  again.
+- **Only tiny-axe's browser can buy:** a commit-class tool from another MCP
+  server is refused.
+- **Fix found along the way:** an MCP server that exited right away could
+  crash its connection on the first send (`badarg`) instead of failing
+  cleanly. It now fails as "it exited as soon as it started". The test checks
+  the clean outcome, but the exact race (the port already closed at the first
+  send) can't be triggered on demand.
+- **Tests:** 32 new, 265 in all.
+  - Pure tests cover intent, the checks, the daily total and crash notes.
+  - End-to-end tests run through the gate on the fixture checkout with real
+    headless Chrome: a purchase, a no, over the maximum, no maximum, no
+    intent, the daily cap, mismatched items, the price changing while you
+    decide, purchases off, and a non-browser money tool.
+  - **Shown to bite:** the tests failed when the checks were removed (five
+    tests), when the recheck was removed, and when the write-ahead `clicking`
+    was removed.
+- **Checked with the real agent and the real Jev**, on the fixture shop:
+  - **"Buy me the blue mug… under $50":** all six checks passed, Jev agreed
+    the items matched, the approval was given, and the order was placed (order
+    TA-1001, receipt saved).
+  - **"Buy me the blue mug" (no maximum):** refused before asking, and the
+    shop received nothing.
 

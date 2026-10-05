@@ -144,8 +144,10 @@ defmodule TinyAxe.MCP.Client do
         end
 
       _stdio ->
-        send_line(state, message)
-        await_line(state, id, System.monotonic_time(:millisecond) + @connect_timeout)
+        case send_line(state, message) do
+          :ok -> await_line(state, id, System.monotonic_time(:millisecond) + @connect_timeout)
+          :closed -> {:error, :exited_at_start}
+        end
     end
   end
 
@@ -189,8 +191,10 @@ defmodule TinyAxe.MCP.Client do
         end
 
       _ ->
-        send_line(state, message)
-        {:ok, state}
+        case send_line(state, message) do
+          :ok -> {:ok, state}
+          :closed -> {:error, :exited_at_start}
+        end
     end
   end
 
@@ -227,9 +231,14 @@ defmodule TinyAxe.MCP.Client do
         {:noreply, state}
 
       _ ->
-        send_line(state, message)
-        Process.send_after(self(), {:expire, id}, timeout)
-        {:noreply, %{state | pending: Map.put(state.pending, id, from)}}
+        case send_line(state, message) do
+          :ok ->
+            Process.send_after(self(), {:expire, id}, timeout)
+            {:noreply, %{state | pending: Map.put(state.pending, id, from)}}
+
+          :closed ->
+            {:reply, {:error, :server_exited}, state}
+        end
     end
   end
 
@@ -293,7 +302,14 @@ defmodule TinyAxe.MCP.Client do
 
   defp next_id(state), do: {state.next_id, %{state | next_id: state.next_id + 1}}
 
-  defp send_line(state, message), do: Port.command(state.port, JSON.encode!(message) <> "\n")
+  # A server that has already exited closes its port: sending then fails
+  # rather than crashing this process.
+  defp send_line(state, message) do
+    Port.command(state.port, JSON.encode!(message) <> "\n")
+    :ok
+  rescue
+    ArgumentError -> :closed
+  end
 
   defp split_lines(buffer) do
     {complete, [rest]} = buffer |> String.split("\n") |> Enum.split(-1)

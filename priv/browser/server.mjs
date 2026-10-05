@@ -264,6 +264,51 @@ async function inspect(p, ref) {
   return { ...info, dialog: dialog ? { type: dialog.type(), message: dialog.message() } : null };
 }
 
+// ---------- checkout pages ----------
+
+const MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)|(\d+(?:\.\d{2})?)\s?(USD|EUR|GBP)\b/g;
+const SYMBOLS = { "$": "USD", "£": "GBP", "€": "EUR" };
+
+function amounts(line) {
+  return [...line.matchAll(MONEY)].map((m) => ({
+    value: Number((m[2] || m[3]).replace(/,/g, "")),
+    currency: m[1] ? SYMBOLS[m[1]] : m[4],
+    text: m[0],
+  }));
+}
+
+// Read in code, from the page's text, never from what a model said about it.
+async function checkout(p) {
+  const raw = await p.evaluate(() => document.body ? document.body.innerText : "");
+  const lines = redact(raw).split("\n").map((l) => l.trim()).filter(Boolean);
+  const priced = lines.filter((l) => amounts(l).length > 0);
+
+  // The grand total: a "total" line that isn't a subtotal; the last such line wins.
+  const totals = priced.filter((l) => /total|amount due|to pay/i.test(l) && !/sub-?total/i.test(l));
+  const totalLine = totals[totals.length - 1];
+  const total = totalLine ? amounts(totalLine).slice(-1)[0] : null;
+
+  const notItem = /total|tax|vat|shipping|delivery|postage|discount|subtotal|you save|balance/i;
+  const items = priced.filter((l) => !notItem.test(l)).slice(0, 15);
+
+  const shipAt = lines.findIndex((l) => /ship(ping)? to|deliver(y|ing)? to|shipping address|delivery address/i.test(l));
+  const shipTo = shipAt >= 0 ? lines.slice(shipAt, shipAt + 3).join(", ") : null;
+
+  const payment = lines.find((l) => /(visa|mastercard|amex|american express|discover|card)\b.*(ending|••|\*\*|x{2,}).*\d{4}/i.test(l)) || null;
+
+  return {
+    host: new URL(p.url()).hostname,
+    url: p.url(),
+    title: await p.title().catch(() => ""),
+    total: total ? total.value : null,
+    total_text: total ? total.text : null,
+    currency: total ? total.currency : null,
+    items,
+    ship_to: shipTo,
+    payment,
+  };
+}
+
 // ---------- tools ----------
 
 const ro = { readOnlyHint: true };
@@ -525,6 +570,14 @@ const TOOLS = {
       const p = await page();
       await p.bringToFront().catch(() => {});
       return text(`${await header(p)}\nThe browser window is in front of the user.`);
+    },
+  },
+  browser_checkout_summary: {
+    description: "For tiny-axe's purchase gate only: what the checkout page says (shop, items, total, shipping, card as shown).",
+    inputSchema: obj(),
+    annotations: { readOnlyHint: true },
+    async run() {
+      return text(JSON.stringify(await checkout(await page())));
     },
   },
   browser_inspect: {

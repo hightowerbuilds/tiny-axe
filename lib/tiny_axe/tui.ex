@@ -94,6 +94,8 @@ defmodule TinyAxe.TUI do
        asking: nil,
        # An agent's tool call waiting for y / a / n (TinyAxe.Tools.Gate).
        tool_ask: nil,
+       # A purchase waiting for the user to type its total (TinyAxe.Purchases).
+       purchase_ask: nil,
        # Whether this request is an agent run: its answer goes after its tool lines.
        agent_run: false,
        status: "ready",
@@ -159,6 +161,54 @@ defmodule TinyAxe.TUI do
   end
 
   # At most one popup at a time, most urgent first.
+  defp overlay(%{purchase_ask: ask}, area) when ask != nil do
+    s = ask.summary
+    red = %Style{fg: :red, modifiers: [:bold]}
+
+    lines =
+      [
+        Line.new([Span.new("This spends money. It can't be undone with ctrl+z.", style: red)]),
+        styled(""),
+        styled("Shop: #{s["host"]}", nil, [:bold]),
+        styled("Total: #{s["total_text"]} #{s["currency"]}", nil, [:bold])
+      ] ++
+        Enum.map(s["items"] || [], &styled("  · " <> &1)) ++
+        [
+          s["ship_to"] && styled("Ship to: #{s["ship_to"]}"),
+          s["payment"] && styled("Paying with: #{s["payment"]}"),
+          styled("")
+        ] ++
+        Enum.map(ask.checks, fn
+          {:ok, text} -> styled("✓ " <> text, :green)
+          {:fail, text} -> styled("✗ " <> text, :red)
+        end) ++
+        [
+          styled(""),
+          Line.new([
+            Span.new("Type #{expected_total(s)} and press enter to buy: ",
+              style: %Style{modifiers: [:bold]}
+            ),
+            Span.new(ask.typed <> "▌", style: %Style{fg: :yellow, modifiers: [:bold]})
+          ]),
+          ask[:hint] && styled(ask.hint, :yellow),
+          styled("esc refuse", :dark_gray)
+        ]
+
+    [
+      {%Popup{
+         content: %Paragraph{text: Enum.filter(lines, & &1), wrap: true},
+         block: %Block{
+           title: " buy this? ",
+           borders: [:all],
+           border_type: :rounded,
+           border_style: %Style{fg: :red}
+         },
+         percent_width: 80,
+         percent_height: 80
+       }, area}
+    ]
+  end
+
   defp overlay(%{asking: ask}, area) when ask != nil do
     lines = [
       styled("Send this request to #{ask.to}?", :cyan, [:bold]),
@@ -823,6 +873,39 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  # A purchase: the exact total, typed, buys; esc refuses. Nothing else answers it.
+  defp on_event(%Event.Key{code: code}, %{purchase_ask: ask} = state) when ask != nil do
+    expected = expected_total(ask.summary)
+
+    cond do
+      code == "esc" ->
+        send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
+
+        {:noreply,
+         %{state | purchase_ask: nil} |> add_meta("didn't buy at #{ask.summary["host"]}")}
+
+      code == "enter" and ask.typed == expected ->
+        send(ask.reply_to, {:purchase_answer, ask.ref, :confirm})
+        {:noreply, %{state | purchase_ask: nil, status: "placing the order…"}}
+
+      code == "enter" ->
+        {:noreply,
+         %{
+           state
+           | purchase_ask: Map.put(ask, :hint, "that's not the total; type #{expected} exactly")
+         }}
+
+      code == "backspace" ->
+        {:noreply, %{state | purchase_ask: %{ask | typed: String.slice(ask.typed, 0..-2//1)}}}
+
+      code =~ ~r/\A[0-9.]\z/ and String.length(ask.typed) < 12 ->
+        {:noreply, %{state | purchase_ask: %{ask | typed: ask.typed <> code}}}
+
+      true ->
+        {:noreply, state}
+    end
+  end
+
   # The agent's call waits for this answer in the gate.
   defp on_event(%Event.Key{code: code}, %{tool_ask: ask} = state) when ask != nil do
     handoff? = ask[:class] == :handoff
@@ -1323,8 +1406,9 @@ defmodule TinyAxe.TUI do
   defp cancel(%{run: {_id, pid}} = state) do
     Process.exit(pid, :kill)
 
-    # A tool call waiting for an answer is refused, so the gate lets it go.
+    # A tool call or purchase waiting for an answer is refused, so the gate lets it go.
     if ask = state.tool_ask, do: send(ask.reply_to, {:tool_answer, ask.ref, :deny})
+    if ask = state.purchase_ask, do: send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
 
     # Killing the task doesn't stop the sandboxed command, so kill that directly.
     state =
@@ -1347,6 +1431,7 @@ defmodule TinyAxe.TUI do
         compacting: nil,
         asking: nil,
         tool_ask: nil,
+        purchase_ask: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
@@ -1634,6 +1719,31 @@ defmodule TinyAxe.TUI do
   defp apply_event({:answered_by, %{model: label}}, state),
     do: add_meta(state, "→ answered by #{label}, off this machine")
 
+  ## Purchases (TinyAxe.Purchases)
+
+  defp apply_event({:purchase_approval, ask}, state),
+    do: %{state | purchase_ask: Map.put(ask, :typed, ""), status: "waiting for your answer…"}
+
+  defp apply_event({:purchase_refused, %{summary: s, failed: failed}}, state) do
+    add_meta(
+      state,
+      "✗ tiny-axe won't buy at #{s["host"] || "this shop"}#{if s["total_text"], do: " (#{s["total_text"]})"}: " <>
+        Enum.join(failed, "; ")
+    )
+  end
+
+  defp apply_event({:purchase_changed, why}, state),
+    do: add_meta(state, "✗ nothing was bought: #{why} while you were deciding")
+
+  defp apply_event({:purchased, p}, state) do
+    order = if p[:order], do: " · order #{p.order}", else: ""
+
+    add_meta(
+      state,
+      "🧾 bought at #{p.host} for #{p.total_text}#{order} · receipt in #{TinyAxe.Ops.show(p.dir)}"
+    )
+  end
+
   ## Agent tool calls (TinyAxe.Tools.Gate)
 
   defp apply_event({:agent, %{driver: driver, servers: servers}}, state) do
@@ -1803,6 +1913,12 @@ defmodule TinyAxe.TUI do
   defp tool_class_word(:per_action), do: "judged per action"
   defp tool_class_word(:outward), do: "ask you first"
   defp tool_class_word(:refused), do: "refused"
+
+  # How the total must be typed: 16.00.
+  defp expected_total(%{"total" => total}) when is_number(total),
+    do: :erlang.float_to_binary(total * 1.0, decimals: 2)
+
+  defp expected_total(_), do: "?"
 
   defp describe_class(:handoff), do: "needs you in the browser"
   defp describe_class(class), do: TinyAxe.Tools.Policy.describe(class)

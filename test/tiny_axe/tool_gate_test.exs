@@ -85,6 +85,15 @@ defmodule TinyAxe.ToolGateTest do
       assert text(result) == "client declined"
     end
 
+    test "a server that exits at once fails to connect, cleanly" do
+      assert {:error, {:connect_failed, reason}} =
+               MCP.start_server("quits#{System.unique_integer([:positive])}", %{
+                 "command" => "true"
+               })
+
+      assert reason in [:exited_at_start, {:exited, 0}]
+    end
+
     test "a server that dies is restarted", %{server: s} do
       [{pid, _}] = Registry.lookup(TinyAxe.MCP.Registry, s)
       assert {:error, _} = MCP.call(s, "crash", %{})

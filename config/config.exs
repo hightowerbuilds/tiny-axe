@@ -88,6 +88,16 @@ config :tiny_axe, :browser,
   enabled: true,
   headless: true
 
+# Purchases (TinyAxe.Purchases): off until the user turns them on. The agent
+# can only buy at a checkout tiny-axe reads itself, within these limits, after
+# the user types the exact total.
+config :tiny_axe, :purchases,
+  enabled: false,
+  per_order_max: 100.0,
+  daily_max: 200.0,
+  currency: "USD",
+  merchants: :any
+
 # Models for each role besides the default (:model). Claude and Codex leave the
 # machine: escalation is tried in order when the local model falls short, and
 # the agent (requests that need tools: MCP servers, the browser) is driven by

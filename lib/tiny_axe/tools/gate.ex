@@ -27,7 +27,7 @@ defmodule TinyAxe.Tools.Gate do
 
   require Logger
 
-  alias TinyAxe.{MCP, Tools}
+  alias TinyAxe.{MCP, Purchases, Tools}
   alias TinyAxe.Tools.{BrowserPolicy, Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
@@ -37,7 +37,8 @@ defmodule TinyAxe.Tools.Gate do
   @doc """
   Opens a task: its own address and token for the driver. `notify` gets the
   task's events (and approval questions). `opts`: `:servers` (`:all` or a
-  list of names), `:max_calls`, `:max_minutes`.
+  list of names), `:max_calls`, `:max_minutes`, and `:intent`, what the user
+  asked to buy, if anything (`TinyAxe.Purchases.intent/2`).
   """
   @spec open_task((term() -> any()), keyword()) :: {:ok, map()} | {:error, term()}
   def open_task(notify, opts \\ []) do
@@ -59,7 +60,8 @@ defmodule TinyAxe.Tools.Gate do
             :timer.minutes(Keyword.get(opts, :max_minutes, limits[:max_minutes] || 30)),
         calls: 0,
         recent: [],
-        allowed: MapSet.new()
+        allowed: MapSet.new(),
+        intent: Keyword.get(opts, :intent)
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -213,8 +215,19 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
 
-  defp decide(_task, _tool, _args, {:commit, _reason}, _allowed),
-    do: {:refused, refusal("spending money isn't enabled in tiny-axe yet")}
+  defp decide(task, tool, args, {:commit, reason}, _allowed) do
+    cond do
+      not Purchases.enabled?() ->
+        {:refused, refusal("spending money isn't enabled in tiny-axe (purchases are off)")}
+
+      tool.policy["browser"] != true ->
+        {:refused,
+         refusal("only tiny-axe's browser can buy things, at a checkout the user confirms")}
+
+      true ->
+        purchase(task, tool, args, reason)
+    end
+  end
 
   # The user does it in the browser window; the agent hears whether they did.
   defp decide(task, tool, args, {:handoff, reason}, _allowed) do
@@ -267,6 +280,181 @@ defmodule TinyAxe.Tools.Gate do
 
       :deny ->
         {:denied, refusal("the user said no to this call")}
+    end
+  end
+
+  ## Purchases (TinyAxe.Purchases): summary, checks, typed approval, recheck, click, receipt
+
+  defp purchase(task, tool, args, reason) do
+    id = Purchases.start(task.intent)
+    target = look_at(tool.server, args["ref"])
+
+    case Purchases.summary(tool.server) do
+      {:ok, summary} ->
+        Purchases.event(id, %{
+          t: "summary",
+          summary: summary,
+          reason: reason,
+          action: %{tool: tool.tool, args: args}
+        })
+
+        checks = Purchases.checks(task.intent, summary)
+
+        case for({:fail, why} <- checks, do: why) do
+          [] ->
+            approve_and_place(task, tool, args, id, summary, checks, target)
+
+          failed ->
+            Purchases.event(id, %{t: "refused", checks: failed})
+            task.notify.({:purchase_refused, %{summary: summary, failed: failed}})
+
+            hint =
+              if task.intent && task.intent.max == nil,
+                do: " Ask the user the most they want to spend, then they can ask again.",
+                else: ""
+
+            {:refused,
+             refusal("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.#{hint}")}
+        end
+
+      {:error, why} ->
+        Purchases.event(id, %{t: "refused", checks: [why]})
+        {:refused, refusal("#{why}, and it won't place an order it can't check")}
+    end
+  end
+
+  defp approve_and_place(task, tool, args, id, summary, checks, target) do
+    case ask_purchase(task, summary, checks) do
+      :confirm ->
+        Purchases.event(id, %{t: "confirmed"})
+        place(task, tool, args, id, summary, target)
+
+      :deny ->
+        Purchases.event(id, %{t: "declined"})
+        {:denied, refusal("the user didn't confirm the purchase")}
+    end
+  end
+
+  # The page is read again: if the shop, the total or the button changed while
+  # the user was deciding, nothing is clicked.
+  defp place(task, tool, args, id, summary, target) do
+    now = look_at(tool.server, args["ref"])
+
+    changed =
+      case Purchases.summary(tool.server) do
+        {:ok, again} ->
+          cond do
+            again["host"] != summary["host"] ->
+              "the shop changed (#{again["host"]})"
+
+            again["total"] != summary["total"] ->
+              "the total changed from #{summary["total_text"]} to #{again["total_text"] || "nothing"}"
+
+            target == nil or now == nil ->
+              "tiny-axe can't find the button any more"
+
+            Map.take(now, ["text", "tag", "isSubmit"]) !=
+                Map.take(target, ["text", "tag", "isSubmit"]) ->
+              "the button changed"
+
+            true ->
+              nil
+          end
+
+        {:error, why} ->
+          why
+      end
+
+    if changed do
+      Purchases.event(id, %{t: "changed", why: changed})
+      task.notify.({:purchase_changed, changed})
+
+      {:refused,
+       refusal("#{changed} while the user was deciding, so nothing was bought. Look again")}
+    else
+      # Write-ahead: if tiny-axe dies after this, the next start says the order
+      # may have gone through, and it is never clicked again.
+      Purchases.event(id, %{t: "clicking"})
+
+      case MCP.call(tool.server, tool.tool, args) do
+        {:ok, result} ->
+          Purchases.event(id, %{t: "clicked"})
+          receipt = receipt(tool.server, id)
+
+          task.notify.(
+            {:purchased,
+             Map.merge(receipt, %{
+               host: summary["host"],
+               total_text: summary["total_text"],
+               id: id
+             })}
+          )
+
+          note = %{
+            "type" => "text",
+            "text" =>
+              "tiny-axe placed the order after the user confirmed it" <>
+                if(receipt.order, do: "; order #{receipt.order}.", else: ".")
+          }
+
+          {:approved, Map.update(result, "content", [note], &[note | &1])}
+
+        {:error, reason} ->
+          Purchases.event(id, %{t: "click_failed", error: inspect(reason)})
+
+          {:failed,
+           refusal(
+             "the click failed (#{inspect(reason)}); the order may or may not have gone through, so check the page"
+           )}
+      end
+    end
+  end
+
+  # The confirmation page's text, order number and a screenshot.
+  defp receipt(server, id) do
+    dir = Purchases.dir(id)
+
+    text =
+      case MCP.call(server, "browser_extract", %{}, 30_000) do
+        {:ok, %{"content" => content}} -> Enum.map_join(content, "\n", &(&1["text"] || ""))
+        _ -> ""
+      end
+
+    File.write!(Path.join(dir, "receipt.txt"), text)
+
+    case MCP.call(server, "browser_take_screenshot", %{"fullPage" => true}, 30_000) do
+      {:ok, %{"content" => [%{"type" => "image", "data" => data} | _]}} ->
+        File.write!(Path.join(dir, "receipt.png"), Base.decode64!(data))
+
+      _ ->
+        :ok
+    end
+
+    order =
+      case Regex.run(
+             ~r/(?i:order|confirmation)\s*(?i:number|no\.?|#|id)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,})/,
+             text
+           ) do
+        [_, order] -> order
+        nil -> nil
+      end
+
+    Purchases.event(id, %{t: "receipt", order: order})
+    %{order: order, dir: dir}
+  end
+
+  defp ask_purchase(task, summary, checks) do
+    ref = make_ref()
+    timeout = Application.get_env(:tiny_axe, :tools, [])[:approval_timeout] || :timer.minutes(10)
+
+    task.notify.(
+      {:purchase_approval, %{summary: summary, checks: checks, reply_to: self(), ref: ref}}
+    )
+
+    receive do
+      {:purchase_answer, ^ref, answer} when answer in [:confirm, :deny] -> answer
+    after
+      timeout -> :deny
     end
   end
 

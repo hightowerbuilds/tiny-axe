@@ -15,6 +15,10 @@ defmodule TinyAxe.FixtureSite do
     * `/login` — a sign-in form with a password field
     * `/dialog` — a button that asks "Clear everything?" before recording
     * `/exfil` — a link whose address carries a long query string
+    * `/order?item=…` — a checkout: items, shipping, an order total that
+      follows `set_price/1` (checked every 200 ms), where it ships, the card as
+      shown, and "Place order", which POSTs `/place-order` and shows an order
+      number
 
   Everything sent to the site is recorded: `submissions/0`.
   """
@@ -27,6 +31,7 @@ defmodule TinyAxe.FixtureSite do
 
   def start do
     Agent.start_link(fn -> [] end, name: __MODULE__.Log)
+    Agent.start_link(fn -> 12.0 end, name: __MODULE__.Price)
 
     {:ok, pid} =
       Bandit.start_link(plug: __MODULE__, ip: {127, 0, 0, 1}, port: 0, startup_log: false)
@@ -157,6 +162,43 @@ defmodule TinyAxe.FixtureSite do
   post "/cleared" do
     record(conn)
     send_resp(conn, 200, "ok")
+  end
+
+  @doc "The mug's price on `/order` (shipping is $4.00 on top)."
+  def set_price(price), do: Agent.update(__MODULE__.Price, fn _ -> price end)
+
+  defp total, do: Agent.get(__MODULE__.Price, & &1) + 4.0
+  defp dollars(n), do: "$" <> :erlang.float_to_binary(n * 1.0, decimals: 2)
+
+  get "/order" do
+    item = conn.params["item"] || "Blue mug"
+    price = Agent.get(__MODULE__.Price, & &1)
+
+    html(conn, """
+    <title>Checkout</title><main><h1>Review your order</h1>
+    <p>#{item} × 1 — <span id="price">#{dollars(price)}</span></p>
+    <p>Shipping: $4.00</p>
+    <p>Order total: <span id="total">#{dollars(price + 4.0)}</span></p>
+    <p>Ship to:</p><p>Sam Lee</p><p>1 High St, Springfield</p>
+    <p>Paying with Visa ending in 4242</p>
+    <form method="post" action="/place-order"><button>Place order</button></form></main>
+    <script>setInterval(() => fetch('/price').then(r => r.text()).then(t => {
+      document.getElementById('total').textContent = t;
+    }), 200);</script>
+    """)
+  end
+
+  get "/price" do
+    send_resp(conn, 200, dollars(total()))
+  end
+
+  post "/place-order" do
+    record(conn)
+
+    html(
+      conn,
+      "<title>Thanks</title><main><h1>Thank you!</h1><p>Your order was placed. Order number: TA-1001</p></main>"
+    )
   end
 
   get "/exfil" do

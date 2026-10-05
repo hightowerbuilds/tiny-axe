@@ -105,6 +105,7 @@ defmodule TinyAxe.MCP do
 
   defp describe_error({:connect_failed, {:not_found, cmd}}), do: "#{cmd} isn't installed"
   defp describe_error({:connect_failed, :timeout}), do: "it didn't answer when tiny-axe connected"
+  defp describe_error({:connect_failed, :exited_at_start}), do: "it exited as soon as it started"
 
   defp describe_error({:connect_failed, {:exited, status}}),
     do: "it exited (#{status}) when tiny-axe connected"

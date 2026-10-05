@@ -67,7 +67,11 @@ defmodule TinyAxe.Browser do
       },
       # "browser": classed per action by TinyAxe.Tools.BrowserPolicy; the gate
       # alone uses browser_inspect.
-      "policy" => %{"read" => @read, "browser" => true, "hidden" => ["browser_inspect"]}
+      "policy" => %{
+        "read" => @read,
+        "browser" => true,
+        "hidden" => ["browser_inspect", "browser_checkout_summary"]
+      }
     }
   end
 
