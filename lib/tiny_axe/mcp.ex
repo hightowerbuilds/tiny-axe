@@ -13,8 +13,10 @@ defmodule TinyAxe.MCP do
       }}
 
   `${VAR}` in `env` and `headers` comes from the environment (and so from
-  `~/.config/tiny-axe/env`), so secrets stay out of this file and out of every
-  prompt. Server names may only use letters, digits and `-`, since they become
+  `~/.config/tiny-axe/env`), and `${keyring:NAME}` from the system keyring
+  (`secret-tool lookup service tiny-axe key NAME`), so secrets stay out of
+  this file and out of every prompt. `policy` can name a ready-made template
+  (`"policy": "github"`, see `TinyAxe.MCP.Policies`). Server names may only use letters, digits and `-`, since they become
   part of tool names.
 
   Each server runs as a `TinyAxe.MCP.Client` under a supervisor. Its tools are
@@ -23,7 +25,7 @@ defmodule TinyAxe.MCP do
 
   require Logger
 
-  alias TinyAxe.MCP.Client
+  alias TinyAxe.MCP.{Client, Policies}
 
   @separator "__"
 
@@ -43,7 +45,7 @@ defmodule TinyAxe.MCP do
     with {:ok, raw} <- File.read(config_path()),
          {:ok, %{"mcpServers" => servers}} when is_map(servers) <- JSON.decode(raw) do
       for {name, config} <- servers, valid_name?(name), not reserved?(name), into: %{} do
-        {name, expand(config)}
+        {name, config |> expand() |> with_policy()}
       end
     else
       {:error, :enoent} ->
@@ -58,10 +60,69 @@ defmodule TinyAxe.MCP do
   @doc "Starts every configured server that isn't running. Returns the ones that failed."
   @spec start_configured() :: [{String.t(), term()}]
   def start_configured do
-    for {name, config} <- configured(),
-        not running?(name),
-        {:error, reason} <- [start_server(name, config)],
-        do: {name, reason}
+    failed =
+      for {name, config} <- configured(),
+          not running?(name),
+          {:error, reason} <- [start_server(name, config)],
+          do: {name, reason}
+
+    :persistent_term.put({__MODULE__, :failed}, Map.new(failed))
+    failed
+  end
+
+  @doc """
+  Every configured server (and tiny-axe's browser): whether it's running, its
+  tools by class, and why it isn't running, if it failed.
+  """
+  @spec status() :: [map()]
+  def status do
+    failed = :persistent_term.get({__MODULE__, :failed}, %{})
+    configured = configured()
+    names = Enum.uniq(Map.keys(configured) ++ running()) |> Enum.sort()
+
+    for name <- names do
+      tools = tools([name])
+
+      %{
+        name: name,
+        running: running?(name),
+        error: failed[name] && describe_error(failed[name]),
+        policy_error: get_in(configured, [name, "policy_error"]),
+        tools:
+          tools
+          |> Enum.reject(&(&1.tool in List.wrap(&1.policy["hidden"])))
+          |> Enum.group_by(&class_of/1, & &1.tool)
+          |> Map.new(fn {class, names} -> {class, Enum.sort(names)} end)
+      }
+    end
+  end
+
+  # The browser's actions are classed one by one, by what they'd do on the page.
+  defp class_of(%{policy: %{"browser" => true} = policy, tool: tool}),
+    do: if(tool in List.wrap(policy["read"]), do: :read, else: :per_action)
+
+  defp class_of(t), do: TinyAxe.Tools.Policy.classify(t.definition, t.policy)
+
+  defp describe_error({:connect_failed, {:not_found, cmd}}), do: "#{cmd} isn't installed"
+  defp describe_error({:connect_failed, :timeout}), do: "it didn't answer when tiny-axe connected"
+
+  defp describe_error({:connect_failed, {:exited, status}}),
+    do: "it exited (#{status}) when tiny-axe connected"
+
+  defp describe_error(other), do: inspect(other)
+
+  # A template name or adjusted template becomes the policy itself. An unknown
+  # template gives no policy, so every tool asks, and says so.
+  defp with_policy(config) do
+    case Policies.resolve(config["policy"]) do
+      {:ok, policy} ->
+        Map.put(config, "policy", policy)
+
+      {:error, name} ->
+        config
+        |> Map.put("policy", %{})
+        |> Map.put("policy_error", "no policy template called #{name}; every tool asks")
+    end
   end
 
   @spec start_server(String.t(), map()) :: {:ok, pid()} | {:error, term()}
@@ -144,7 +205,8 @@ defmodule TinyAxe.MCP do
     ok
   end
 
-  # `${VAR}` in env and headers, from the environment.
+  # `${VAR}` in env and headers, from the environment; `${keyring:NAME}`, from
+  # the system keyring.
   defp expand(config) do
     Enum.reduce(["env", "headers"], config, fn key, config ->
       case config[key] do
@@ -154,8 +216,59 @@ defmodule TinyAxe.MCP do
     end)
   end
 
-  defp fill(value) when is_binary(value),
-    do: Regex.replace(~r/\$\{(\w+)\}/, value, fn _, var -> System.get_env(var, "") end)
+  defp fill(value) when is_binary(value) do
+    value
+    |> then(&Regex.replace(~r/\$\{keyring:([\w.-]+)\}/, &1, fn _, key -> keyring(key) end))
+    |> then(&Regex.replace(~r/\$\{(\w+)\}/, &1, fn _, var -> System.get_env(var, "") end))
+  end
 
   defp fill(value), do: value
+
+  @doc "A secret from the system keyring (`service tiny-axe key NAME`), or \"\"."
+  @spec keyring(String.t()) :: String.t()
+  def keyring(key) do
+    tool = Application.get_env(:tiny_axe, :secret_tool, "secret-tool")
+
+    with path when path != nil <- System.find_executable(tool),
+         {secret, 0} <-
+           System.cmd(path, ["lookup", "service", "tiny-axe", "key", key], stderr_to_stdout: true) do
+      String.trim_trailing(secret, "\n")
+    else
+      _ ->
+        Logger.warning("no secret #{key} in the keyring (service tiny-axe)")
+        ""
+    end
+  end
+
+  ## Editing mcp.json (mix tiny_axe.mcp)
+
+  @doc "Adds or replaces a server in `mcp.json`, keeping the rest of the file."
+  @spec put_config(String.t(), map()) :: :ok | {:error, term()}
+  def put_config(name, config) do
+    cond do
+      not valid_name?(name) -> {:error, :bad_name}
+      name == "browser" -> {:error, :reserved}
+      true -> update_file(&Map.put(&1, name, config))
+    end
+  end
+
+  @spec delete_config(String.t()) :: :ok | {:error, term()}
+  def delete_config(name), do: update_file(&Map.delete(&1, name))
+
+  defp update_file(fun) do
+    path = config_path()
+
+    current =
+      case File.read(path) do
+        {:ok, raw} -> JSON.decode!(raw)
+        {:error, :enoent} -> %{}
+      end
+
+    updated = Map.update(current, "mcpServers", fun.(%{}), fun)
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, updated |> :json.format() |> IO.iodata_to_binary())
+    File.chmod!(path, 0o600)
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
 end

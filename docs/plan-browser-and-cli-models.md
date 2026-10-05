@@ -1,11 +1,11 @@
 # Plan: a browser, secure purchasing, and Claude/Codex models
 
-Status (2026-10-04): Phases 0–7 are done: probing, the Claude and Codex
+Status (2026-10-04): Phases 0–8 are done: probing, the Claude and Codex
 backends, escalation, probing MCP, the MCP client and gate, the drivers, the
-browser's read tools, and browser interaction. Part B was rewritten on 2026-10-04 to
+browser's read tools, browser interaction, and third-party MCP servers. Part B was rewritten on 2026-10-04 to
 make the agent as capable as possible: any tool via MCP, driven by the
-strongest agent loop, with every call through one gate. Next is Phase 8,
-third-party MCP servers.
+strongest agent loop, with every call through one gate. Next is Phase 9,
+the purchase gate.
 
 Three pieces of work, which depend on each other in this order:
 
@@ -519,7 +519,7 @@ Each phase ends with its tests passing, as with the file operations.
      sending something. Phase 6 classes navigation as read. Phase 7 should make
      navigation to a new site with a long query string, after the agent has
      seen private material, at least outward.
-8. **Third-party MCP servers:** config, secrets and policies; the user picks
+8. **Third-party MCP servers (done; see "Phase 8: what was built"):** config, secrets and policies; the user picks
    the first ones.
 9. **The purchase gate:** intent, the summary, limits, the typed
    confirmation, the pre-click recheck, the purchase journal and crash
@@ -534,7 +534,8 @@ Each phase ends with its tests passing, as with the file operations.
 - **The agent's driver** (`config :tiny_axe, :models, agent:`, Haiku for now):
   Claude Sonnet is recommended for capability, and the eval can decide whether
   Haiku is enough for simple reads.
-- **The first third-party MCP servers** (Phase 8): the user picks.
+- **Which real MCP servers to connect** (Phase 8 built the tooling): the user
+  picks. GitHub needs a token in the keyring.
 
 ## Decisions (2026-09-28)
 
@@ -958,4 +959,48 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
   - **Second run:** add to cart ran, "Buy now" was refused without being
     clicked, and the contact form waited for approval and was sent. The site
     received only the message.
+
+## Phase 8: what was built (2026-10-04)
+
+- **Policy templates** (`TinyAxe.MCP.Policies`) for well-known servers:
+  github, memory, fetch, filesystem (read-only: tiny-axe's own file plans do
+  the writing, with undo), sequential-thinking, time, brave-search, postgres
+  and sqlite.
+  - **Naming one:** `"policy": "github"`.
+  - **Adjusting one:** `{"template": "github", "deny": ["merge_*"]}` adds to
+    its lists.
+  - **An unknown template** gives no policy, so every tool asks, and the
+    status says why.
+  - **Annotations still tighten a template:** the real memory server marks
+    its deletes destructive, so they ask even though the template calls them
+    local.
+- **Secrets:**
+  - `${keyring:NAME}` in a server's `env` or `headers` is read from the
+    system keyring (`secret-tool lookup service tiny-axe key NAME`).
+    `${VAR}` comes from the environment and `~/.config/tiny-axe/env`.
+  - Nothing secret lives in `mcp.json`, which is written 0600.
+  - The name `browser` is reserved for tiny-axe's own browser.
+- **`mix tiny_axe.mcp`:**
+  - `add NAME [--template T] [--env K=V] -- command…` (or `--url` and
+    `--header` for HTTP servers)
+  - `check NAME`: starts the server and shows its tools by what will happen:
+    runs, asks you each time, judged per action, or refused
+  - list, `remove`, `templates`
+  - `secret NAME`: prints the `secret-tool store` command. It never asks for
+    or handles the secret itself.
+- **Status:**
+  - `TinyAxe.MCP.status/0` reports each server: running, its tools by class
+    (the browser's actions are "judged per action"), and why it failed if it
+    did ("github-mcp-server isn't installed").
+  - Typing **`tools`** in the TUI shows it, like `cd` and `pwd`, with no
+    model involved.
+- **Tests:** 8 new, 240 in all. A fake `secret-tool` stands in for the
+  keyring, so the tests never read the real one.
+- **Checked with a real server**, `@modelcontextprotocol/server-memory` (via
+  npx), in a scratch config so the user's real `mcp.json` wasn't touched:
+  - `check` classed its 9 tools: 3 reads run, 3 local writes run, and 3
+    deletes ask.
+  - Claude Haiku as the agent stored "my favourite mug is the blue one…"
+    (`create_entities`, local, 12.7 s). A separate run recalled it with
+    `search_nodes` (5.3 s).
 

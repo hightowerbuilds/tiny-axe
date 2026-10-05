@@ -19,3 +19,7 @@ config :tiny_axe, mcp_config: Path.join(System.tmp_dir!(), "tiny_axe_test_mcp.js
 
 # Tests start their own browser servers (test/tiny_axe/browser_test.exs).
 config :tiny_axe, :browser, enabled: true, headless: true
+
+# A fake keyring (test/support/fake_secret_tool), so tests never read the real one.
+config :tiny_axe,
+  secret_tool: Path.expand("../test/support/fake_secret_tool/secret-tool", __DIR__)

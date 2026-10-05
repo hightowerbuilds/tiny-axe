@@ -1148,8 +1148,8 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd and pwd are handled here, like shell built-ins: no model involved.
-      prompt == "pwd" or prompt =~ ~r/\Acd(\s|\z)/ ->
+      # cd, pwd and tools are handled here, like shell built-ins: no model involved.
+      prompt in ["pwd", "tools"] or prompt =~ ~r/\Acd(\s|\z)/ ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
@@ -1161,6 +1161,41 @@ defmodule TinyAxe.TUI do
 
   defp builtin(state, "pwd"),
     do: add_meta(state, "📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())}")
+
+  # What the agent can use: each MCP server (and the browser), and its tools by class.
+  defp builtin(state, "tools") do
+    case TinyAxe.MCP.status() do
+      [] ->
+        add_meta(
+          state,
+          "no tools connected; add MCP servers with `mix tiny_axe.mcp add` (see `mix help tiny_axe.mcp`)"
+        )
+
+      servers ->
+        Enum.reduce(servers, state, fn s, state ->
+          line =
+            cond do
+              s.running ->
+                counts =
+                  for class <- [:read, :local, :per_action, :outward, :refused],
+                      n = length(s.tools[class] || []),
+                      n > 0,
+                      do: "#{n} #{tool_class_word(class)}"
+
+                "🔧 #{s.name}: #{Enum.join(counts, ", ")}"
+
+              s.error ->
+                "✗ #{s.name}: #{s.error}"
+
+              true ->
+                "· #{s.name}: not running"
+            end
+
+          line = if s.policy_error, do: line <> " (⚠ #{s.policy_error})", else: line
+          add_meta(state, line)
+        end)
+    end
+  end
 
   defp builtin(state, "cd" <> arg) do
     target = if String.trim(arg) == "", do: "~", else: String.trim(arg)
@@ -1762,6 +1797,12 @@ defmodule TinyAxe.TUI do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
   end
+
+  defp tool_class_word(:read), do: "run"
+  defp tool_class_word(:local), do: "run (local)"
+  defp tool_class_word(:per_action), do: "judged per action"
+  defp tool_class_word(:outward), do: "ask you first"
+  defp tool_class_word(:refused), do: "refused"
 
   defp describe_class(:handoff), do: "needs you in the browser"
   defp describe_class(class), do: TinyAxe.Tools.Policy.describe(class)
