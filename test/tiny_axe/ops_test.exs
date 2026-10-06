@@ -113,6 +113,61 @@ defmodule TinyAxe.OpsTest do
   end
 
   describe "step/2 and undo_record/2" do
+    test "a copied folder's journal record survives JSON and undoes an unchanged tree", %{
+      home: home,
+      trash: trash
+    } do
+      source = at(home, "Downloads")
+      dest = at(home, "backup")
+      assert {:ok, records} = Ops.step(%{op: :copy, from: source, to: dest}, "unused")
+      records = records |> JSON.encode!() |> JSON.decode!()
+      assert [%{"hash" => "tree-v1:" <> _}] = records
+
+      assert Enum.flat_map(records, &Ops.undo_record(&1, trash)) == []
+      refute File.exists?(dest)
+
+      assert File.read!(Path.join(trash, "backup/a.pdf")) ==
+               File.read!(Path.join(source, "a.pdf"))
+    end
+
+    test "undo preserves a copied folder when only a file's contents changed", %{
+      home: home,
+      trash: trash
+    } do
+      dest = at(home, "backup")
+
+      assert {:ok, records} =
+               Ops.step(%{op: :copy, from: at(home, "Downloads"), to: dest}, "unused")
+
+      File.write!(Path.join(dest, "a.pdf"), "an independent edit")
+
+      assert [note] = Enum.flat_map(records, &Ops.undo_record(&1, trash))
+      assert note =~ "so it was kept"
+      assert File.read!(Path.join(dest, "a.pdf")) == "an independent edit"
+      refute File.exists?(Path.join(trash, "backup"))
+    end
+
+    test "legacy folder records are readable but cannot authorize undo", %{
+      home: home,
+      trash: trash
+    } do
+      path = at(home, "Downloads")
+      legacy = Ops.hash("a.pdf\nb.pdf\nc.txt")
+      record = %{"kind" => "copied", "path" => path, "hash" => legacy}
+      assert [note] = Ops.undo_record(record, trash)
+      assert note =~ "older folder fingerprint"
+      assert File.exists?(Path.join(path, "a.pdf"))
+    end
+
+    test "legacy copied-file records still undo normally", %{home: home, trash: trash} do
+      path = at(home, "Downloads/a.pdf")
+      content = File.read!(path)
+      record = %{"kind" => "copied", "path" => path, "hash" => Ops.hash(content)}
+      assert [] = Ops.undo_record(record, trash)
+      refute File.exists?(path)
+      assert File.read!(Path.join(trash, "Downloads/a.pdf")) == content
+    end
+
     test "a move goes back", %{home: home, trash: trash} do
       op = %{op: :move, from: at(home, "Downloads/a.pdf"), to: at(home, "Papers/a.pdf")}
       assert {:ok, records} = Ops.step(op, "unused")

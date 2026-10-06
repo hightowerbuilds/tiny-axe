@@ -21,7 +21,8 @@ defmodule TinyAxe.Commander do
   just before `:done`.
   """
 
-  alias TinyAxe.{Decider, Escalation, Files, Location, Model, Ollama, Ops, Organizer, Shell}
+  alias TinyAxe.{Escalation, Location, Model, Ollama, Ops}
+  alias TinyAxe.Commander.{Prompt, Review}
 
   @max_rounds 4
 
@@ -45,8 +46,8 @@ defmodule TinyAxe.Commander do
     notify.({:stage, "planning commands…"})
 
     messages = [
-      %{role: "system", content: system_prompt()},
-      %{role: "user", content: first_message(history, prompt)}
+      %{role: "system", content: Prompt.system_prompt()},
+      %{role: "user", content: Prompt.first_message(history, prompt)}
     ]
 
     context = TinyAxe.Pipeline.context(history, prompt)
@@ -114,7 +115,13 @@ defmodule TinyAxe.Commander do
       else
         case check(Location.current(), commands) do
           {:ok, dir} ->
-            review(dir, commands, reply, messages, context, notify, round, reviewed?)
+            {reviewed_plan, feedback} = Review.assess(dir, commands, context, notify)
+
+            if feedback && not reviewed? do
+              plan(messages ++ [user(feedback)], context, notify, round + 1, true)
+            else
+              {:ok, reviewed_plan, reply}
+            end
 
           {:error, problems} ->
             notify.({:command_problems, problems})
@@ -137,312 +144,13 @@ defmodule TinyAxe.Commander do
     end
   end
 
-  @doc """
-  Checks the working folder and commands. Returns the folder as an absolute
-  path, or the problems in plain words.
-  """
+  @doc "Checks the working folder and commands without executing them."
   @spec check(String.t(), [String.t()]) :: {:ok, String.t()} | {:error, [String.t()]}
-  def check(dir, commands) do
-    abs = Ops.resolve(dir)
+  defdelegate check(dir, commands), to: TinyAxe.Commander.Validation
 
-    problems =
-      [
-        dir == "" && "Give the working folder in \"dir\".",
-        (dir != "" and not File.dir?(abs)) &&
-          "#{Ops.show(abs)} isn't an existing folder. Use its parent and create it with a command.",
-        (File.dir?(abs) and not workable?(abs)) &&
-          "Commands can't run in #{Ops.show(abs)}: pick a folder inside the home folder " <>
-            "(not the home folder itself) or the project, outside hidden folders."
-      ] ++
-        Enum.map(commands, fn c ->
-          c =~ ~r/(^|[\s;&|(])(sudo|su|doas)\s/ &&
-            "#{inspect(c)} uses sudo/su/doas; commands run as the user, in a sandbox."
-        end) ++
-        Enum.map(commands, fn c ->
-          (scaffolds_here?(c) and File.dir?(abs) and visible_entries(abs) != []) &&
-            "#{inspect(c)} scaffolds into #{Ops.show(abs)}, which isn't empty " <>
-              "(#{abs |> visible_entries() |> Enum.take(3) |> Enum.join(", ")}), so it would " <>
-              "cancel. Scaffold into a new subfolder instead, e.g. `npm create vite@latest web -- --template react`."
-        end)
-
-    case Enum.filter(problems, & &1) do
-      [] -> {:ok, abs}
-      problems -> {:error, problems}
-    end
-  end
-
-  # `npm create vite@latest . …`, `npx create-next-app .`, `yarn create vite .`: a
-  # scaffolder aimed at the working folder itself (as opposed to a new subfolder).
-  defp scaffolds_here?(command) do
-    command =~
-      ~r/\b(npm|pnpm|yarn|bun|npx|bunx)\s+(create|init)?\s*[\w@\/.-]*create[\w@\/.-]*\s+\.(\s|$)/ or
-      command =~ ~r/\b(npm|pnpm|yarn|bun)\s+(create|init)\s+[\w@\/.-]+\s+\.(\s|$)/
-  end
-
-  defp visible_entries(dir) do
-    case File.ls(dir) do
-      {:ok, names} -> names |> Enum.reject(&String.starts_with?(&1, ".")) |> Enum.sort()
-      _ -> []
-    end
-  end
-
-  # The home folder itself would make every file writable; any folder below it is fine.
-  defp workable?(abs) do
-    abs != Ops.root() and not Ops.hidden?(abs) and (abs == Files.root() or Ops.changeable?(abs))
-  end
-
-  defp review(dir, commands, reply, messages, context, notify, round, reviewed?) do
-    listing =
-      commands |> Enum.with_index(1) |> Enum.map_join("\n", fn {c, i} -> "#{i}. $ #{c}" end)
-
-    questions =
-      commands
-      |> Enum.with_index()
-      |> Map.new(fn {c, i} ->
-        {:"cmd_#{i}",
-         %{type: :noul, instructions: "Is this command needed for what the user asked: $ #{c}"}}
-      end)
-      |> Map.put(:complete, %{
-        type: :noul,
-        instructions: "Would running these commands, in this order, do everything the user asked?"
-      })
-      |> Map.put(:right_folder, %{
-        type: :noul,
-        instructions:
-          "Is the working folder the right place to run these, given the request and " <>
-            "the current folder?"
-      })
-
-    state = %{
-      request: context.request,
-      recent_conversation: Map.get(context, :recent_conversation, ""),
-      working_folder: Ops.show(dir),
-      current_folder: Ops.show(Location.current()),
-      commands: listing,
-      folder_contents: folder_listing(dir),
-      how_commands_run:
-        "Each command runs with sh -c in the working folder; `cd x && ...` works within " <>
-          "one command. Nothing answers prompts, so commands use flags that skip questions."
-    }
-
-    case Decider.decide(state, questions) do
-      {:ok, answers} ->
-        scores =
-          Enum.map(Enum.with_index(commands), fn {_, i} -> Decider.p(answers, :"cmd_#{i}") end)
-
-        complete = Decider.p(answers, :complete)
-        right_folder = Decider.p(answers, :right_folder)
-        all = [complete, right_folder | scores]
-        # Any unknown makes the whole review unknown: a weakest link can't be missing.
-        score = if nil in all, do: nil, else: Enum.min(all)
-        notify.({:review, score})
-        if score == nil, do: notify.({:decider_unavailable, "reviewing the commands"})
-
-        plan = %{
-          request: context.request,
-          dir: dir,
-          commands: Enum.zip_with(commands, scores, &%{command: &1, review: &2}),
-          review: score
-        }
-
-        if is_number(score) and score < Decider.review_threshold() and not reviewed? do
-          doubtful =
-            for {c, p} <- Enum.zip(commands, scores),
-                p < Decider.review_threshold(),
-                do: "- probably not needed (#{pct(p)}): $ #{c}"
-
-          missing =
-            if complete < Decider.review_threshold(),
-              do: ["- together they may not do everything asked (#{pct(complete)})"],
-              else: []
-
-          missing =
-            if right_folder < Decider.review_threshold(),
-              do:
-                missing ++ ["- #{Ops.show(dir)} may be the wrong folder (#{pct(right_folder)})"],
-              else: missing
-
-          feedback =
-            "A reviewer checked the commands against the request:\n" <>
-              Enum.join(doubtful ++ missing, "\n") <> "\n\nReply with corrected JSON."
-
-          plan(messages ++ [user(feedback)], context, notify, round + 1, true)
-        else
-          {:ok, plan, reply}
-        end
-
-      {:error, _} ->
-        notify.({:decider_unavailable, "reviewing the commands"})
-
-        {:ok,
-         %{
-           request: context.request,
-           dir: dir,
-           commands: Enum.map(commands, &%{command: &1, review: nil}),
-           review: nil
-         }, reply}
-    end
-  end
-
-  ## Running approved commands
-
-  @doc """
-  Runs an approved plan's commands in order, stopping at the first failure.
-  Events: `{:cmd_start, i, command}`, `{:cmd_os_pid, pid}`, `{:cmd_output, text}`,
-  `{:cmd_exit, i, status}`, then `{:cmds_done, [%{command:, status:, output:}]}`
-  and `{:cmds_checked, probability}`.
-
-  Exit codes aren't enough (create-vite exits 0 after "Operation cancelled"), so
-  the Decider also judges from the output whether the commands did what was asked.
-  """
+  @doc "Revalidates an approved plan and executes its commands in order."
   @spec execute(map(), (term() -> any())) :: :ok
-  def execute(plan, notify) do
-    # Re-checked at the moment of running, not only when planned: the folder
-    # or the rules may have changed while the plan waited for approval.
-    case check(plan.dir, Enum.map(plan.commands, & &1.command)) do
-      {:ok, _} -> run_commands(plan, notify)
-      {:error, problems} -> notify.({:cmds_refused, problems})
-    end
-
-    :ok
-  end
-
-  defp run_commands(plan, notify) do
-    results =
-      plan.commands
-      |> Enum.with_index()
-      |> Enum.reduce_while([], fn {%{command: c}, i}, acc ->
-        notify.({:cmd_start, i, c})
-
-        case Shell.run(plan.dir, c, &notify.({:cmd_output, &1}),
-               on_start: &notify.({:cmd_os_pid, &1})
-             ) do
-          {:ok, status, output} ->
-            notify.({:cmd_exit, i, status})
-            result = %{command: c, status: status, output: output}
-            if status == 0, do: {:cont, [result | acc]}, else: {:halt, [result | acc]}
-
-          {:error, reason} ->
-            notify.({:cmd_exit, i, reason})
-            {:halt, [%{command: c, status: reason, output: ""} | acc]}
-        end
-      end)
-      |> Enum.reverse()
-
-    notify.({:cmds_done, results})
-    follow(plan.dir, results, notify)
-    check? = Application.get_env(:tiny_axe, :check_command_outcome, true)
-    notify.({:cmds_checked, if(check?, do: outcome(plan.request, results))})
-    :ok
-  end
-
-  # The location follows the commands: to the folder they ran in, or, if the last
-  # one succeeded and began `cd x && …`, into x (so after
-  # `cd web && npm install`, "start the dev server" means in web/).
-  defp follow(dir, results, notify) do
-    from = Location.current()
-
-    to =
-      with %{status: 0, command: c} <- List.last(results),
-           [_, sub] <- Regex.run(~r/\A\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&/, c),
-           abs = Path.expand(String.trim(sub, "\"") |> String.trim("'"), dir),
-           true <- File.dir?(abs) do
-        abs
-      else
-        _ -> dir
-      end
-
-    if to != from do
-      Location.set(to)
-      notify.({:moved, %{from: Ops.show(from), to: Ops.show(to), confidence: nil}})
-    end
-  end
-
-  defp outcome(request, results) do
-    ran =
-      Enum.map_join(results, "\n\n", fn r ->
-        tail = r.output |> String.split("\n") |> Enum.take(-30) |> Enum.join("\n")
-        "$ #{r.command}\n(exit status: #{r.status})\n#{tail}"
-      end)
-
-    question = %{
-      worked: %{
-        type: :noul,
-        instructions:
-          "Judging by the commands' output (not just their exit status), did they do what " <>
-            "the user asked?"
-      }
-    }
-
-    # :unavailable (the decider couldn't judge) is not the same as nil (checking is off).
-    %{request: request, commands_and_output: ran}
-    |> Decider.decide(question)
-    |> Decider.p(:worked) || :unavailable
-  end
-
-  ## What the model sees
-
-  defp system_prompt do
-    """
-    You plan shell commands for tiny-axe. You don't run anything yourself: you reply \
-    with JSON, the user approves the commands, and tiny-axe runs them.
-
-    Reply with JSON:
-    - "commands": the commands, in order. Each runs with sh -c in the current folder, \
-    which tiny-axe tracks for you: don't cd to other places with absolute or ~ paths; \
-    use `cd sub && …` to work in a subfolder of it.
-    - "reply": one or two sentences for the user saying what the commands will do once \
-    approved. If the request is unclear, ask here and leave "commands" empty.
-
-    How commands run:
-    - In a sandbox: only the current folder and what's inside it can be changed; the network works.
-    - Nothing answers questions, so use flags that skip them, e.g. \
-    `npm create vite@latest my-app -- --template react`, `--yes`, `-y`.
-    - Each command starts in the current folder; use `cd sub && …` within one command \
-    to work in a subfolder a previous command made.
-    - No sudo. Global installs (npm -g, pip --user) don't persist; install into the project.
-    - Scaffolders (npm create vite, create-next-app, mix new, cargo new) refuse a folder \
-    that isn't empty, and here they give up silently. Unless the current folder is empty, scaffold into \
-    a new subfolder, e.g. `npm create vite@latest web -- --template react`, then \
-    `cd web && npm install`.
-    - Only the commands the user asked for, or that are needed for it.
-    """
-  end
-
-  defp first_message(history, prompt) do
-    recent =
-      history
-      |> Enum.take(-4)
-      |> Enum.map_join("\n", &"#{&1.role}: #{String.slice(&1.content, 0, 500)}")
-
-    here = Location.current()
-
-    [
-      recent != "" && "Conversation so far:\n#{recent}",
-      "Request: #{prompt}",
-      "The current folder is #{Ops.show(here)}. What's in it:\n#{folder_listing(here)}",
-      "Map of the home folder (two levels, hidden entries left out):\n#{Organizer.home_map()}"
-    ]
-    |> Enum.filter(& &1)
-    |> Enum.join("\n\n")
-  end
-
-  defp folder_listing(dir) do
-    case File.ls(dir) do
-      {:ok, names} ->
-        names
-        |> Enum.reject(&String.starts_with?(&1, "."))
-        |> Enum.sort()
-        |> Enum.take(60)
-        |> Enum.map_join(
-          "\n",
-          &("  " <> &1 <> if(File.dir?(Path.join(dir, &1)), do: "/", else: ""))
-        )
-
-      _ ->
-        "  (can't list)"
-    end
-  end
+  defdelegate execute(plan, notify), to: TinyAxe.Commander.Execution
 
   defp summary(reply, plan) do
     commands = Enum.map_join(plan.commands, "\n", &"$ #{&1.command}")
@@ -451,6 +159,4 @@ defmodule TinyAxe.Commander do
   end
 
   defp user(content), do: %{role: "user", content: content}
-  defp pct(p) when is_number(p), do: "#{round(p * 100)}%"
-  defp pct(_), do: "?"
 end

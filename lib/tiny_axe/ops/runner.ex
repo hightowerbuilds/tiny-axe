@@ -202,7 +202,8 @@ defmodule TinyAxe.Ops.Runner do
 
     # The disk may have changed while tiny-axe was down; re-check before going on.
     case Ops.recheck(remaining) do
-      :ok -> List.wrap(run_steps(plan.id, next)) ++ Enum.map(notes, &{:note, &1})
+      # The terminal event closes the UI's job; recovery notes must precede it.
+      :ok -> Enum.map(notes, &{:note, &1}) ++ List.wrap(run_steps(plan.id, next))
       {:error, problems} -> {:continue_refused, notes ++ problems}
     end
   end

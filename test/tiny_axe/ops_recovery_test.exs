@@ -151,6 +151,33 @@ defmodule TinyAxe.OpsRecoveryTest do
     assert snapshot(home) == before
   end
 
+  test "continuing a partial copy reports recovery notes before the terminal event", %{home: home} do
+    source = Path.join(home, "Downloads/a.pdf")
+    dest = Path.join(home, "copy.pdf")
+    ops = [%{op: :copy, from: source, to: dest}]
+    pause_at(0, fn -> File.write!(dest, "partial") end)
+    assert {:ok, id} = Runner.run("copy", ops)
+    assert_receive {:paused, task}, 5_000
+    Process.exit(task, :kill)
+    assert_receive {:ops, ^id, {:interrupted, :killed}}, 5_000
+
+    Application.put_env(:tiny_axe, :ops_step_hook, nil)
+    assert :ok = Runner.continue(id)
+    events = collect_until_finished(id, [])
+    assert [{:progress, 1, 1}, {:note, note}, {:finished, 1}] = events
+    assert note =~ "partial copy"
+    assert File.read!(dest) == File.read!(source)
+  end
+
+  defp collect_until_finished(id, events) do
+    receive do
+      {:ops, ^id, {:finished, _} = event} -> Enum.reverse([event | events])
+      {:ops, ^id, event} -> collect_until_finished(id, [event | events])
+    after
+      5_000 -> flunk("the continued plan never finished")
+    end
+  end
+
   test "after the whole application stops mid-plan, the plan is found and finished on restart",
        %{home: home, ops: ops} do
     pause_at(3)

@@ -28,6 +28,8 @@ defmodule TinyAxe.Ops.Journal do
 
   use GenServer
 
+  require Logger
+
   @keep_plans 20
   @keep_days 30
 
@@ -245,11 +247,32 @@ defmodule TinyAxe.Ops.Journal do
   defp forget(plan) do
     trash = Path.join(plan.dir, "trash")
 
-    case File.ls(trash) do
-      {:ok, entries} -> Enum.each(entries, &TinyAxe.Ops.discard(Path.join(trash, &1)))
-      {:error, _} -> :ok
+    with :ok <- discard_trash(trash),
+         {:ok, _} <- File.rm_rf(plan.dir) do
+      :ok
+    else
+      error ->
+        Logger.warning("kept plan #{plan.id}: couldn't finish pruning: #{inspect(error)}")
     end
+  end
 
-    File.rm_rf(plan.dir)
+  # Never remove the plan while it still holds files we couldn't preserve.
+  # A later startup can retry; files already transferred remain in system Trash.
+  defp discard_trash(trash) do
+    case File.ls(trash) do
+      {:ok, entries} ->
+        Enum.reduce_while(entries, :ok, fn entry, :ok ->
+          case TinyAxe.Ops.discard(Path.join(trash, entry)) do
+            :ok -> {:cont, :ok}
+            error -> {:halt, error}
+          end
+        end)
+
+      {:error, :enoent} ->
+        :ok
+
+      error ->
+        error
+    end
   end
 end

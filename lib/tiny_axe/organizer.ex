@@ -26,6 +26,7 @@ defmodule TinyAxe.Organizer do
   """
 
   alias TinyAxe.{Decider, Escalation, Files, Model, Ollama, Ops}
+  alias TinyAxe.Organizer.{Discovery, Documents, Review}
 
   @max_rounds 5
   @look_rounds 3
@@ -112,7 +113,7 @@ defmodule TinyAxe.Organizer do
       {:ok, ops, reply, review} ->
         notify.({:stage, "writing…"})
         steps = Enum.map_join(ops, "\n", &("- " <> Ops.describe(&1)))
-        ops = Enum.map(ops, &write_content(&1, prompt, steps, web_context, notify))
+        ops = Enum.map(ops, &Documents.prepare(&1, prompt, steps, web_context, notify))
         notify.({:plan, %{request: prompt, ops: ops, review: review}})
         notify.({:done, summary(reply, ops)})
 
@@ -149,7 +150,14 @@ defmodule TinyAxe.Organizer do
       cond do
         steps == [] and look != [] and round <= @look_rounds ->
           notify.({:looked, Enum.map(look, &(&1 |> Ops.resolve() |> Ops.show()))})
-          plan(messages ++ [user(listings(look))], context, notify, round + 1, reviewed?)
+
+          plan(
+            messages ++ [user(Discovery.listings(look))],
+            context,
+            notify,
+            round + 1,
+            reviewed?
+          )
 
         steps == [] ->
           {:reply, reply}
@@ -189,7 +197,7 @@ defmodule TinyAxe.Organizer do
         plan(messages ++ [user(fix)], context, notify, round + 1, reviewed?)
 
       {:ok, ops} ->
-        {review, feedback, ops} = review(context, ops)
+        {review, feedback, ops} = Review.assess(context, ops)
         notify.({:review, review})
         if review == nil, do: notify.({:decider_unavailable, "reviewing the plan"})
 
@@ -203,109 +211,6 @@ defmodule TinyAxe.Organizer do
         end
     end
   end
-
-  # One Decider call asks, for each step, whether the user asked for it, and
-  # whether the plan does everything asked. The plan's score is its weakest
-  # link. Two phrasings proved badly calibrated: "does the plan do what was
-  # asked, and nothing else?" (33% for a plan whose steps scored 75-96%), and
-  # "does it leave out anything?" (35-58% for the same plan as wording varied,
-  # where "does it do everything asked?" held at 76-77%).
-  @max_step_questions 30
-
-  defp review(context, ops) do
-    plan = Enum.map_join(ops, "\n", &("- " <> describe_step(&1)))
-    reviewed = Enum.take(ops, @max_step_questions)
-
-    questions =
-      reviewed
-      |> Enum.with_index()
-      |> Map.new(fn {op, i} ->
-        {:"step_#{i}",
-         %{
-           type: :noul,
-           instructions:
-             "Did the user ask for this step, with this exact action (a copy keeps the " <>
-               "original, a move doesn't; trash removes): #{describe_step(op)}?"
-         }}
-      end)
-      |> Map.put(:complete, %{
-        type: :noul,
-        instructions: "Does the plan do everything the user asked for?"
-      })
-
-    # What's in the folders files are taken from (moved, copied or trashed), so
-    # the reviewer can tell whether "all the PDFs" really are all of them, and
-    # that a .txt isn't one.
-    source_folders =
-      ops
-      |> Enum.flat_map(fn
-        %{op: op, from: from} when op in [:move, :copy] -> [Path.dirname(from)]
-        %{op: :trash, path: path} -> [Path.dirname(path)]
-        _ -> []
-      end)
-      |> Enum.uniq()
-      |> Enum.map_join("\n\n", &listing/1)
-
-    state = %{
-      request: context.request,
-      recent_conversation: Map.get(context, :recent_conversation, ""),
-      plan: plan,
-      source_folders: source_folders,
-      # Without this the reviewer marks "delete X" → "trash X" as missing the delete.
-      how_tiny_axe_works:
-        "tiny-axe never deletes permanently: moving to the Trash is how it deletes, " <>
-          "removes or cleans out files. It never overwrites: replacing a file means " <>
-          "trashing the old one and moving the new one into place. Making a folder " <>
-          "that a move or write needs is part of that move or write."
-    }
-
-    case Decider.decide(state, questions) do
-      {:ok, answers} ->
-        scores =
-          Enum.map(Enum.with_index(reviewed), fn {_, i} -> Decider.p(answers, :"step_#{i}") end)
-
-        complete = Decider.p(answers, :complete)
-        # Any unknown makes the whole review unknown: a weakest link can't be missing.
-        score = if nil in [complete | scores], do: nil, else: Enum.min([complete | scores])
-
-        doubtful =
-          reviewed
-          |> Enum.zip(scores)
-          |> Enum.filter(fn {_op, p} -> is_number(p) and p < Decider.review_threshold() end)
-          |> Enum.map(fn {op, p} ->
-            "- probably not what the user asked for (#{pct(p)}): " <> describe_step(op)
-          end)
-
-        missing_line =
-          if is_number(complete) and complete < Decider.review_threshold(),
-            do: [
-              "- something the user asked for seems to be missing (complete: #{pct(complete)})"
-            ],
-            else: []
-
-        feedback =
-          "A reviewer checked each step against the request:\n" <>
-            Enum.join(doubtful ++ missing_line, "\n") <>
-            "\n\nRe-read the request word by word (move is not copy) and reply with a corrected plan."
-
-        # Steps past the reviewed ones get no score of their own.
-        ops_scored =
-          Enum.zip_with([ops, scores ++ List.duplicate(nil, length(ops))], fn [op, p] ->
-            Map.put(op, :review, p)
-          end)
-
-        {score, feedback, ops_scored}
-
-      {:error, _} ->
-        {nil, "", ops}
-    end
-  end
-
-  defp pct(p) when is_number(p), do: "#{round(p * 100)}%"
-  defp pct(_), do: "?"
-
-  defp describe_step(%{op: :write, about: about} = op), do: Ops.describe(op) <> ": " <> about
-  defp describe_step(op), do: Ops.describe(op)
 
   ## What the model sees
 
@@ -361,10 +266,10 @@ defmodule TinyAxe.Organizer do
       prompt
       |> Files.mentions()
       |> Enum.map_join("\n\n", fn abs ->
-        if File.dir?(abs), do: listing(abs), else: "File mentioned: #{Ops.show(abs)}"
+        if File.dir?(abs), do: Discovery.listing(abs), else: "File mentioned: #{Ops.show(abs)}"
       end)
 
-    hits = search(prompt)
+    hits = Discovery.search(prompt)
 
     [
       if(recent != "", do: "Conversation so far:\n#{recent}"),
@@ -385,219 +290,7 @@ defmodule TinyAxe.Organizer do
   defp user(content), do: %{role: "user", content: content}
 
   @doc false
-  def home_map do
-    root = Ops.root()
-
-    root
-    |> visible_entries()
-    |> Enum.map_join("\n", fn name ->
-      abs = Path.join(root, name)
-
-      if File.dir?(abs) do
-        inner = visible_entries(abs)
-        shown = inner |> Enum.take(15) |> Enum.map(&entry_name(abs, &1))
-        more = if length(inner) > 15, do: ", … (#{length(inner) - 15} more)", else: ""
-        "#{Ops.show(abs)}/: #{Enum.join(shown, ", ")}#{more}"
-      else
-        Ops.show(abs)
-      end
-    end)
-  end
-
-  defp listings(paths) do
-    paths
-    |> Enum.map(&Ops.resolve/1)
-    |> Enum.map_join("\n\n", &listing/1)
-  end
-
-  defp listing(abs) do
-    cond do
-      not File.dir?(abs) ->
-        "#{Ops.show(abs)} is not a folder."
-
-      hidden?(abs) ->
-        "#{Ops.show(abs)} is hidden and off limits."
-
-      true ->
-        entries = visible_entries(abs)
-        shown = Enum.take(entries, 80)
-
-        lines =
-          Enum.map(shown, fn name ->
-            path = Path.join(abs, name)
-
-            case File.stat(path) do
-              {:ok, %{type: :directory}} -> "  #{name}/"
-              {:ok, %{size: size}} -> "  #{name}  (#{human_size(size)})"
-              _ -> "  #{name}"
-            end
-          end)
-
-        more = if length(entries) > 80, do: "\n  … (#{length(entries) - 80} more)", else: ""
-
-        "Inside #{Ops.show(abs)}/ (#{length(entries)} entries):\n" <>
-          Enum.join(lines, "\n") <> more
-    end
-  end
-
-  defp visible_entries(dir) do
-    case File.ls(dir) do
-      {:ok, names} -> names |> Enum.reject(&String.starts_with?(&1, ".")) |> Enum.sort()
-      _ -> []
-    end
-  end
-
-  defp entry_name(dir, name), do: if(File.dir?(Path.join(dir, name)), do: name <> "/", else: name)
-
-  defp hidden?(abs) do
-    abs != Ops.root() and
-      abs
-      |> Path.relative_to(Ops.root())
-      |> Path.split()
-      |> Enum.any?(&String.starts_with?(&1, "."))
-  end
-
-  defp human_size(n) when n < 1024, do: "#{n} B"
-  defp human_size(n) when n < 1024 * 1024, do: "#{Float.round(n / 1024, 1)} KB"
-  defp human_size(n), do: "#{Float.round(n / 1024 / 1024, 1)} MB"
-
-  @stopwords ~w(move copy make folder folders file files into from with what that this the
-                 have them there their some every each please about write notes note create
-                 organise organize rename where want would could should)
-
-  # Names on disk matching words in the request, found with fd (hidden files
-  # and .gitignored paths skipped).
-  defp search(prompt) do
-    words =
-      ~r/[\p{L}\p{N}_-]{4,}/u
-      |> Regex.scan(String.downcase(prompt))
-      |> List.flatten()
-      |> Enum.reject(&(&1 in @stopwords))
-      |> Enum.uniq()
-
-    with [_ | _] <- words, fd when fd != nil <- System.find_executable("fd") do
-      pattern = Enum.map_join(words, "|", &Regex.escape/1)
-
-      args =
-        ~w(--ignore-case --max-depth 6 --max-results 30 --exclude node_modules --exclude _build --exclude deps)
-
-      case System.cmd(fd, args ++ [pattern, Ops.root()], stderr_to_stdout: true) do
-        {out, 0} -> out |> String.split("\n", trim: true) |> Enum.map(&Ops.show/1)
-        _ -> []
-      end
-    else
-      _ -> []
-    end
-  end
-
-  ## Writing documents
-
-  defp write_content(%{op: :write, path: path} = op, prompt, steps, web_context, notify) do
-    notify.({:stage, "writing #{Ops.show(path)}…"})
-
-    old =
-      case Files.read(path, 20_000) do
-        {:ok, text, false} -> text
-        _ -> nil
-      end
-
-    content = generate(op, old, prompt, steps, web_context, notify, 0.5)
-    check = check_document(op, prompt, content)
-    if check == nil, do: notify.({:decider_unavailable, "checking #{Ops.show(path)}"})
-
-    # Rewrite once when the check doubts it; without a check, keep the first draft.
-    {content, check} =
-      if is_number(check) and check < Decider.review_threshold() do
-        retry = generate(op, old, prompt, steps, web_context, notify, 0.9)
-        retry_check = check_document(op, prompt, retry)
-
-        if is_number(retry_check) and retry_check > check,
-          do: {retry, retry_check},
-          else: {content, check}
-      else
-        {content, check}
-      end
-
-    notify.({:wrote, %{path: Ops.show(path), check: check}})
-
-    op
-    |> Map.merge(%{content: content, old: old, old_hash: old && Ops.hash(old), check: check})
-  end
-
-  defp write_content(op, _prompt, _steps, _web_context, _notify), do: op
-
-  defp generate(op, old, prompt, steps, web_context, notify, temperature) do
-    markdown? = Path.extname(op.path) in [".md", ".markdown"]
-
-    sources =
-      op.sources
-      |> Enum.map_join("\n\n", fn abs ->
-        case Files.read(abs, 8_000) do
-          {:ok, text, cut?} ->
-            "===== #{Ops.show(abs)} =====\n#{text}#{if cut?, do: "\n(cut off)"}\n===== end ====="
-
-          {:error, _} ->
-            ""
-        end
-      end)
-
-    ask =
-      [
-        "Write the complete contents of the file #{Ops.show(op.path)}.",
-        "What it should contain: #{op.about}",
-        "The user's request: #{prompt}",
-        "This file is part of a plan that runs once the user approves it:\n#{steps}\n" <>
-          "Describe files by where they will be after the plan, and name only real files.",
-        old && "The file exists; revise it as asked. Its current contents:\n#{old}",
-        sources != "" && "Source files:\n#{sources}",
-        web_context != [] &&
-          "Use the web search results you were given, and end with a \"Sources\" section linking them.",
-        "Reply with only the file's contents#{if markdown?, do: ", in Markdown"}: no preamble, " <>
-          "no code fence around the whole file."
-      ]
-      |> Enum.filter(& &1)
-      |> Enum.join("\n\n")
-
-    messages =
-      [
-        %{
-          role: "system",
-          content: "You are a skilled writer. Write clear, well-organised documents."
-        }
-      ] ++
-        web_context ++ [user(ask)]
-
-    notify.({:attempt, 1})
-
-    case Model.stream_chat(messages, &notify.({:delta, &1}),
-           options: [temperature: temperature],
-           on_usage: &notify.({:usage, &1})
-         ) do
-      {:ok, text} -> text |> unfence() |> String.trim() |> Kernel.<>("\n")
-      {:error, _} -> old || ""
-    end
-  end
-
-  # Models sometimes wrap the whole file in a code fence anyway.
-  defp unfence(text) do
-    case Regex.run(~r/\A\s*```[\w-]*[^\n]*\n(.*)\n```\s*\z/s, text) do
-      [_, inner] -> inner
-      nil -> text
-    end
-  end
-
-  defp check_document(op, prompt, content) do
-    question = %{
-      fits: %{
-        type: :noul,
-        instructions: "Is this document what was asked for, complete and well written?"
-      }
-    }
-
-    %{asked: op.about, user_request: prompt, document: content}
-    |> Decider.decide(question)
-    |> Decider.p(:fits)
-  end
+  defdelegate home_map(), to: Discovery
 
   ## The answer shown in the transcript
 

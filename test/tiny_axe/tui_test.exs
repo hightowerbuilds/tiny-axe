@@ -324,6 +324,54 @@ defmodule TinyAxe.TUITest do
              TUI.handle_info({:pipeline, make_ref(), {:delta, "x"}}, state)
   end
 
+  test "late file results cannot close or change the current job" do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    monitor = make_ref()
+    state = %{state | ops_job: "current", ops_monitor: monitor, status: "working on files…"}
+
+    for event <- [{:finished, 1}, {:note, "old note"}, {:interrupted, :killed}] do
+      assert {:noreply, ^state, render?: false} = TUI.handle_info({:ops, "old", event}, state)
+    end
+
+    {:noreply, done} = TUI.handle_info({:ops, "current", {:finished, 1}}, state)
+    assert done.ops_job == nil
+    assert done.ops_monitor == nil
+    assert done.status == "ready"
+  end
+
+  test "cancellation keeps partial output and ignores results from the cancelled task" do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    state = TinyAxe.TUI.Run.start(state, fn _notify -> Process.sleep(:infinity) end)
+    {id, pid} = state.run
+    ref = Process.monitor(pid)
+    state = %{state | pending_prompt: "hello", streaming: "partial answer"}
+
+    {:noreply, cancelled} = TUI.handle_event(key("esc"), state)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    assert cancelled.run == nil
+    assert cancelled.pending_prompt == nil
+    assert cancelled.streaming == nil
+    assert {:assistant, "partial answer"} in cancelled.transcript
+    assert cancelled.history == []
+
+    assert {:noreply, ^cancelled, render?: false} =
+             TUI.handle_info({:pipeline, id, {:done, "late answer"}}, cancelled)
+  end
+
+  test "an externally killed task releases the run slot and reports the failure" do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    state = TinyAxe.TUI.Run.start(state, fn _notify -> Process.sleep(:infinity) end)
+    {_id, pid} = state.run
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, _ref, :process, ^pid, :killed} = down
+
+    {:noreply, failed} = TUI.handle_info(down, %{state | pending_prompt: "hello"})
+    assert failed.run == nil
+    assert failed.pending_prompt == nil
+    assert failed.status == "error"
+    assert {:meta, "error: " <> _} = List.last(failed.transcript)
+  end
+
   test "runs headlessly under the real runtime and accepts typing" do
     {:ok, pid} = TUI.start_link(test_mode: @size, name: nil)
 

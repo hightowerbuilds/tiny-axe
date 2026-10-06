@@ -17,6 +17,11 @@ defmodule TinyAxe.TUICrashTest do
     start_supervised!({TUI, test_mode: {100, 30}, session: true, name: :crash_test_tui})
     tui = Process.whereis(:crash_test_tui)
 
+    # File events are accepted only for the active job.
+    :sys.replace_state(tui, fn runtime ->
+      %{runtime | user_state: %{runtime.user_state | ops_job: "plan"}}
+    end)
+
     # Something worth keeping: a line in the transcript.
     send(tui, {:ops, "plan", {:note, "moved 3 files"}})
     assert eventually(fn -> TinyAxe.Session.restore().transcript != [] end)
