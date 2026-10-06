@@ -96,6 +96,8 @@ defmodule TinyAxe.TUI do
        tool_ask: nil,
        # A purchase waiting for the user to type its total (TinyAxe.Purchases).
        purchase_ask: nil,
+       # /credit-card in progress (TinyAxe.TUI.CardFlow): nothing secret in it.
+       card_flow: nil,
        # Whether this request is an agent run: its answer goes after its tool lines.
        agent_run: false,
        status: "ready",
@@ -161,16 +163,70 @@ defmodule TinyAxe.TUI do
   end
 
   # At most one popup at a time, most urgent first.
-  defp overlay(%{purchase_ask: ask}, area) when ask != nil do
-    s = ask.summary
-    red = %Style{fg: :red, modifiers: [:bold]}
+  defp overlay(%{card_flow: flow}, area) when flow != nil do
+    alias TinyAxe.TUI.CardFlow
+    {name, kind, question} = CardFlow.step(flow)
+
+    input =
+      case kind do
+        :secret ->
+          [
+            Line.new([
+              Span.new("> " <> flow.display <> "▌",
+                style: %Style{fg: :yellow, modifiers: [:bold]}
+              )
+            ])
+          ]
+
+        :text ->
+          [
+            Line.new([
+              Span.new("> " <> flow.buffer <> "▌", style: %Style{fg: :yellow, modifiers: [:bold]})
+            ])
+          ]
+
+        :choice ->
+          Enum.map(CardFlow.choices(name), fn {k, _v, label} -> styled("  #{k}  #{label}") end)
+      end
 
     lines =
       [
-        Line.new([Span.new("This spends money. It can't be undone with ctrl+z.", style: red)]),
+        styled(
+          "Card details go only to tiny-axe's card vault (and your keyring, if it's remembered): " <>
+            "never to a model, the transcript or a log. In the browser they're filled in only " <>
+            "over https, after you confirm a purchase, and shown as dots.",
+          :dark_gray
+        ),
+        styled("")
+      ] ++
+        Enum.map(CardFlow.summary_lines(flow), &styled("✓ " <> &1, :green)) ++
+        [styled(""), styled(question, nil, [:bold])] ++
+        input ++
+        [
+          flow.error && styled("✗ " <> flow.error, :red),
+          styled(""),
+          styled("enter next · esc cancel (nothing is saved)", :dark_gray)
+        ]
+
+    popup(" add a card ", Enum.filter(lines, & &1), 0, area)
+  end
+
+  defp overlay(%{purchase_ask: ask}, area) when ask != nil do
+    s = ask.summary
+    red = %Style{fg: :red, modifiers: [:bold]}
+    card_step? = ask[:mode] == :card_step
+
+    warning =
+      if card_step?,
+        do: "This sends your card details to #{s["host"]}. Nothing is bought yet.",
+        else: "This spends money. It can't be undone with ctrl+z."
+
+    lines =
+      [
+        Line.new([Span.new(warning, style: red)]),
         styled(""),
         styled("Shop: #{s["host"]}", nil, [:bold]),
-        styled("Total: #{s["total_text"]} #{s["currency"]}", nil, [:bold])
+        !card_step? && styled("Total: #{s["total_text"]} #{s["currency"]}", nil, [:bold])
       ] ++
         Enum.map(s["items"] || [], &styled("  · " <> &1)) ++
         [
@@ -182,14 +238,9 @@ defmodule TinyAxe.TUI do
           {:ok, text} -> styled("✓ " <> text, :green)
           {:fail, text} -> styled("✗ " <> text, :red)
         end) ++
+        [styled("")] ++
+        purchase_prompt(ask) ++
         [
-          styled(""),
-          Line.new([
-            Span.new("Type #{expected_total(s)} and press enter to buy: ",
-              style: %Style{modifiers: [:bold]}
-            ),
-            Span.new(ask.typed <> "▌", style: %Style{fg: :yellow, modifiers: [:bold]})
-          ]),
           ask[:hint] && styled(ask.hint, :yellow),
           styled("esc refuse", :dark_gray)
         ]
@@ -198,7 +249,7 @@ defmodule TinyAxe.TUI do
       {%Popup{
          content: %Paragraph{text: Enum.filter(lines, & &1), wrap: true},
          block: %Block{
-           title: " buy this? ",
+           title: if(card_step?, do: " use your card here? ", else: " buy this? "),
            borders: [:all],
            border_type: :rounded,
            border_style: %Style{fg: :red}
@@ -850,7 +901,27 @@ defmodule TinyAxe.TUI do
 
   defp on_event(%Event.Key{kind: "release"}, state), do: {:noreply, state}
 
-  defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state), do: {:stop, cancel(state)}
+  defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state) do
+    if state.card_flow, do: TinyAxe.Cards.discard_entry()
+    {:stop, cancel(state)}
+  end
+
+  # /credit-card: every key goes to the flow (and its secrets to the vault).
+  defp on_event(%Event.Key{code: code}, %{card_flow: flow} = state) when flow != nil do
+    case TinyAxe.TUI.CardFlow.key(flow, code) do
+      {:cont, flow} ->
+        {:noreply, %{state | card_flow: flow}}
+
+      {:done, message} ->
+        {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
+
+      {:cancel, message} ->
+        {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
+    end
+  end
+
+  defp on_event(%Event.Paste{content: content}, %{card_flow: flow} = state) when flow != nil,
+    do: {:noreply, %{state | card_flow: TinyAxe.TUI.CardFlow.paste(flow, content)}}
 
   # The request waits for this answer; it holds for the rest of the session.
   defp on_event(%Event.Key{code: code}, %{asking: ask} = state) when ask != nil do
@@ -878,34 +949,30 @@ defmodule TinyAxe.TUI do
 
   # A purchase: the exact total, typed, buys; esc refuses. Nothing else answers it.
   defp on_event(%Event.Key{code: code}, %{purchase_ask: ask} = state) when ask != nil do
-    expected = expected_total(ask.summary)
+    if code == "esc" do
+      send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
+      what = if ask[:mode] == :card_step, do: "didn't fill the card in", else: "didn't buy"
+      {:noreply, %{state | purchase_ask: nil} |> add_meta("#{what} at #{ask.summary["host"]}")}
+    else
+      case purchase_key(ask, code) do
+        {:ask, ask} ->
+          {:noreply, %{state | purchase_ask: ask}}
 
-    cond do
-      code == "esc" ->
-        send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
+        :confirm ->
+          send(ask.reply_to, {:purchase_answer, ask.ref, :confirm})
 
-        {:noreply,
-         %{state | purchase_ask: nil} |> add_meta("didn't buy at #{ask.summary["host"]}")}
+          status =
+            if ask[:mode] == :card_step, do: "filling the card in…", else: "placing the order…"
 
-      code == "enter" and ask.typed == expected ->
-        send(ask.reply_to, {:purchase_answer, ask.ref, :confirm})
-        {:noreply, %{state | purchase_ask: nil, status: "placing the order…"}}
+          {:noreply, %{state | purchase_ask: nil, status: status}}
 
-      code == "enter" ->
-        {:noreply,
-         %{
-           state
-           | purchase_ask: Map.put(ask, :hint, "that's not the total; type #{expected} exactly")
-         }}
+        :deny ->
+          send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
 
-      code == "backspace" ->
-        {:noreply, %{state | purchase_ask: %{ask | typed: String.slice(ask.typed, 0..-2//1)}}}
-
-      code =~ ~r/\A[0-9.]\z/ and String.length(ask.typed) < 12 ->
-        {:noreply, %{state | purchase_ask: %{ask | typed: ask.typed <> code}}}
-
-      true ->
-        {:noreply, state}
+          {:noreply,
+           %{state | purchase_ask: nil}
+           |> add_meta("didn't fill the card in at #{ask.summary["host"]}")}
+      end
     end
   end
 
@@ -1234,19 +1301,81 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd and tools are handled here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools"] or prompt =~ ~r/\Acd(\s|\z)/ ->
+      # cd, pwd, tools and /credit-card are handled here, like shell built-ins:
+      # no model involved.
+      prompt in ["pwd", "tools"] or prompt =~ ~r/\Acd(\s|\z)/ or
+          String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
       true ->
         ExRatatui.textarea_set_value(state.input, "")
-        {:noreply, start_run(state, prompt)}
+
+        # A card number typed into the prompt never reaches a model, the
+        # transcript or the history: it's removed here, before anything else.
+        case TinyAxe.Tools.Redact.text(prompt) do
+          ^prompt ->
+            {:noreply, start_run(state, prompt)}
+
+          redacted ->
+            state =
+              state
+              |> start_run(redacted)
+              |> add_meta(
+                "🔒 removed a card number from your message: card numbers never go to a model. " <>
+                  "To pay with a card, store it in your keyring and register it with " <>
+                  "`mix tiny_axe.purchases card add` (see `mix help tiny_axe.purchases`)"
+              )
+
+            {:noreply, state}
+        end
     end
   end
 
   defp builtin(state, "pwd"),
     do: add_meta(state, "📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())}")
+
+  defp builtin(state, "/credit-card" <> rest) do
+    case String.split(String.trim(rest), " ", parts: 2) do
+      [""] ->
+        %{state | card_flow: TinyAxe.TUI.CardFlow.new(), status: "adding a card…"}
+
+      ["list"] ->
+        case TinyAxe.Cards.list() do
+          [] ->
+            add_meta(state, "no cards yet; add one with /credit-card")
+
+          cards ->
+            Enum.reduce(cards, state, fn c, st ->
+              until =
+                cond do
+                  c[:remember] == "session" or c[:keyring] == nil -> "this session only"
+                  c[:expires_at] -> "until #{String.slice(c.expires_at, 0, 10)}"
+                  true -> "until you remove it"
+                end
+
+              add_meta(
+                st,
+                "💳 #{c.label} (#{c[:brand]} ••#{c[:last4]}) · #{until}" <>
+                  if(c[:purpose], do: " · for #{c.purpose}", else: "") <>
+                  if(c[:pin], do: " · PIN", else: "")
+              )
+            end)
+        end
+
+      ["forget", label] ->
+        case TinyAxe.Cards.forget(String.trim(label)) do
+          :ok ->
+            add_meta(state, "💳 forgot #{label}: wiped from tiny-axe and your keyring")
+
+          {:error, :not_found} ->
+            add_meta(state, "no card called #{label} (see /credit-card list)")
+        end
+
+      _ ->
+        add_meta(state, "/credit-card · /credit-card list · /credit-card forget NAME")
+    end
+  end
 
   # What the agent can use: each MCP server (and the browser), and its tools by class.
   defp builtin(state, "tools") do
@@ -1409,6 +1538,8 @@ defmodule TinyAxe.TUI do
   defp cancel(%{run: {_id, pid}} = state) do
     Process.exit(pid, :kill)
 
+    if state.card_flow, do: TinyAxe.Cards.discard_entry()
+
     # A tool call or purchase waiting for an answer is refused, so the gate lets it go.
     if ask = state.tool_ask, do: send(ask.reply_to, {:tool_answer, ask.ref, :deny})
     if ask = state.purchase_ask, do: send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
@@ -1435,6 +1566,7 @@ defmodule TinyAxe.TUI do
         asking: nil,
         tool_ask: nil,
         purchase_ask: nil,
+        card_flow: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
@@ -1724,8 +1856,11 @@ defmodule TinyAxe.TUI do
 
   ## Purchases (TinyAxe.Purchases)
 
-  defp apply_event({:purchase_approval, ask}, state),
-    do: %{state | purchase_ask: Map.put(ask, :typed, ""), status: "waiting for your answer…"}
+  defp apply_event({:purchase_approval, ask}, state) do
+    stage = if ask[:mode] == :card_step, do: :consent, else: :total
+    ask = Map.merge(ask, %{typed: "", stage: stage, masked: "", unlocked: [], hint: nil})
+    %{state | purchase_ask: ask, status: "waiting for your answer…"}
+  end
 
   defp apply_event({:purchase_refused, %{summary: s, failed: failed}}, state) do
     add_meta(
@@ -1917,6 +2052,80 @@ defmodule TinyAxe.TUI do
   defp tool_class_word(:outward), do: "ask you first"
   defp tool_class_word(:refused), do: "refused"
 
+  # Stages: the total typed (an order) or a yes (a card step), then whatever
+  # the card needs typed to unlock it: its PIN, its CVC. Those keystrokes go
+  # straight to the card vault; only dots come back.
+  defp purchase_key(%{stage: :consent} = ask, "y"), do: unlock_or_confirm(ask)
+  defp purchase_key(%{stage: :consent}, "n"), do: :deny
+  defp purchase_key(%{stage: :consent} = ask, _), do: {:ask, ask}
+
+  defp purchase_key(%{stage: :total} = ask, "enter") do
+    expected = expected_total(ask.summary)
+
+    if ask.typed == expected,
+      do: unlock_or_confirm(ask),
+      else: {:ask, Map.put(ask, :hint, "that's not the total; type #{expected} exactly")}
+  end
+
+  defp purchase_key(%{stage: :total} = ask, "backspace"),
+    do: {:ask, %{ask | typed: String.slice(ask.typed, 0..-2//1)}}
+
+  defp purchase_key(%{stage: :total} = ask, code) do
+    if code =~ ~r/\A[0-9.]\z/ and String.length(ask.typed) < 12,
+      do: {:ask, %{ask | typed: ask.typed <> code}},
+      else: {:ask, ask}
+  end
+
+  defp purchase_key(%{stage: {:unlock, _field}} = ask, "enter") do
+    if ask.masked == "",
+      do: {:ask, Map.put(ask, :hint, "type it, then press enter (esc to stop)")},
+      else: unlock_or_confirm(ask)
+  end
+
+  defp purchase_key(%{stage: {:unlock, field}} = ask, code) do
+    {:ask, %{ask | masked: TinyAxe.Cards.unlock_key(ask.ref, field, code), hint: nil}}
+  end
+
+  defp unlock_or_confirm(ask) do
+    done =
+      case ask.stage do
+        {:unlock, field} -> [field | ask.unlocked]
+        _ -> ask.unlocked
+      end
+
+    case Enum.reject(ask[:needs] || [], &(&1 in done)) do
+      [] -> :confirm
+      [next | _] -> {:ask, %{ask | stage: {:unlock, next}, masked: "", unlocked: done, hint: nil}}
+    end
+  end
+
+  defp purchase_prompt(%{stage: :consent} = ask),
+    do: [styled("Fill #{ask.summary["paying_with"]} in and continue? y yes · n no", nil, [:bold])]
+
+  defp purchase_prompt(%{stage: :total} = ask) do
+    [
+      Line.new([
+        Span.new("Type #{expected_total(ask.summary)} and press enter to buy: ",
+          style: %Style{modifiers: [:bold]}
+        ),
+        Span.new(ask.typed <> "▌", style: %Style{fg: :yellow, modifiers: [:bold]})
+      ])
+    ]
+  end
+
+  defp purchase_prompt(%{stage: {:unlock, field}} = ask) do
+    what = if field == :pin, do: "its PIN", else: "its CVC"
+
+    [
+      Line.new([
+        Span.new("Type #{what} (it's sent only to tiny-axe's card vault), then enter: ",
+          style: %Style{modifiers: [:bold]}
+        ),
+        Span.new(ask.masked <> "▌", style: %Style{fg: :yellow, modifiers: [:bold]})
+      ])
+    ]
+  end
+
   # How the total must be typed: 16.00.
   defp expected_total(%{"total" => total}) when is_number(total),
     do: :erlang.float_to_binary(total * 1.0, decimals: 2)
@@ -1924,6 +2133,7 @@ defmodule TinyAxe.TUI do
   defp expected_total(_), do: "?"
 
   defp describe_class(:handoff), do: "needs you in the browser"
+  defp describe_class(:payment_step), do: "sends card details; asks you first"
   defp describe_class(class), do: TinyAxe.Tools.Policy.describe(class)
 
   defp pretty_json(json) do

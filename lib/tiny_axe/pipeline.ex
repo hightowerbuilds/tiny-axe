@@ -483,7 +483,28 @@ defmodule TinyAxe.Pipeline do
       "commands: give any command in a code block, and never say you ran, installed or " <>
       "executed anything. If the user wants a command run, tell them to ask tiny-axe to " <>
       "run it; it will show the command for approval and run it in a sandbox.\n\n" <>
-      location_note() <> "\n\n" <> @system_prompts[kind]
+      capabilities() <> "\n\n" <> location_note() <> "\n\n" <> @system_prompts[kind]
+  end
+
+  # What tiny-axe as a whole can do, so an answer about it is true (a small
+  # model otherwise says "I'm an AI, I can't buy things").
+  defp capabilities do
+    buying =
+      if TinyAxe.Purchases.enabled?(),
+        do: "Purchases are ON",
+        else: "Purchases are OFF (the user turns them on with `mix tiny_axe.purchases on`)"
+
+    "What tiny-axe can do besides this answer: it can move, copy and write files " <>
+      "(after approval, undoable with ctrl+z), and requests that need the web or connected " <>
+      "tools go to an agent that uses tiny-axe's own browser and MCP servers, with the user " <>
+      "approving anything that sends something. It can buy things for the user: #{buying}. " <>
+      "When on, the agent goes through a shop to checkout, and tiny-axe shows the order and " <>
+      "only buys after the user types the exact total, within their limits. Card details " <>
+      "are never typed into this chat: the user stores the card in their system keyring " <>
+      "(`secret-tool store --label=\"tiny-axe card\" service tiny-axe key card-1`, then " <>
+      "`mix tiny_axe.purchases card add \"My card\" --keyring card-1`), and tiny-axe's code " <>
+      "fills it in at checkout. No model, including you, ever sees it. A card saved at the " <>
+      "shop works too. If the user asks about any of this, explain it accurately."
   end
 
   defp today do

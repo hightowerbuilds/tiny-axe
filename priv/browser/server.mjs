@@ -14,7 +14,7 @@
 
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,11 +43,24 @@ const consoleLog = new WeakMap();
 const network = new WeakMap();
 let profileNote = "";
 
+// Chrome never offers to save or autofill cards in tiny-axe's profile: cards
+// live only in tiny-axe's vault and the keyring.
+function noCardAutofill(profile) {
+  const dir = join(profile, "Default");
+  const file = join(dir, "Preferences");
+  let prefs = {};
+  try { prefs = JSON.parse(readFileSync(file, "utf8")); } catch {}
+  prefs.autofill = { ...(prefs.autofill || {}), credit_card_enabled: false };
+  prefs.payments = { ...(prefs.payments || {}), can_make_payment_enabled: false };
+  try { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(prefs)); } catch {}
+}
+
 async function browser() {
   if (context) return context;
   const headless = process.env.TINY_AXE_BROWSER_HEADLESS !== "0";
   const channel = process.env.TINY_AXE_BROWSER_CHANNEL || "chrome";
   const profile = process.env.TINY_AXE_BROWSER_PROFILE || mkdtempSync(join(tmpdir(), "tiny-axe-browser-"));
+  noCardAutofill(profile);
   try {
     context = await chromium.launchPersistentContext(profile, { channel, headless, viewport: { width: 1280, height: 800 } });
   } catch (e) {
@@ -348,12 +361,32 @@ async function cardFields(p) {
   return { count, empty };
 }
 
-// Fills card fields with a virtual card from the user's keyring, for the
-// purchase gate only, after the user confirmed, on the shop they confirmed.
-// The values are never echoed back.
+const LOCAL = ["127.0.0.1", "localhost"];
+const secure = (url) => { try { const u = new URL(url); return u.protocol === "https:" || LOCAL.includes(u.hostname); } catch { return false; } };
+
+// Fills card fields with the user's card, for the purchase gate only, after
+// the user confirmed, on the shop they confirmed, and only over https (the
+// card travels encrypted). The fields show dots before anything is typed, so
+// no one watching the window sees the number. Values are never echoed back.
 async function fillCard(p, card, expectHost) {
   const host = new URL(p.url()).hostname;
   if (host !== expectHost) throw new UserError(`the page is on ${host}, not ${expectHost}; the card wasn't filled`);
+  if (!secure(p.url())) throw new UserError("the page isn't https, so the card would travel unencrypted; it wasn't filled");
+
+  // Every form holding a card field must send it over https too.
+  for (const f of p.frames()) {
+    if (f !== p.mainFrame() && !secure(f.url())) continue;
+    const insecure = await f.evaluate((sels) => {
+      const fields = sels.flatMap((s) => [...document.querySelectorAll(s)]);
+      return fields.some((el) => el.form && !/^https:/i.test(el.form.action) && !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(el.form.action));
+    }, Object.values(CARD_FIELDS)).catch(() => false);
+    if (insecure) throw new UserError("the payment form would send the card over plain http; it wasn't filled");
+  }
+
+  // Dots, not digits, for anyone watching the window (payment frames too).
+  const css = `${Object.values(CARD_FIELDS).join(", ")} { -webkit-text-security: disc !important; }`;
+  for (const f of p.frames()) await f.addStyleTag({ content: css }).catch(() => {});
+
   const yy = String(card.exp_year).slice(-2), mm = String(card.exp_month).padStart(2, "0");
   const values = { number: card.number, exp: `${mm}/${yy}`, exp_month: mm, exp_year: String(card.exp_year), cvc: card.cvc, name: card.name || "" };
   let filled = 0;

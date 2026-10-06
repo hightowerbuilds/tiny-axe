@@ -25,6 +25,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Location,
         # Counts calls that leave the machine and keeps the subscriptions' usage.
         TinyAxe.Escalation,
+        # The card vault (/credit-card): card details live only here and in the keyring.
+        TinyAxe.Cards,
         # The user's MCP servers, one supervised connection each (TinyAxe.MCP).
         {Registry, keys: :unique, name: TinyAxe.MCP.Registry},
         {DynamicSupervisor, name: TinyAxe.MCP.Supervisor, strategy: :one_for_one},
@@ -85,8 +87,12 @@ defmodule TinyAxe.Application do
           ["✗ #{reason}. Requests will fail until Ollama is running (try `ollama serve`)."]
       end
 
-    # Orders that may have gone through while tiny-axe wasn't watching.
-    notes = notes ++ TinyAxe.Purchases.uncertain()
+    # Orders that may have gone through while tiny-axe wasn't watching, and
+    # cards whose time to be remembered is up.
+    # Remembered cards live in the keyring and purchases.json, so this needs no
+    # running vault: those past their time are wiped now (and are skipped
+    # before any use, too).
+    notes = notes ++ TinyAxe.Purchases.uncertain() ++ TinyAxe.Cards.expire_due()
 
     Application.put_env(:tiny_axe, :startup_notes, notes)
   end

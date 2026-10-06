@@ -22,7 +22,12 @@ defmodule TinyAxe.FixtureSite do
     * `/order-saved` — the same, paying with one of two cards saved at the
       shop (radio buttons; the second is chosen)
     * `/order-card` — the same, with empty card fields to fill in; the order
-      POST carries them (so a test can see they arrived)
+      POST carries them (so a test can see they arrived); a line reports
+      whether the number field shows dots
+    * `/pay-step` — a two-step checkout: card details and "Continue", then a
+      review page ("Paying with Visa ending in 1111") and "Place order"
+    * `/order-insecure` — card fields in a form that would send them over
+      plain http
 
   Everything sent to the site is recorded: `submissions/0`.
   """
@@ -219,6 +224,51 @@ defmodule TinyAxe.FixtureSite do
     <label>Name on card <input name="ccname" autocomplete="cc-name"></label>
     <label>Card number <input name="ccnumber" autocomplete="cc-number"></label>
     <label>Expiry <input name="ccexp" autocomplete="cc-exp" placeholder="MM/YY"></label>
+    <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
+    <button>Place order</button></form>
+    <p id="shown">number field shows: ?</p></main>
+    <script>setInterval(() => {
+      const s = getComputedStyle(document.querySelector('[name=ccnumber]')).webkitTextSecurity;
+      document.getElementById('shown').textContent = 'number field shows: ' + (s === 'disc' ? 'dots' : 'digits');
+    }, 100);</script>
+    """)
+  end
+
+  get "/pay-step" do
+    price = Agent.get(__MODULE__.Price, & &1)
+
+    html(conn, """
+    <title>Payment</title><main><h1>Payment</h1>
+    <p>Order total: #{dollars(price + 4.0)}</p>
+    <form method="post" action="/pay-step"><h2>Card details</h2>
+    <label>Card number <input name="ccnumber" autocomplete="cc-number"></label>
+    <label>Expiry <input name="ccexp" autocomplete="cc-exp"></label>
+    <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
+    <button>Continue</button></form></main>
+    """)
+  end
+
+  post "/pay-step" do
+    record(conn)
+    last4 = String.slice(String.replace(conn.params["ccnumber"] || "", ~r/\D/, ""), -4, 4)
+    price = Agent.get(__MODULE__.Price, & &1)
+
+    html(conn, """
+    <title>Review</title><main><h1>Review your order</h1>
+    <p>Blue mug × 1 — #{dollars(price)}</p><p>Shipping: $4.00</p>
+    <p>Order total: #{dollars(price + 4.0)}</p>
+    <p>Ship to:</p><p>Sam Lee</p><p>1 High St, Springfield</p>
+    <p>Paying with Visa ending in #{last4}</p>
+    <form method="post" action="/place-order"><button>Place order</button></form></main>
+    """)
+  end
+
+  get "/order-insecure" do
+    html(conn, """
+    <title>Checkout</title><main><h1>Review your order</h1>
+    <p>Blue mug × 1 — $12.00</p><p>Order total: $16.00</p>
+    <form method="post" action="http://example.com/place-order">
+    <label>Card number <input name="ccnumber" autocomplete="cc-number"></label>
     <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
     <button>Place order</button></form></main>
     """)

@@ -208,9 +208,9 @@ defmodule TinyAxe.PurchasesTest do
 
       with_cards([Map.new(@card)])
 
-      assert {:virtual,
-              %{label: "Test virtual card", details: %{"number" => "4111 1111 1111 1111"}}} =
-               Purchases.payment(empty)
+      # Only the card's description: its details stay in the vault until a purchase.
+      assert {:virtual, %{label: "Test virtual card"} = card} = Purchases.payment(empty)
+      refute inspect(card) =~ "4111"
 
       assert Purchases.paying_with(empty) =~
                "Test virtual card (a virtual card; tiny-axe fills it in after you confirm)"

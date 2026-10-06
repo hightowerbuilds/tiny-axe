@@ -78,20 +78,31 @@ defmodule TinyAxe.Purchases do
             list when is_list(list) -> list
             _ -> nil
           end,
-        cards:
-          json["cards"] &&
-            Enum.map(json["cards"], fn c ->
-              %{
-                label: c["label"],
-                keyring: c["keyring"],
-                merchants: if(c["shops"] in [nil, "any"], do: :any, else: c["shops"])
-              }
-            end)
+        cards: json["cards"] && Enum.map(json["cards"], &card_from_json/1)
       ]
       |> Enum.reject(fn {_k, v} -> v == nil end)
     else
       _ -> []
     end
+  end
+
+  # A card's description in purchases.json (`TinyAxe.Cards`); never its details.
+  defp card_from_json(c) do
+    %{
+      id: c["id"],
+      label: c["label"],
+      brand: c["brand"] || "Card",
+      last4: c["last4"],
+      purpose: c["purpose"],
+      keyring: c["keyring"],
+      merchants: if(c["shops"] in [nil, "any"], do: :any, else: c["shops"]),
+      per_purchase_max: c["per_purchase_max"],
+      monthly_max: c["monthly_max"],
+      cvc: c["cvc"] || "stored",
+      pin: c["pin"] == true,
+      remember: c["remember"],
+      expires_at: c["expires_at"]
+    }
   end
 
   @doc "Changes `purchases.json` (keeping what it doesn't change); readable only by the user."
@@ -106,9 +117,19 @@ defmodule TinyAxe.Purchases do
       end
 
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, current |> fun.() |> :json.format() |> IO.iodata_to_binary())
+    File.write!(path, current |> fun.() |> pretty_json())
     File.chmod!(path, 0o600)
   end
+
+  @doc false
+  # Indented JSON for a file people read; Elixir's nil becomes null (Erlang's
+  # :json.format would write it as the string "nil").
+  def pretty_json(term), do: term |> nulls() |> :json.format() |> IO.iodata_to_binary()
+
+  defp nulls(nil), do: :null
+  defp nulls(%{} = map), do: Map.new(map, fn {k, v} -> {k, nulls(v)} end)
+  defp nulls(list) when is_list(list), do: Enum.map(list, &nulls/1)
+  defp nulls(other), do: other
 
   @spec enabled?() :: boolean()
   def enabled?, do: settings()[:enabled] == true
@@ -185,8 +206,8 @@ defmodule TinyAxe.Purchases do
   The checks on a summary against the intent and the limits: a list of
   `{:ok | :fail, text}`. Any `:fail` means the purchase can't be approved.
   """
-  @spec checks(map() | nil, map()) :: [{:ok | :fail, String.t()}]
-  def checks(intent, summary) do
+  @spec checks(map() | nil, map(), map() | nil) :: [{:ok | :fail, String.t()}]
+  def checks(intent, summary, card \\ nil) do
     s = settings()
     total = summary["total"]
     currency = summary["currency"] || currency()
@@ -235,7 +256,7 @@ defmodule TinyAxe.Purchases do
       merchant_check(summary["host"]),
       items_check(intent, summary),
       payment_check(summary)
-    ]
+    ] ++ card_checks(card || paying_card(summary), intent, summary)
   end
 
   @doc """
@@ -276,6 +297,13 @@ defmodule TinyAxe.Purchases do
     end
   end
 
+  defp paying_card(summary) do
+    case payment(summary) do
+      {:virtual, card} -> card
+      _ -> nil
+    end
+  end
+
   @doc "In words, for the user: how the order would be paid."
   @spec paying_with(map()) :: String.t()
   def paying_with(summary) do
@@ -295,24 +323,113 @@ defmodule TinyAxe.Purchases do
   end
 
   @doc """
-  The first virtual card in `config :tiny_axe, :purchases, cards: [...]` allowed
-  at this shop, with its details read from the keyring (a JSON secret with
-  `number`, `exp_month`, `exp_year`, `cvc`, `name`). Its details are passed
-  only to the browser's card filling, and never logged, journaled or shown.
+  The card tiny-axe would pay with at this shop: the first card the user gave
+  it (`/credit-card`, `TinyAxe.Cards`: this session's, then remembered ones;
+  or from config) that's allowed here, hasn't expired, and is still available.
+  Only its description: the details stay in the vault until the purchase
+  (`TinyAxe.Cards.details/2`).
   """
   @spec card_for(String.t() | nil) :: map() | nil
   def card_for(host) do
-    Enum.find_value(settings()[:cards] || [], fn card ->
+    now = DateTime.utc_now() |> DateTime.to_iso8601()
+
+    TinyAxe.Cards.list()
+    |> Enum.find(fn card ->
       merchants = card[:merchants] || :any
 
-      with true <- merchants == :any or host in List.wrap(merchants),
-           secret when secret != "" <- MCP.keyring(card[:keyring]),
-           {:ok, %{"number" => _} = details} <- JSON.decode(secret) do
-        %{label: card[:label] || "virtual card", details: details}
-      else
-        _ -> nil
-      end
+      (merchants == :any or host in List.wrap(merchants)) and
+        (card[:expires_at] == nil or card[:expires_at] > now) and
+        TinyAxe.Cards.available?(card)
     end)
+    |> case do
+      nil -> nil
+      card -> Map.put_new(card, :label, "virtual card")
+    end
+  end
+
+  # The card's own rules, when tiny-axe pays with one of the user's cards:
+  # what it's for (Jev judges; no answer fails), and its limits.
+  defp card_checks(nil, _intent, _summary), do: []
+
+  defp card_checks(card, intent, summary) do
+    total = summary["total"]
+    currency = summary["currency"] || currency()
+    label = card[:label] || "the card"
+
+    per_purchase =
+      case card[:per_purchase_max] do
+        max when is_number(max) and is_number(total) and total > max ->
+          {:fail, "over #{label}'s limit of #{money(max, currency)} a purchase"}
+
+        max when is_number(max) ->
+          {:ok, "within #{label}'s #{money(max, currency)} a purchase"}
+
+        _ ->
+          nil
+      end
+
+    monthly =
+      case card[:monthly_max] do
+        max when is_number(max) ->
+          spent = spent_this_month(card, currency)
+
+          if is_number(total) and spent + total > max,
+            do:
+              {:fail,
+               "#{money(spent, currency)} already on #{label} this month; this would pass its #{money(max, currency)} monthly limit"},
+            else:
+              {:ok,
+               "#{money(spent + (total || 0), currency)} of #{label}'s #{money(max, currency)} this month"}
+
+        _ ->
+          nil
+      end
+
+    purpose =
+      case card[:purpose] do
+        p when p in [nil, ""] ->
+          nil
+
+        purpose ->
+          question = %{
+            fits: %{type: :noul, instructions: "Does this purchase fit what the card is for?"}
+          }
+
+          state = %{
+            card_is_for: purpose,
+            user_request: intent && intent.request,
+            order_items: Enum.join(summary["items"] || [], "\n")
+          }
+
+          case Decider.p(Decider.decide(state, question), :fits) do
+            nil -> {:fail, "tiny-axe couldn't check this purchase fits #{label}'s purpose"}
+            p when p >= 0.5 -> {:ok, "fits what #{label} is for (#{purpose})"}
+            _ -> {:fail, "this doesn't look like what #{label} is for (#{purpose})"}
+          end
+      end
+
+    Enum.filter([per_purchase, monthly, purpose], & &1)
+  end
+
+  @doc "What was spent this month (UTC) with one card: purchases it was filled in for, that were clicked."
+  @spec spent_this_month(map(), String.t()) :: float()
+  def spent_this_month(card, currency) do
+    month = Date.utc_today() |> Date.to_iso8601() |> String.slice(0, 7)
+
+    for id <- all(),
+        events = events(id),
+        Enum.any?(
+          events,
+          &(&1["t"] == "card_filled" and &1["card_id"] == card[:id] and card[:id] != nil)
+        ),
+        Enum.any?(events, &(&1["t"] in ["clicking", "clicked"])),
+        %{"t" => "summary", "summary" => s, "at" => at} <- events,
+        String.starts_with?(at, month),
+        s["currency"] == currency,
+        is_number(s["total"]),
+        reduce: 0.0 do
+      acc -> acc + s["total"]
+    end
   end
 
   defp merchant_check(host) do

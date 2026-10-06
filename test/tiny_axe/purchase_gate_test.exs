@@ -376,4 +376,237 @@ defmodule TinyAxe.PurchaseGateTest do
       assert text(result) =~ "for tiny-axe only"
     end
   end
+
+  describe "cards given with /credit-card" do
+    alias TinyAxe.Cards
+
+    setup do
+      on_exit(fn -> for c <- Cards.list(), do: Cards.forget(c.label) end)
+    end
+
+    defp add_card(answers, pin \\ nil) do
+      Cards.start_entry()
+
+      for {field, text} <- [
+            number: "4111 1111 1111 1111",
+            exp: "12/30",
+            cvc: "737",
+            name: "Sam Lee"
+          ],
+          ch <- String.graphemes(text),
+          do: Cards.entry_key(field, ch)
+
+      if pin,
+        do: for(f <- [:pin, :pin_again], ch <- String.graphemes(pin), do: Cards.entry_key(f, ch))
+
+      {:ok, card} =
+        Cards.save(
+          Map.merge(
+            %{
+              "label" => "Test card",
+              "purpose" => "household things",
+              "remember" => "session",
+              "cvc" => "stored"
+            },
+            answers
+          )
+        )
+
+      card
+    end
+
+    # One call through the gate; `respond` gets each approval and returns the answer.
+    defp call_with(task, name, args, respond) do
+      caller =
+        Task.async(fn ->
+          Req.post!(task.url,
+            json: %{
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: %{name: name, arguments: args}
+            },
+            headers: %{"authorization" => "Bearer #{task.token}"},
+            receive_timeout: 90_000,
+            retry: false
+          ).body["result"]
+        end)
+
+      respond_loop(caller, respond)
+    end
+
+    defp respond_loop(caller, respond) do
+      receive do
+        {:gate, {:purchase_approval, ask}} ->
+          send(self(), {:asked, ask})
+          send(ask.reply_to, {:purchase_answer, ask.ref, respond.(ask)})
+          respond_loop(caller, respond)
+
+        {ref, result} when ref == caller.ref ->
+          Process.demonitor(ref, [:flush])
+          result
+      after
+        90_000 -> flunk("the call never finished")
+      end
+    end
+
+    defp type_unlock(ask, field, text),
+      do: for(ch <- String.graphemes(text), do: Cards.unlock_key(ask.ref, field, ch))
+
+    defp click_button(ctx, task, path, label, respond) do
+      page = text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> path}))
+      [_, ref] = Regex.run(~r/button "#{label}" \[ref=(\w+)\]/, page)
+      call_with(task, "#{ctx.server}__browser_click", %{ref: ref}, respond)
+    end
+
+    test "a card locked with a PIN, its CVC asked each time: both typed at checkout, into the vault",
+         ctx do
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      add_card(%{"cvc" => "ask"}, "4821")
+      Cards.start_entry()
+
+      result =
+        click_button(ctx, open_task(ctx, @intent), "/order-card", "Place order", fn ask ->
+          assert ask.needs == [:pin, :cvc]
+          type_unlock(ask, :pin, "4821")
+          type_unlock(ask, :cvc, "999")
+          :confirm
+        end)
+
+      assert text(result) =~ "tiny-axe placed the order"
+
+      assert [{"/place-order", %{"ccnumber" => "4111111111111111", "cvc" => "999"}}] =
+               FixtureSite.submissions()
+    end
+
+    test "a wrong PIN buys nothing", ctx do
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      add_card(%{}, "4821")
+
+      result =
+        click_button(ctx, open_task(ctx, @intent), "/order-card", "Place order", fn ask ->
+          type_unlock(ask, :pin, "0000")
+          :confirm
+        end)
+
+      assert text(result) =~ "the PIN didn't unlock the card"
+      assert placed() == []
+    end
+
+    test "a purchase that doesn't fit the card's purpose, or its own limit, is refused", ctx do
+      Decider.Script.script(fn
+        :fits, _, _ -> 0.1
+        _, _, _ -> 0.9
+      end)
+
+      add_card(%{})
+
+      result =
+        click_button(ctx, open_task(ctx, @intent), "/order-card", "Place order", fn _ ->
+          :confirm
+        end)
+
+      assert text(result) =~ "this doesn't look like what Test card is for (household things)"
+
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      Cards.forget("Test card")
+      add_card(%{"per_purchase_max" => 10.0})
+
+      result =
+        click_button(ctx, open_task(ctx, @intent), "/order-card", "Place order", fn _ ->
+          :confirm
+        end)
+
+      assert text(result) =~ "over Test card's limit of $10.00 a purchase"
+      assert placed() == []
+    end
+
+    test "filled in, the card shows as dots to anyone watching the window", ctx do
+      task = open_task(ctx, @intent)
+      call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-card"})
+
+      {:ok, _} =
+        MCP.call(ctx.server, "browser_fill_card", %{
+          "expect_host" => "127.0.0.1",
+          "card" => %{"number" => "4111111111111111"}
+        })
+
+      assert Enum.any?(1..20, fn _ ->
+               Process.sleep(100)
+
+               text(call(task, "#{ctx.server}__browser_extract", %{})) =~
+                 "number field shows: dots"
+             end)
+    end
+
+    test "a form that would send the card over plain http isn't filled, and nothing is bought",
+         ctx do
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      add_card(%{})
+
+      result =
+        click_button(ctx, open_task(ctx, @intent), "/order-insecure", "Place order", fn _ ->
+          :confirm
+        end)
+
+      assert text(result) =~ "couldn't be filled in"
+      assert FixtureSite.submissions() == []
+    end
+
+    test "a two-step checkout: the card step asks to fill it in, the order is bought once, under the card's rules",
+         ctx do
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      add_card(%{"per_purchase_max" => 50.0})
+      task = open_task(ctx, @intent)
+
+      result =
+        click_button(ctx, task, "/pay-step", "Continue", fn %{mode: :card_step} -> :confirm end)
+
+      assert_received {:asked, %{mode: :card_step}}
+      assert text(result) =~ "Review your order"
+      assert [{"/pay-step", %{"ccnumber" => "4111111111111111"}}] = FixtureSite.submissions()
+
+      page = text(call(task, "#{ctx.server}__browser_snapshot", %{}))
+      [_, ref] = Regex.run(~r/button "Place order" \[ref=(\w+)\]/, page)
+
+      call_with(task, "#{ctx.server}__browser_click", %{ref: ref}, fn ask ->
+        assert ask.mode == :order
+        assert {:ok, "within Test card's $50.00 a purchase"} in ask.checks
+        :confirm
+      end)
+
+      assert placed() == [:order]
+      # Spent once, not twice.
+      assert Purchases.spent_today("USD") == 16.0
+    end
+
+    test "Chrome never saves cards, and is driven only over a private pipe", ctx do
+      _ = ctx
+      profiles = Path.wildcard(Path.join(System.tmp_dir!(), "tiny_axe_buy_profile_*"))
+
+      assert Enum.any?(profiles, fn p ->
+               case File.read(Path.join([p, "Default", "Preferences"])) do
+                 {:ok, raw} ->
+                   get_in(JSON.decode!(raw), ["autofill", "credit_card_enabled"]) == false
+
+                 _ ->
+                   false
+               end
+             end)
+
+      chrome =
+        for pid <- File.ls!("/proc"),
+            pid =~ ~r/\A\d+\z/,
+            {:ok, cmd} <- [File.read("/proc/#{pid}/cmdline")],
+            cmd =~ "tiny_axe_buy_profile_",
+            cmd =~ "--user-data-dir",
+            do: cmd
+
+      # The browser is driven over a pipe; no process listens on a debugging port
+      # another program could attach to (Chrome's helper processes have neither).
+      assert chrome != []
+      assert Enum.any?(chrome, &(&1 =~ "--remote-debugging-pipe"))
+      refute Enum.any?(chrome, &(&1 =~ "--remote-debugging-port"))
+    end
+  end
 end

@@ -56,7 +56,7 @@ defmodule TinyAxe.BrowserPolicyTest do
     assert why =~ "evil.example with 302 characters of data"
   end
 
-  test "forms: GET is a read, POST asks, a password form signs in, a payment form is a purchase" do
+  test "forms: GET is a read, POST asks, a password form signs in, card details are a payment step" do
     submit = &button("Go", %{"isSubmit" => true, "form" => form(&1)})
 
     assert click(submit.(%{"method" => "get", "action" => "https://shop.example/search?q=x"})) ==
@@ -66,7 +66,8 @@ defmodule TinyAxe.BrowserPolicyTest do
              click(submit.(%{}))
 
     assert {:outward, "signs in: " <> _} = click(submit.(%{"hasPassword" => true}))
-    assert {:commit, _} = click(submit.(%{"hasPayment" => true}))
+    # Card details with "Go": a payment step; the order comes later.
+    assert {:payment_step, _} = click(submit.(%{"hasPayment" => true}))
   end
 
   test "button words: purchases, things that send, and things that are undoable" do

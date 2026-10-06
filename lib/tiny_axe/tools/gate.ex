@@ -189,7 +189,7 @@ defmodule TinyAxe.Tools.Gate do
   # A browser tool's own policy class is a floor (e.g. never below read); a
   # handoff stays a handoff.
   defp class_floor(_tool), do: :read
-  defp keep_special(_stricter, :handoff), do: :handoff
+  defp keep_special(_stricter, special) when special in [:handoff, :payment_step], do: special
   defp keep_special(stricter, _class), do: stricter
 
   defp look_at(server, ref) do
@@ -214,6 +214,12 @@ defmodule TinyAxe.Tools.Gate do
 
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
+
+  defp decide(task, tool, args, {:payment_step, reason}, _allowed) do
+    if Purchases.enabled?() and tool.policy["browser"] == true,
+      do: payment_step(task, tool, args, reason),
+      else: {:refused, refusal("spending money isn't enabled in tiny-axe (purchases are off)")}
+  end
 
   defp decide(task, tool, args, {:commit, reason}, _allowed) do
     cond do
@@ -294,6 +300,7 @@ defmodule TinyAxe.Tools.Gate do
     case Purchases.summary(tool.server) do
       {:ok, summary} ->
         summary = Map.put(summary, "paying_with", Purchases.paying_with(summary))
+        {card, needs} = paying_card(task, summary)
 
         Purchases.event(id, %{
           t: "summary",
@@ -302,11 +309,19 @@ defmodule TinyAxe.Tools.Gate do
           action: %{tool: tool.tool, args: args}
         })
 
-        checks = Purchases.checks(task.intent, summary)
+        checks = Purchases.checks(task.intent, summary, card)
 
         case for({:fail, why} <- checks, do: why) do
           [] ->
-            approve_and_place(task, tool, args, id, summary, checks, target)
+            case ask_purchase(task, summary, checks, needs, :order) do
+              {:confirm, ref} ->
+                Purchases.event(id, %{t: "confirmed"})
+                place(task, tool, args, id, summary, target, ref)
+
+              {:deny, _ref} ->
+                Purchases.event(id, %{t: "declined"})
+                {:denied, refusal("the user didn't confirm the purchase")}
+            end
 
           failed ->
             Purchases.event(id, %{t: "refused", checks: failed})
@@ -327,21 +342,27 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  defp approve_and_place(task, tool, args, id, summary, checks, target) do
-    case ask_purchase(task, summary, checks) do
-      :confirm ->
-        Purchases.event(id, %{t: "confirmed"})
-        place(task, tool, args, id, summary, target)
+  # The card this order is paid with: one tiny-axe will fill in now (and
+  # what must be typed to unlock it), or one it filled at an earlier payment
+  # step of this checkout, whose rules still apply.
+  defp paying_card(task, summary) do
+    case Purchases.payment(summary) do
+      {:virtual, card} ->
+        {card, TinyAxe.Cards.needs(card)}
 
-      :deny ->
-        Purchases.event(id, %{t: "declined"})
-        {:denied, refusal("the user didn't confirm the purchase")}
+      _ ->
+        host = summary["host"]
+
+        case task[:card_used] do
+          %{host: ^host, card: card} -> {card, []}
+          _ -> {nil, []}
+        end
     end
   end
 
   # The page is read again: if the shop, the total or the button changed while
   # the user was deciding, nothing is clicked.
-  defp place(task, tool, args, id, summary, target) do
+  defp place(task, tool, args, id, summary, target, ref) do
     now = look_at(tool.server, args["ref"])
 
     changed =
@@ -369,7 +390,7 @@ defmodule TinyAxe.Tools.Gate do
           why
       end
 
-    filled = if changed == nil, do: fill_virtual_card(tool.server, summary, id), else: :ok
+    filled = if changed == nil, do: fill_card(task, tool.server, summary, id, ref), else: :ok
 
     cond do
       changed ->
@@ -388,30 +409,111 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  # A virtual card is filled in only now: after the user confirmed and the page
-  # was read again, on the shop they confirmed. Its details go straight to the
-  # browser; only "filled" or "not filled" is recorded.
-  defp fill_virtual_card(server, summary, id) do
+  # The user's card is filled in only now: after they confirmed (and typed its
+  # PIN or CVC, if it needs them) and the page was read again, on the shop
+  # they confirmed. Its details come from the vault for this one fill and go
+  # straight to the browser; only "filled" and the card's id are recorded.
+  defp fill_card(task, server, summary, id, ref) do
     case Purchases.payment(summary) do
       {:virtual, card} ->
-        args = %{"expect_host" => summary["host"], "card" => card.details}
-
-        case MCP.call(server, "browser_fill_card", args, 30_000) do
-          {:ok, %{"isError" => true}} ->
+        with {:ok, details} <- TinyAxe.Cards.details(card, ref),
+             {:ok, %{} = result} <-
+               MCP.call(
+                 server,
+                 "browser_fill_card",
+                 %{"expect_host" => summary["host"], "card" => details},
+                 30_000
+               ),
+             false <- result["isError"] == true do
+          Purchases.event(id, %{t: "card_filled", card: card.label, card_id: card[:id]})
+          GenServer.call(__MODULE__, {:card_used, task.id, %{host: summary["host"], card: card}})
+          :ok
+        else
+          {:error, why} when is_binary(why) ->
             Purchases.event(id, %{t: "card_not_filled"})
-            "the virtual card couldn't be filled in"
+            why
 
-          {:ok, _} ->
-            Purchases.event(id, %{t: "card_filled", card: card.label})
-            :ok
-
-          {:error, _} ->
+          true ->
             Purchases.event(id, %{t: "card_not_filled"})
-            "the virtual card couldn't be filled in"
+            "#{card.label} couldn't be filled in (the page must be https, on #{summary["host"]})"
+
+          _ ->
+            Purchases.event(id, %{t: "card_not_filled"})
+            "#{card.label} couldn't be filled in"
         end
 
       _ ->
         :ok
+    end
+  end
+
+  # A checkout that takes the card on one page ("Continue") and the order on a
+  # later one: this step fills the card (once the user says so, and types its
+  # PIN or CVC), but spends nothing; the order is its own purchase later, with
+  # the card's rules still applying.
+  defp payment_step(task, tool, args, reason) do
+    case Purchases.summary(tool.server) do
+      {:ok, summary} ->
+        cond do
+          task.intent == nil ->
+            {:refused, refusal("the user didn't ask to buy anything in this request")}
+
+          true ->
+            case Purchases.payment(summary) do
+              {:virtual, card} ->
+                card_step(task, tool, args, summary, card)
+
+              {:none, why} ->
+                {:refused, refusal(why)}
+
+              # The user typed the card (a handoff), or chose one saved at the shop.
+              _ ->
+                ask_and_forward(task, tool, args, reason)
+            end
+        end
+
+      {:error, why} ->
+        {:refused, refusal(why)}
+    end
+  end
+
+  defp card_step(task, tool, args, summary, card) do
+    TinyAxe.Browser.show(tool.server)
+    id = Purchases.start(task.intent)
+    Purchases.event(id, %{t: "card_step", summary: Map.put(summary, "paying_with", card.label)})
+
+    checks =
+      Purchases.checks(task.intent, Map.put(summary, "total", nil), card)
+      |> Enum.reject(&match?({:fail, "tiny-axe couldn't read the total" <> _}, &1))
+
+    case for({:fail, why} <- checks, do: why) do
+      [] ->
+        case ask_purchase(
+               task,
+               Map.put(summary, "paying_with", card.label),
+               checks,
+               TinyAxe.Cards.needs(card),
+               :card_step
+             ) do
+          {:confirm, ref} ->
+            case fill_card(task, tool.server, summary, id, ref) do
+              :ok ->
+                Purchases.event(id, %{t: "card_step_done"})
+                forward(tool, args, :approved)
+
+              why ->
+                {:refused, refusal("#{why}, so nothing was sent")}
+            end
+
+          {:deny, _ref} ->
+            Purchases.event(id, %{t: "declined"})
+            {:denied, refusal("the user didn't want the card filled in")}
+        end
+
+      failed ->
+        Purchases.event(id, %{t: "refused", checks: failed})
+        task.notify.({:purchase_refused, %{summary: summary, failed: failed}})
+        {:refused, refusal("tiny-axe won't use #{card.label} here: #{Enum.join(failed, "; ")}")}
     end
   end
 
@@ -486,18 +588,21 @@ defmodule TinyAxe.Tools.Gate do
     %{order: order, dir: dir}
   end
 
-  defp ask_purchase(task, summary, checks) do
+  # `needs`: what the user types to unlock the card for this purchase (its PIN,
+  # its CVC); `mode`: :order (type the total) or :card_step (fill the card in).
+  defp ask_purchase(task, summary, checks, needs, mode) do
     ref = make_ref()
     timeout = Application.get_env(:tiny_axe, :tools, [])[:approval_timeout] || :timer.minutes(10)
 
     task.notify.(
-      {:purchase_approval, %{summary: summary, checks: checks, reply_to: self(), ref: ref}}
+      {:purchase_approval,
+       %{summary: summary, checks: checks, needs: needs, mode: mode, reply_to: self(), ref: ref}}
     )
 
     receive do
-      {:purchase_answer, ^ref, answer} when answer in [:confirm, :deny] -> answer
+      {:purchase_answer, ^ref, answer} when answer in [:confirm, :deny] -> {answer, ref}
     after
-      timeout -> :deny
+      timeout -> {:deny, ref}
     end
   end
 
@@ -575,6 +680,13 @@ defmodule TinyAxe.Tools.Gate do
 
   def handle_call({:close, id}, _from, tasks), do: {:reply, :ok, Map.delete(tasks, id)}
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
+
+  # The card tiny-axe filled in at a payment step, so the order later in the
+  # same checkout still answers to that card's rules.
+  def handle_call({:card_used, id, used}, _from, tasks) do
+    {:reply, :ok,
+     if(Map.has_key?(tasks, id), do: put_in(tasks, [id, :card_used], used), else: tasks)}
+  end
 
   def handle_call({:allow, id, name}, _from, tasks) do
     {:reply, :ok, update_in(tasks, [id, :allowed], &MapSet.put(&1, name))}

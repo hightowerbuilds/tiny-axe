@@ -267,7 +267,7 @@ defmodule TinyAxe.MCP do
 
     updated = Map.update(current, "mcpServers", fun.(%{}), fun)
     File.mkdir_p!(Path.dirname(path))
-    File.write!(path, updated |> :json.format() |> IO.iodata_to_binary())
+    File.write!(path, TinyAxe.Purchases.pretty_json(updated))
     File.chmod!(path, 0o600)
   rescue
     e -> {:error, Exception.message(e)}

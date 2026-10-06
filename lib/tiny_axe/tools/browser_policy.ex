@@ -121,11 +121,12 @@ defmodule TinyAxe.Tools.BrowserPolicy do
     where = host(form["action"])
 
     cond do
-      form["hasPayment"] ->
-        {:commit, "submits #{name}, which has payment fields"}
-
       label =~ @commit ->
         {:commit, ~s(submits #{name} with "#{label}")}
+
+      # Card details now, the order on a later page ("Continue", "Review").
+      form["hasPayment"] ->
+        {:payment_step, ~s(sends card details to #{where} with "#{label}")}
 
       form["hasPassword"] ->
         {:outward, "signs in: submits #{name} to #{where}"}
