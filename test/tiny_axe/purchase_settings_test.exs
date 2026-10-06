@@ -99,7 +99,13 @@ defmodule TinyAxe.PurchaseSettingsTest do
     assert output() =~ ~r/shop\.example  \$16\.00  MAY have been placed/
   end
 
-  test "the TUI says when purchases are on" do
+  test "the TUI says when purchases are on, first, so a long folder can't hide it" do
+    # A folder long enough to fill the title.
+    deep = Path.join([System.tmp_dir!() | List.duplicate("a-rather-long-folder-name", 8)])
+    File.mkdir_p!(deep)
+    {:ok, _} = TinyAxe.Location.cd(deep)
+    on_exit(fn -> TinyAxe.Location.reset() end)
+
     {:ok, state} = TUI.mount(test_mode: {140, 30})
 
     draw = fn ->

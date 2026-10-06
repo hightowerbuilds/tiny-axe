@@ -188,10 +188,10 @@ defmodule TinyAxe.TUI.View do
         do: "",
         else: " ↓#{lines_below} lines below · end to follow ·"
 
-    # Never on without it showing.
-    buying = if TinyAxe.Purchases.enabled?(), do: " · 💳 purchases on", else: ""
+    # Never on without it showing: first, so a long folder can't push it out of view.
+    buying = if TinyAxe.Purchases.enabled?(), do: " 💳 purchases on ·", else: ""
 
-    "#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()}#{buying} "
+    "#{buying}#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()} "
   end
 
   defp status_widget(%{run: nil} = state) do
