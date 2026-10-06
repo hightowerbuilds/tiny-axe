@@ -147,6 +147,23 @@ defmodule TinyAxe.TUI.CardFlow do
   end
 
   defp parse(:purpose, ""), do: {:error, "say what it's for: each purchase is checked against it"}
+
+  # Shops are web addresses; "any shop" (or nothing) means any.
+  defp parse(:shops, value) do
+    words = value |> String.downcase() |> String.split([",", " "], trim: true)
+
+    cond do
+      value == "" or value =~ ~r/\bany/i ->
+        {:ok, "any"}
+
+      Enum.all?(words, &String.contains?(&1, ".")) ->
+        {:ok, value}
+
+      true ->
+        {:error, "shops are web addresses like amazon.com, bookshop.org (enter for any shop)"}
+    end
+  end
+
   defp parse(_field, value), do: {:ok, value}
 
   defp choose(flow, name, k) do

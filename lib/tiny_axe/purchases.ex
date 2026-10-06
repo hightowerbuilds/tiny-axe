@@ -337,7 +337,7 @@ defmodule TinyAxe.Purchases do
     |> Enum.find(fn card ->
       merchants = card[:merchants] || :any
 
-      (merchants == :any or host in List.wrap(merchants)) and
+      (merchants == :any or shop_allowed?(host, merchants)) and
         (card[:expires_at] == nil or card[:expires_at] > now) and
         TinyAxe.Cards.available?(card)
     end)
@@ -345,6 +345,19 @@ defmodule TinyAxe.Purchases do
       nil -> nil
       card -> Map.put_new(card, :label, "virtual card")
     end
+  end
+
+  @doc "Whether a host is one of the listed shops: amazon.com covers www.amazon.com too."
+  @spec shop_allowed?(String.t() | nil, [String.t()]) :: boolean()
+  def shop_allowed?(nil, _list), do: false
+
+  def shop_allowed?(host, list) do
+    host = String.downcase(host)
+
+    Enum.any?(List.wrap(list), fn shop ->
+      shop = shop |> String.downcase() |> String.trim_leading("www.")
+      host == shop or String.ends_with?(host, "." <> shop)
+    end)
   end
 
   # The card's own rules, when tiny-axe pays with one of the user's cards:
@@ -438,7 +451,7 @@ defmodule TinyAxe.Purchases do
         {:ok, "from #{host}"}
 
       list ->
-        if host in list,
+        if shop_allowed?(host, list),
           do: {:ok, "#{host} is on your list of shops"},
           else: {:fail, "#{host} isn't on your list of shops"}
     end

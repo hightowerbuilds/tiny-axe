@@ -349,12 +349,15 @@ defmodule TinyAxe.Cards do
   defp shops("any"), do: :any
   defp shops(list) when is_list(list), do: if(list == [], do: :any, else: list)
 
+  # "any", "any shop", "anywhere" or nothing: any shop. Otherwise web
+  # addresses, lowercased ("Amazon.com" is amazon.com).
   defp shops(text) when is_binary(text) do
-    case text |> String.split([",", " "], trim: true) do
-      [] -> :any
-      ["any"] -> :any
-      list -> list
-    end
+    text = text |> String.trim() |> String.downcase()
+
+    if text == "" or text =~ ~r/\bany/,
+      do: :any,
+      else:
+        text |> String.split([",", " "], trim: true) |> Enum.map(&String.trim_leading(&1, "www."))
   end
 
   defp expires_at(nil), do: nil

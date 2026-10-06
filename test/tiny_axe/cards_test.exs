@@ -235,6 +235,39 @@ defmodule TinyAxe.CardsTest do
       assert card.pin and card.cvc == "ask" and card.per_purchase_max == 30.0
     end
 
+    test "shops: \"any shop\" means any; otherwise web addresses" do
+      flow =
+        CardFlow.new()
+        |> keys(chars(@number) ++ ["enter"])
+        |> keys(chars("12/30") ++ ["enter"])
+        |> keys(["s"])
+
+      flow =
+        flow
+        |> keys(chars("737") ++ ["enter"])
+        |> keys(chars("Sam") ++ ["enter"])
+        |> keys(["enter"])
+
+      flow = flow |> keys(chars("books") ++ ["enter"])
+
+      assert keys(flow, chars("any shop") ++ ["enter"]).answers.shops == "any"
+
+      assert keys(flow, chars("the bookshop") ++ ["enter"]).error =~
+               "web addresses like amazon.com"
+
+      assert keys(flow, chars("Amazon.com, www.bookshop.org") ++ ["enter"]).answers.shops ==
+               "Amazon.com, www.bookshop.org"
+
+      enter_card()
+      {:ok, card} = save(%{"shops" => "Amazon.com, www.bookshop.org", "remember" => "session"})
+      assert card.merchants == ["amazon.com", "bookshop.org"]
+      Cards.forget(card.label)
+
+      enter_card()
+      {:ok, card} = save(%{"shops" => "any shop", "remember" => "session"})
+      assert card.merchants == :any
+    end
+
     test "a wrong number is caught at once, and esc discards everything" do
       flow = CardFlow.new() |> keys(chars("4111 1111 1111 1112") ++ ["enter"])
       assert flow.error =~ "isn't a valid card number"

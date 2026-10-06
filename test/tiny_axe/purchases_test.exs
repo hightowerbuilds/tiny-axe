@@ -234,4 +234,11 @@ defmodule TinyAxe.PurchasesTest do
              )
     end
   end
+
+  test "a shop on a list covers its subdomains, and nothing else" do
+    assert Purchases.shop_allowed?("www.amazon.com", ["amazon.com"])
+    assert Purchases.shop_allowed?("amazon.com", ["www.Amazon.com"])
+    refute Purchases.shop_allowed?("notamazon.com", ["amazon.com"])
+    refute Purchases.shop_allowed?("amazon.com.evil.example", ["amazon.com"])
+  end
 end
