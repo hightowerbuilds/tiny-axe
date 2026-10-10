@@ -128,6 +128,8 @@ defmodule TinyAxe.BrowserOutcomesTest do
 
   # A fresh look at the page: its text, how often the typed text shows on it
   # (nil: another page), and its observation id (obs-a-1 is the action's own).
+  # obs-a-1 is the page view right after the action; any other stands for a
+  # whole new document loaded since (the browser's `fresh_load`).
   defp shown(text, count, observation) do
     {:ok,
      %{
@@ -135,6 +137,7 @@ defmodule TinyAxe.BrowserOutcomesTest do
        "action" =>
          report(%{
            "requests" => [request(502)],
+           "fresh_load" => observation != "obs-a-1",
            "content" => %{"values" => 1, "before" => [0], "after" => [nil], "now" => [count]}
          })
      }}
@@ -237,6 +240,56 @@ defmodule TinyAxe.BrowserOutcomesTest do
       # Confirmed either way, it no longer holds.
       assert Decisions.unresolved_keys([record(report(%{"requests" => [request(200)]}))]) ==
                MapSet.new()
+    end
+  end
+
+  describe "holding a formless button" do
+    # A button with no form (its script sends), on a page with a query.
+    defp formless(label, query, opts \\ []) do
+      Keyword.merge(
+        [
+          label: label,
+          meta: %{
+            "form" => nil,
+            "isSubmit" => false,
+            "page" => @page <> query,
+            # As the browser's: the full address is part of it.
+            "signature" => "sig-#{label}#{query}"
+          }
+        ],
+        opts
+      )
+    end
+
+    test "the same label on the same page, whatever the query, is held" do
+      lost = record(report(%{"requests" => [request(nil)]}), formless("Send", "?draft=a"))
+      held = Decisions.unresolved_keys([lost])
+
+      # The signature differs (its address has another query), the label key doesn't.
+      again = assess(formless("Send", "?draft=b", unresolved: held))
+      assert "outcome_unresolved" in again.reason_codes
+
+      # Another label on that page isn't held.
+      refute "outcome_unresolved" in assess(formless("Archive", "?draft=b", unresolved: held)).reason_codes
+    end
+
+    test "a later form sending to where the lost request went is held" do
+      lost =
+        record(
+          report(%{"requests" => [request(nil, %{"url" => "https://shop.example/api/send"})]}),
+          formless("Go", "?x=1")
+        )
+
+      held = Decisions.unresolved_keys([lost])
+
+      form =
+        assess(
+          label: "Submit message",
+          meta: %{"form" => %{"action" => "https://shop.example/api/send", "method" => "post"}},
+          unresolved: held
+        )
+
+      assert "outcome_unresolved" in form.reason_codes
     end
   end
 
@@ -472,7 +525,8 @@ defmodule TinyAxe.BrowserOutcomesTest do
              "title" => "Notes",
              "text" => text,
              "observation" => "obs-a-2"
-           }
+           },
+           "action" => report(%{"requests" => [request(502)], "fresh_load" => true})
          }}
       end
 
@@ -497,12 +551,20 @@ defmodule TinyAxe.BrowserOutcomesTest do
 
       # Another page, or the same page view as right after the action: the
       # decider isn't even asked.
-      for now <- [
-            %{"url" => "https://shop.example/inbox", "text" => "hi", "observation" => "obs-a-3"},
-            %{"url" => @page, "text" => "hi", "observation" => "obs-a-1"}
+      # A new observation id without a whole document loaded (history.pushState)
+      # doesn't count either.
+      for {now, fresh} <- [
+            {%{"url" => "https://shop.example/inbox", "text" => "hi", "observation" => "obs-a-3"},
+             true},
+            {%{"url" => @page, "text" => "hi", "observation" => "obs-a-1"}, false},
+            {%{"url" => @page, "text" => "hi", "observation" => "obs-a-4"}, false}
           ] do
-        {v, _} =
-          Decisions.verify(lost, observe: fn -> {:ok, %{"now" => now}} end, decide: never())
+        seen = %{
+          "now" => now,
+          "action" => report(%{"requests" => [request(502)], "fresh_load" => fresh})
+        }
+
+        {v, _} = Decisions.verify(lost, observe: fn -> {:ok, seen} end, decide: never())
 
         assert v.status == :unresolved
       end
@@ -612,6 +674,20 @@ defmodule TinyAxe.BrowserOutcomesTest do
 
       assert checked.outcome == :replaced and checked.contradicted == [b.id]
       assert_received {:shown, _, [:claim_1, :claim_2]}
+    end
+
+    test "failures past the questions one check asks are noted, never passed over" do
+      failures =
+        for i <- 1..7,
+            do: failed(record(report(%{"requests" => [request(200)]}), label: "Send #{i}"))
+
+      checked = Decisions.completion(failures, "Sent!", decide: answers(nil, nil, nil, 0.1))
+      assert_received {:shown, _, questions}
+      assert length(questions) == 6
+
+      assert checked.outcome == :caveated
+      assert checked.text =~ ~s(✗ not done: click "Send 7")
+      assert String.ends_with?(checked.text, "\n\nSent!")
     end
 
     test "something merely unresolved keeps the answer, under a note naming it, without asking" do
