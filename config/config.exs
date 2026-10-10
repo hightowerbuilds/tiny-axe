@@ -119,4 +119,7 @@ config :tiny_axe,
 
 config :tiny_axe, :jev, model: "jev-latest"
 
+# The prompt cursor pulses, with a ring blasting outward from it (TinyAxe.TUI.Pulse).
+config :tiny_axe, cursor_pulse: true
+
 import_config "#{config_env()}.exs"

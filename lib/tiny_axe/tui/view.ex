@@ -10,12 +10,14 @@ defmodule TinyAxe.TUI.View do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea, Throbber}
   alias TinyAxe.Context
-  alias TinyAxe.TUI.{Overlays, Transcript}
+  alias TinyAxe.TUI.{Overlays, Pulse, Transcript}
   import TinyAxe.TUI.Presentation, only: [styled: 1, styled: 2, review_label: 1]
   import TinyAxe.TUI.Conversation, only: [context_tokens: 1]
 
   @input_height 6
   @sidebar_width 44
+
+  def input_height, do: @input_height
 
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
@@ -41,6 +43,7 @@ defmodule TinyAxe.TUI.View do
       state: state.input,
       placeholder: "Ask for code or text…  (enter to send, alt+enter for newline)",
       placeholder_style: %Style{fg: :dark_gray},
+      cursor_style: Pulse.cursor_style(state),
       wrap_mode: :word,
       block: %Block{
         title: " prompt ",
@@ -51,7 +54,7 @@ defmodule TinyAxe.TUI.View do
     }
 
     [{transcript, transcript_area}, {status_widget(state), status_area}, {input, input_area}] ++
-      sidebar ++ Overlays.render(state, area)
+      Pulse.widgets(state, input_area) ++ sidebar ++ Overlays.render(state, area)
   end
 
   ## Sidebar: the context meter and the compacted summary

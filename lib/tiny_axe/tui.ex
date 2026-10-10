@@ -24,7 +24,17 @@ defmodule TinyAxe.TUI do
 
   alias ExRatatui.Event
   alias TinyAxe.{Context, Files}
-  alias TinyAxe.TUI.{CommandWorkflow, CompactionWorkflow, FileWorkflow, Run, Transcript, View}
+
+  alias TinyAxe.TUI.{
+    CommandWorkflow,
+    CompactionWorkflow,
+    FileWorkflow,
+    Pulse,
+    Run,
+    Transcript,
+    View
+  }
+
   import TinyAxe.TUI.Conversation, only: [add_meta: 2]
 
   import TinyAxe.TUI.Presentation,
@@ -58,6 +68,9 @@ defmodule TinyAxe.TUI do
         {w, h} -> {w, h}
         _ -> {80, 24}
       end
+
+    # Test-mode TUIs get no timer; tests send :pulse themselves.
+    if opts[:test_mode] == nil and Pulse.enabled?(), do: Pulse.schedule()
 
     {:ok,
      %{
@@ -106,6 +119,9 @@ defmodule TinyAxe.TUI do
        scroll: :bottom,
        size: size,
        tick: 0,
+       # The prompt cursor's pulse (TinyAxe.TUI.Pulse): its frame and the
+       # textarea's first visible row.
+       pulse: Pulse.new(),
        halt_on_exit: Keyword.get(opts, :halt_on_exit, false),
        session?: session?,
        # The compacted summary of older turns: %{text, turns, check, before, after}.
@@ -561,6 +577,14 @@ defmodule TinyAxe.TUI do
   defp on_info({:pipeline, _stale_id, _event}, state), do: {:noreply, state, render?: false}
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
+
+  defp on_info(:pulse, state) do
+    Pulse.schedule()
+
+    if state.run == nil,
+      do: {:noreply, Pulse.step(state)},
+      else: {:noreply, state, render?: false}
+  end
 
   defp on_info(:tick, state) do
     Run.schedule_tick()
