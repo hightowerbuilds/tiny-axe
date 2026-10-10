@@ -88,6 +88,21 @@ written with the task, required facts, the planned command, and the route.
 Summaries go to `eval/results/`. See `mix help tiny_axe.eval` for options
 (`--split`, `--only`, `--repeat`, `--model`, `--decider`, `--think`).
 
+Browser policy has its own synthetic classification benchmark:
+
+```
+mix tiny_axe.browser_eval                         # scripted replay, no model calls
+mix tiny_axe.browser_eval --live --decider jev     # synthetic observations sent to Jev
+mix tiny_axe.browser_eval --live --decider local --max-decisions 40
+```
+
+It executes no browser actions. Replay checks policy composition; live mode
+checks classification with the configured decider and excludes injected
+outage cases. JSON results include evidence, questions, answers, source hashes,
+and budget skips. This is not a complete browser-task success rate. See the
+[browser decisions and learning plan](docs/plan-browser-decisions-and-learning.md)
+for the build status and remaining work.
+
 ## License
 
 MIT; see [LICENSE](LICENSE).

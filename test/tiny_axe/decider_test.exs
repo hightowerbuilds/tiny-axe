@@ -11,6 +11,10 @@ defmodule TinyAxe.DeciderTest do
     assert Decider.p(answers, :files) == nil
     assert Decider.p(answers, :missing) == nil
     assert Decider.p({:error, :timeout}, :web) == nil
+
+    for invalid <- [-0.1, 1.1, "0.9", true] do
+      assert Decider.p(%{web: %{noul: invalid}}, :web) == nil
+    end
   end
 
   test "yes?/3 is never true for an unknown score (in Elixir, nil >= 0.5 is true)" do

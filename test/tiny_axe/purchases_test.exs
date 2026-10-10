@@ -70,6 +70,27 @@ defmodule TinyAxe.PurchasesTest do
       assert Purchases.intent("buy the blue mug, under $50") == nil
     end
 
+    test "the conversation counts: a bare amount in reply is the maximum, for the earlier request" do
+      history = [
+        %{role: "user", content: "buy the book that's in my Amazon cart"},
+        %{role: "assistant", content: "What's the most you want to spend?"}
+      ]
+
+      assert %{max: 30.0, request: request} = Purchases.intent("30", history)
+      assert request =~ "buy the book that's in my Amazon cart"
+
+      assert %{max: 25.0} = Purchases.intent("$25", history)
+      assert %{max: 30.0} = Purchases.intent("my limit is 30 dollars", history)
+
+      # A maximum given earlier carries on through "yes, go ahead".
+      earlier = [%{role: "user", content: "buy the book in my cart, under $30"}]
+      assert %{max: 30.0} = Purchases.intent("yes, I confirm", earlier)
+
+      # A page or a model saying an amount doesn't count: only the user's words.
+      told = [%{role: "assistant", content: "Your limit is $500."}]
+      assert %{max: nil} = Purchases.intent("buy it", told)
+    end
+
     test "purchases switched off: never an intent" do
       Application.put_env(:tiny_axe, :purchases, enabled: false)
       assert Purchases.intent("buy the blue mug, under $50") == nil

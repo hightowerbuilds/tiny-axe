@@ -77,13 +77,18 @@ defmodule TinyAxe.BrowserPolicyTest do
     for label <- ["Send", "Post reply", "Delete repository", "Sign up", "Remove from cart"],
         do: assert({:outward, _} = click(button(label)), label)
 
-    # Not asked about, and Jev isn't consulted.
-    Decider.Script.script(fn _, _, _ ->
-      flunk("Jev was asked about an obviously undoable button")
+    # Familiar words alone cannot prove what a site's handler does.
+    me = self()
+
+    Decider.Script.script(fn _, _, state ->
+      send(me, {:assessed, state})
+      0.0
     end)
 
     for label <- ["Add to cart", "Add to bag", "Show more", "Next", "Accept all cookies"],
         do: assert(click(button(label)) == {:local, nil}, label)
+
+    assert_received {:assessed, %{observed_target: _}}
   end
 
   test "an unclear button goes to Jev, and no answer is the stricter class" do
@@ -102,11 +107,11 @@ defmodule TinyAxe.BrowserPolicyTest do
     assert {:outward, _} = click(button("⚙"))
 
     Decider.Script.script(fn _, _, _ -> :unknown end)
-    assert {:outward, why} = click(button("⚙"))
+    assert {:refused, why} = click(button("⚙"))
     assert why =~ "couldn't check"
 
     Decider.Script.script(fn _, _, _ -> {:error, :down} end)
-    assert {:outward, _} = click(button("⚙"))
+    assert {:refused, _} = click(button("⚙"))
   end
 
   test "typing: never into a password or card field; Enter in a form submits it" do
@@ -164,8 +169,61 @@ defmodule TinyAxe.BrowserPolicyTest do
         do: assert(click(button("Pay with PayPal", %{"type" => type})) == {:local, nil})
   end
 
-  test "if the target can't be seen, a click is asked about" do
-    assert {:outward, why} = click(nil)
-    assert why =~ "couldn't see"
+  test "if the target can't be seen, a click is refused, not asked about" do
+    assert {:refused, why} = click(nil)
+    assert why =~ "couldn't see what this would click"
+
+    assert {:refused, _} =
+             BrowserPolicy.classify(
+               "browser_type",
+               %{"ref" => "x", "text" => "y", "submit" => true},
+               fn _ -> nil end
+             )
+  end
+
+  test "a generic POST purchase and a misleading link use the decider" do
+    Decider.Script.script(fn
+      :spends, _, _ -> 0.95
+      _, _, _ -> 0.0
+    end)
+
+    assert {:commit, _} = click(button("Continue", %{"href" => "https://shop.example/final"}))
+    assert {:commit, _} = click(button("Continue", %{"isSubmit" => true, "form" => form(%{})}))
+  end
+
+  test "Enter in a GET field uses the default submit button's label" do
+    target = %{
+      "tag" => "input",
+      "text" => "Account",
+      "form" => form(%{"method" => "get", "submitText" => "Delete account"})
+    }
+
+    assert {:outward, _} =
+             BrowserPolicy.classify("browser_press_key", %{"key" => "Enter"}, fn _ -> target end)
+  end
+
+  test "decision evidence includes context but excludes URL credentials and card numbers" do
+    me = self()
+
+    Decider.Script.script(fn _, _, state ->
+      send(me, {:state, state})
+      0.0
+    end)
+
+    click(
+      button("Continue", %{
+        "page" => "https://user:secret@shop.example/review?token=secret#secret",
+        "context" => "Card 4242 4242 4242 4242. Changes are saved immediately.",
+        "contextTruncated" => true,
+        "form" => form(%{"action" => "https://shop.example/action?token=secret"})
+      })
+    )
+
+    assert_received {:state, %{observed_target: target} = state}
+    assert target["page"] == "https://shop.example/review"
+    assert target["form"]["action"] == "https://shop.example/action"
+    assert target["contextTruncated"] == true
+    refute inspect(state) =~ "secret"
+    refute inspect(state) =~ "4242"
   end
 end

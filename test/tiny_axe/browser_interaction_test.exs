@@ -185,7 +185,7 @@ defmodule TinyAxe.BrowserInteractionTest do
     assert FixtureSite.submissions() == []
   end
 
-  test "a button whose label says nothing: Jev decides, and no answer means asking", ctx do
+  test "a button whose label says nothing: no answer refuses it without ordinary approval", ctx do
     page = open(ctx, "/shop")
     mystery = ref(page, "button", "⚙")
 
@@ -194,9 +194,10 @@ defmodule TinyAxe.BrowserInteractionTest do
       _, _, _ -> nil
     end)
 
-    act(ctx, "browser_click", %{ref: mystery}, :deny)
-    assert_received {:asked, %{reason: reason}}
-    assert reason =~ "couldn't check what it does"
+    result = act(ctx, "browser_click", %{ref: mystery}, :once)
+    refute_received {:asked, _}
+    assert result["isError"] == true
+    assert text(result) =~ "couldn't check"
     assert FixtureSite.submissions() == []
 
     # Jev says it sends nothing: it just runs.
@@ -224,6 +225,16 @@ defmodule TinyAxe.BrowserInteractionTest do
     assert FixtureSite.submissions() == []
   end
 
+  test "a label passed as the ref (\"Place your order\") is refused, never clicked", ctx do
+    open(ctx, "/shop")
+    result = act(ctx, "browser_click", %{ref: "Buy now", element: "button"}, :once)
+
+    refute_received {:asked, _}
+    assert text(result) =~ "couldn't see what this would click"
+    Process.sleep(300)
+    assert FixtureSite.submissions() == []
+  end
+
   test "the gate's own inspect tool is hidden from agents, and refused if called", ctx do
     %{body: %{"result" => %{"tools" => tools}}} =
       Req.post!(ctx.task.url,
@@ -245,5 +256,78 @@ defmodule TinyAxe.BrowserInteractionTest do
 
     assert_received {:asked, %{class: :handoff, reason: "sign in to the shop"}}
     assert text(result) =~ "The user says they've done it"
+  end
+
+  test "purchase links and keyboard activation cannot bypass the purchase gate", ctx do
+    for key <- ["Enter", "Space", "Control+Enter"] do
+      open(ctx, "/policy-actions")
+      result = act(ctx, "browser_press_key", %{key: key}, :once)
+      assert result["isError"] == true
+      assert text(result) =~ "spending money isn't enabled"
+    end
+
+    page = open(ctx, "/policy-actions")
+    result = act(ctx, "browser_click", %{ref: ref(page, "link", "Buy now")}, :once)
+    assert result["isError"] == true
+    assert text(result) =~ "spending money isn't enabled"
+    refute_received {:asked, _}
+    assert FixtureSite.submissions() == []
+  end
+
+  test "destructive GET forms ask before reaching the server", ctx do
+    page = open(ctx, "/policy-actions")
+    target = ref(page, "button", "Delete account")
+    result = act(ctx, "browser_click", %{ref: target}, :deny)
+    assert result["isError"] == true
+    assert_received {:asked, %{class: :outward}}
+    assert FixtureSite.submissions() == []
+
+    act(ctx, "browser_click", %{ref: target}, :once)
+    assert [{"/policy-effect", %{"kind" => "delete"}}] = FixtureSite.submissions()
+  end
+
+  test "autosave fields and selections are assessed with their actual page context", ctx do
+    me = self()
+
+    Decider.Script.script(fn
+      :sends, _, state ->
+        send(me, {:observed, state})
+        0.99
+
+      _, _, _ ->
+        0.0
+    end)
+
+    page = open(ctx, "/policy-actions")
+
+    actions = [
+      {"browser_type", %{ref: ref(page, "textbox", "Public name"), text: "Sam"}},
+      {"browser_select_option", %{ref: ref(page, "combobox", "Visibility"), values: ["Public"]}},
+      {"browser_click", %{ref: ref(page, "checkbox", "Show profile")}}
+    ]
+
+    for {tool, args} <- actions do
+      assert act(ctx, tool, args, :deny)["isError"] == true
+      assert_received {:asked, %{class: :outward}}
+      assert_received {:observed, %{observed_target: target}}
+      assert target["context"] =~ "saved immediately"
+    end
+
+    assert FixtureSite.submissions() == []
+
+    {tool, args} = hd(actions)
+    act(ctx, tool, args, :once)
+    assert [{"/policy-effect", %{"kind" => "autosave"}}] = FixtureSite.submissions()
+  end
+
+  test "a purchase dialog requires handoff instead of ordinary approval", ctx do
+    page = open(ctx, "/policy-dialog")
+    act(ctx, "browser_click", %{ref: ref(page, "button", "Review")})
+    result = act(ctx, "browser_handle_dialog", %{accept: true}, :once)
+    assert result["isError"] == true
+    assert text(result) =~ "browser_handoff"
+    refute_received {:asked, _}
+    assert FixtureSite.submissions() == []
+    act(ctx, "browser_handle_dialog", %{accept: false})
   end
 end

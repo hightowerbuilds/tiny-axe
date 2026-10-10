@@ -146,6 +146,36 @@ defmodule TinyAxe.FixtureSite do
     send_resp(conn, 200, "ok")
   end
 
+  get "/policy-actions" do
+    html(conn, """
+    <title>Action policy fixtures</title><main>
+    <section><h2>Order</h2>
+    <a href="/policy-effect?kind=purchase">Buy now</a>
+    <button id="buy" autofocus onclick="fetch('/policy-effect?kind=keyboard', {method:'POST'})">Place order</button>
+    </section>
+    <section><h2>Account</h2>
+    <form method="get" action="/policy-effect"><input type="hidden" name="kind" value="delete">
+    <button>Delete account</button></form>
+    </section>
+    <section><h2>Public profile</h2><p>Changes are published and saved immediately.</p>
+    <label>Public name <input oninput="fetch('/policy-effect?kind=autosave', {method:'POST'})"></label>
+    <label>Visibility <select onchange="fetch('/policy-effect?kind=select', {method:'POST'})"><option>Private</option><option>Public</option></select></label>
+    <label><input type="checkbox" onchange="fetch('/policy-effect?kind=check', {method:'POST'})"> Show profile</label>
+    </section></main>
+    """)
+  end
+
+  get "/policy-dialog" do
+    html(conn, """
+    <main><button onclick="if(confirm('Buy now for $12?')) fetch('/bought', {method:'POST'})">Review</button></main>
+    """)
+  end
+
+  match "/policy-effect" do
+    record(conn)
+    html(conn, "<main>Action recorded</main>")
+  end
+
   get "/login" do
     html(conn, """
     <title>Sign in</title><main><form method="post" action="/login" aria-label="Sign in">
@@ -260,6 +290,20 @@ defmodule TinyAxe.FixtureSite do
     <p>Ship to:</p><p>Sam Lee</p><p>1 High St, Springfield</p>
     <p>Paying with Visa ending in #{last4}</p>
     <form method="post" action="/place-order"><button>Place order</button></form></main>
+    """)
+  end
+
+  # Laid out like Amazon's checkout: the price on its own line under the
+  # title, the card's brand and its last digits on separate lines.
+  get "/order-amazonish" do
+    html(conn, """
+    <title>Place Your Order</title><main><h1>Review your order</h1>
+    <div><span>Elixir for Beginners: How to Build Scalable Applications</span></div>
+    <div><span>$19.99</span></div>
+    <div>Paying with</div><div>Mastercard</div><div>ending in 2701</div>
+    <div>Items: $19.99</div><div>Shipping &amp; handling: $0.00</div>
+    <div>Estimated tax: $1.82</div><div>Order total: $21.81</div>
+    <form method="post" action="/place-order"><button>Place your order</button></form></main>
     """)
   end
 

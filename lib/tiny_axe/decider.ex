@@ -64,7 +64,7 @@ defmodule TinyAxe.Decider do
 
   def p(answers, key) when is_map(answers) do
     case Map.get(answers, key) do
-      %{noul: p} when is_number(p) -> p
+      %{noul: p} when is_number(p) and p >= 0 and p <= 1 -> p
       _ -> nil
     end
   end

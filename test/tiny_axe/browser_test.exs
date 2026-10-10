@@ -81,6 +81,18 @@ defmodule TinyAxe.BrowserTest do
            end)
   end
 
+  test "inspection supplies context without exposing field values", %{site: site, server: s} do
+    snapshot = text(call(s, "browser_navigate", %{url: site <> "/checkout"}))
+    [_, ref] = Regex.run(~r/button "Place order"[^\n]*\[ref=(\w+)\]/, snapshot)
+    inspection = text(call(s, "browser_inspect", %{ref: ref}))
+    target = JSON.decode!(inspection)
+    assert target["context"] =~ "Checkout"
+    refute inspection =~ "hunter2"
+    refute inspection =~ "4242"
+    refute inspection =~ "Sam Lee"
+    assert target["contextTruncated"] == false
+  end
+
   test "screenshots are images, with the sensitive fields masked", %{site: site, server: s} do
     call(s, "browser_navigate", %{url: site <> "/checkout"})
     %{"content" => content} = call(s, "browser_take_screenshot")

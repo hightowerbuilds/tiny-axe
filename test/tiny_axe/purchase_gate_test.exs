@@ -175,6 +175,21 @@ defmodule TinyAxe.PurchaseGateTest do
              File.read!(Path.join(Purchases.dir(id), "receipt.png"))
   end
 
+  test "an Amazon-like checkout: the title with its price, the card, the total", ctx do
+    task = open_task(ctx, @intent)
+
+    page =
+      text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-amazonish"}))
+
+    [_, ref] = Regex.run(~r/button "Place your order" \[ref=(\w+)\]/, page)
+    call(task, "#{ctx.server}__browser_click", %{ref: ref}, :deny)
+
+    assert_received {:asked, %{summary: s}}
+    assert s["total_text"] == "$21.81"
+    assert "Elixir for Beginners: How to Build Scalable Applications — $19.99" in s["items"]
+    assert s["paying_with"] == "Mastercard ending in 2701"
+  end
+
   test "the user says no: nothing is bought", ctx do
     result = buy(ctx, open_task(ctx, @intent), :deny)
 

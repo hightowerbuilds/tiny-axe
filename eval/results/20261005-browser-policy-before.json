@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "mode": "scripted_regression_tests",
+  "scope": "Working tree before the browser policy milestone, including pre-existing uncommitted browser and purchase changes",
+  "note": "Recorded from the initial ExUnit run before policy edits. These are policy-composition failures with scripted answers, not a Jev accuracy measurement.",
+  "command": "mix test test/tiny_axe/browser_policy_regression_test.exs --seed 0",
+  "cases": 20,
+  "passed": 4,
+  "failed": 16,
+  "failed_cases": [
+    "purchase_link",
+    "destructive_get",
+    "keyboard_purchase_enter",
+    "keyboard_purchase_space",
+    "keyboard_purchase_modified",
+    "purchase_signal_survives_unknown",
+    "unknown_purchase_is_not_ordinary_approval",
+    "decider_outage",
+    "unseen_keyboard_target",
+    "unseen_fill_target",
+    "unrecognized_browser_tool",
+    "purchase_dialog",
+    "autosave_field",
+    "autosave_select",
+    "autosave_checkbox",
+    "misleading_next"
+  ]
+}

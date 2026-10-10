@@ -40,8 +40,7 @@ defmodule TinyAxe.Agent do
 
     # What the user asked to buy, if anything, from their own words: nothing on
     # a page can change it (TinyAxe.Purchases).
-    context = history |> Enum.take(-4) |> Enum.map_join("\n", & &1.content)
-    intent = TinyAxe.Purchases.intent(prompt, context)
+    intent = TinyAxe.Purchases.intent(prompt, history)
 
     # A purchase is watched from the start: the browser window is shown.
     if intent && TinyAxe.Browser.running?(), do: TinyAxe.Browser.show()

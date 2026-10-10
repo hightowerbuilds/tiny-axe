@@ -137,12 +137,27 @@ defmodule TinyAxe.Purchases do
   ## Intent
 
   @doc """
-  What the user asked to buy, from their request: `%{request:, max:, currency:}`
-  (`max` is nil when they gave none), or nil when they didn't ask to buy
-  anything (Jev decides; no answer is "no").
+  What the user asked to buy: `%{request:, max:, currency:}` (`max` is nil
+  when they gave none), or nil when they didn't ask to buy anything (Jev
+  decides, seeing the conversation; no answer is "no").
+
+  Only the user's own words count, never a page's or a model's: the request
+  is their recent messages and this one, so a reply like "30" to "what's the
+  most to spend?" belongs to "buy the book in my cart". The maximum is the
+  latest one they gave: a phrase like "under $50" or "no more than £30", or
+  a reply that's just an amount ("30", "$30", "limit 30").
   """
-  @spec intent(String.t(), String.t()) :: map() | nil
-  def intent(request, context \\ "") do
+  @spec intent(String.t(), [map()] | String.t()) :: map() | nil
+  def intent(request, history \\ [])
+
+  def intent(request, context) when is_binary(context),
+    do: intent(request, [%{role: "user", content: context}])
+
+  def intent(request, history) do
+    said =
+      (history |> Enum.filter(&(&1.role == "user")) |> Enum.map(& &1.content) |> Enum.take(-4)) ++
+        [request]
+
     question = %{
       buy: %{
         type: :noul,
@@ -150,14 +165,37 @@ defmodule TinyAxe.Purchases do
       }
     }
 
-    if enabled?() and
-         Decider.yes?(
-           Decider.decide(%{request: request, conversation: context}, question),
-           :buy,
-           0.5
+    state = %{request: request, what_the_user_said_before: Enum.join(Enum.drop(said, -1), "\n")}
+
+    if enabled?() and Decider.yes?(Decider.decide(state, question), :buy, 0.5) do
+      {max, currency} =
+        said
+        |> Enum.reverse()
+        |> Enum.find_value({nil, nil}, fn text ->
+          case max_price(text) do
+            {nil, _} -> bare_amount(text)
+            found -> found
+          end
+        end)
+
+      %{request: Enum.join(said, " / "), max: max, currency: currency || currency()}
+    end
+  end
+
+  # A reply that's only an amount: "30", "$30", "30 dollars", "limit 30".
+  defp bare_amount(text) do
+    case Regex.run(
+           ~r/\A\s*(?:(?:my\s+)?(?:limit|max(?:imum)?|budget)\s*(?:is|of)?\s*)?([$£€])?\s?(\d+(?:[.,]\d{1,2})?)\s*(usd|dollars?|eur|euros?|gbp|pounds?)?\s*\.?\s*\z/iu,
+           text
          ) do
-      {max, currency} = max_price(request)
-      %{request: request, max: max, currency: currency || currency()}
+      [_, symbol, amount | rest] ->
+        word = List.first(rest)
+
+        {amount |> String.replace(",", ".") |> parse_amount(),
+         @symbols[symbol] || @words[word && String.downcase(word)]}
+
+      nil ->
+        nil
     end
   end
 

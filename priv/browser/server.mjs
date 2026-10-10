@@ -218,7 +218,8 @@ class UserError extends Error {}
 // ---------- acting ----------
 
 function target(p, ref) {
-  if (!ref) throw new UserError("give the element's ref from the snapshot, e.g. e12");
+  // A ref from a snapshot, never a label or a selector.
+  if (!ref || !/^(f\d+)?e\d+$/.test(String(ref))) throw new UserError(`"${ref}" isn't a ref: take a snapshot and use the element's ref, like e12`);
   return p.locator(`aria-ref=${ref}`);
 }
 
@@ -251,14 +252,25 @@ async function inspect(p, ref) {
   const info = await loc.first().evaluate((el, sel) => {
     const abs = (u) => { try { return new URL(u, location.href).href; } catch { return null; } };
     const form = el.form || el.closest("form");
+    const submit = form?.querySelector('button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]');
     const isSubmit = (el.tagName === "BUTTON" && (el.type || "submit") === "submit") ||
       (el.tagName === "INPUT" && ["submit", "image"].includes(el.type));
     const fields = form ? [...form.elements].map((f) => ({ tag: f.tagName.toLowerCase(), type: f.type || "", name: f.name || "", autocomplete: f.autocomplete || "" })) : [];
+    // Context for the decision maker, without copying field values or scripts.
+    // Work on a clone so observing never fires a page's input/change handlers.
+    const region = el.closest("form, fieldset, section, article, main") || el.parentElement || el;
+    const clone = region.cloneNode(true);
+    clone.querySelectorAll("input, textarea, select, script, style, iframe").forEach(n => n.remove());
+    const contextText = (clone.textContent || "").replace(/\s+/g, " ").trim();
+    const label = el.getAttribute("aria-label") || [...(el.labels || [])].map(l => l.innerText).join(" ") ||
+      el.innerText || (el.type === "submit" ? el.value : "") || el.title || "";
     return {
       tag: el.tagName.toLowerCase(),
       type: el.type || "",
       role: el.getAttribute("role") || "",
-      text: (el.innerText || el.value && el.type === "submit" && el.value || el.getAttribute("aria-label") || el.title || "").trim().slice(0, 200),
+      text: label.trim().slice(0, 200),
+      context: contextText.slice(0, 2000),
+      contextTruncated: contextText.length > 2000,
       href: el.closest("a[href]") ? abs(el.closest("a[href]").getAttribute("href")) : null,
       sensitive: el.matches(sel),
       isSubmit,
@@ -266,6 +278,7 @@ async function inspect(p, ref) {
       form: form ? {
         action: abs(form.getAttribute("action") || location.href),
         method: (form.getAttribute("method") || "get").toLowerCase(),
+        submitText: submit ? (submit.innerText || submit.value || submit.getAttribute("aria-label") || "").trim().slice(0, 200) : null,
         fields,
         hasPassword: fields.some((f) => f.type === "password"),
         hasPayment: [...form.querySelectorAll(sel)].some((f) => f.type !== "password"),
@@ -274,7 +287,7 @@ async function inspect(p, ref) {
       page: location.href,
     };
   }, SENSITIVE);
-  return { ...info, dialog: dialog ? { type: dialog.type(), message: dialog.message() } : null };
+  return { ...info, text: redact(info.text), context: redact(info.context), dialog: null };
 }
 
 // ---------- checkout pages ----------
@@ -301,14 +314,26 @@ async function checkout(p) {
   const totalLine = totals[totals.length - 1];
   const total = totalLine ? amounts(totalLine).slice(-1)[0] : null;
 
-  const notItem = /total|tax|vat|shipping|delivery|postage|discount|subtotal|you save|balance/i;
-  const items = priced.filter((l) => !notItem.test(l)).slice(0, 15);
+  const notItem = /total|tax|vat|shipping|delivery|postage|discount|subtotal|you save|balance|items?:/i;
+  // A price on a line of its own (as on Amazon's checkout) belongs to the
+  // title just above it.
+  const items = [];
+  lines.forEach((l, i) => {
+    if (!amounts(l).length || notItem.test(l)) return;
+    const priceOnly = l.replace(MONEY, "").replace(/[^\p{L}]/gu, "") === "";
+    const above = lines[i - 1];
+    if (priceOnly && above && !amounts(above).length && !notItem.test(above)) items.push(`${above} — ${l}`);
+    else if (!priceOnly) items.push(l);
+  });
+  items.splice(15);
 
   const shipAt = lines.findIndex((l) => /ship(ping)? to|deliver(y|ing)? to|shipping address|delivery address/i.test(l));
   const shipTo = shipAt >= 0 ? lines.slice(shipAt, shipAt + 3).join(", ") : null;
 
   // A card saved at the shop: the chosen option counts, not the first one listed.
-  const CARD = /(visa|mastercard|amex|american express|discover|card)\b.*(ending|••|\*\*|x{2,}).*\d{4}/i;
+  // "Visa ending in 4242", "Mastercard ••••2701", "Mastercard 2701", or a brand
+  // with "ending in 2701" on the next line.
+  const CARD = /(visa|master ?card|amex|american express|discover|debit card|credit card)\b[^\n]*?\b\d{4}\b/i;
   const chosen = await p.evaluate((pattern) => {
     const re = new RegExp(pattern, "i");
     for (const input of document.querySelectorAll("input[type=radio]:checked")) {
@@ -317,7 +342,9 @@ async function checkout(p) {
     }
     return null;
   }, CARD.source);
-  const payment = chosen || lines.find((l) => CARD.test(l)) || null;
+  const brandThenEnding = lines.findIndex((l, i) => /^(.*\b)?ending (in )?\d{4}\b/i.test(l) && i > 0 && /(visa|master ?card|amex|american express|discover|debit|credit)/i.test(lines[i - 1]));
+  const payment = chosen || lines.find((l) => CARD.test(l) && !/total|order/i.test(l)) ||
+    (brandThenEnding > 0 ? `${lines[brandThenEnding - 1]} ${lines[brandThenEnding]}` : null);
 
   // Card fields on the page: how many, and whether any is still empty. Never
   // their values.
