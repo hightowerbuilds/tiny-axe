@@ -52,7 +52,7 @@ defmodule TinyAxe.ModelCLITest do
 
       {:ok, text} =
         Model.stream_chat(@conversation, &send(me, {:delta, &1}),
-          use: {:claude, "sonnet"},
+          use: {:claude, "claude-haiku-5-5"},
           on_usage: &send(me, {:usage, &1})
         )
 
@@ -64,7 +64,7 @@ defmodule TinyAxe.ModelCLITest do
       reply = echoed(text)
       args = reply["args"]
       assert "-p" in args
-      assert after_flag(args, "--model") == "sonnet"
+      assert after_flag(args, "--model") == "claude-haiku-5-5"
       assert after_flag(args, "--tools") == ""
       assert "--safe-mode" in args and "--strict-mcp-config" in args
       assert "--no-session-persistence" in args
@@ -223,7 +223,7 @@ defmodule TinyAxe.ModelCLITest do
   end
 
   test "roles, labels, and which models leave the machine" do
-    assert [{:claude, "claude-haiku-5-5"} | _] = Model.role(:escalate)
+    assert Model.role(:escalate) == [{:claude, "claude-haiku-5-5"}]
     assert Model.role(:agent) == {:claude, "claude-haiku-5-5"}
     assert Model.label({:claude, "claude-haiku-5-5"}) == "Claude Haiku 5.5"
     assert Model.label({:claude, "haiku"}) == "Claude haiku"

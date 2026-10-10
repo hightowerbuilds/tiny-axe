@@ -92,10 +92,12 @@ defmodule TinyAxe.TUIEscalationTest do
       running()
       |> event({:escalate, %{to: "Claude haiku", reason: "the code still failed its check"}})
       |> event(
-        {:escalate_skipped, %{to: "Claude sonnet", reason: "the claude subscription is at 93%"}}
+        {:escalate_skipped,
+         %{to: "Claude Haiku 5.5", reason: "the claude subscription is at 93%"}}
       )
       |> event(
-        {:escalate_skipped, %{to: "Claude sonnet", reason: "the claude subscription is at 93%"}}
+        {:escalate_skipped,
+         %{to: "Claude Haiku 5.5", reason: "the claude subscription is at 93%"}}
       )
       |> event({:escalate_failed, %{to: "Codex gpt-6-luna", reason: {:not_logged_in, :codex}}})
       |> event({:answered_by, %{model: "Claude haiku"}})

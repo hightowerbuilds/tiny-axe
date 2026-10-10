@@ -10,6 +10,11 @@ strongest agent loop, with every call through one gate. Phase 11, the first
 real purchase, is prepared (see "Phase 11: preparation"). It's waiting for the
 user, who chooses the shop and the item and buys while watching.
 
+Models (2026-10-09): Claude Haiku 5.5 (`claude-haiku-5-5`, pinned by full
+name) is the only Claude model. It drives the agent and is the one escalation
+rung: Gemma → Haiku 5.5, no Sonnet. Jev stays the decider. Mentions of Sonnet
+below are history (Phase 0/1 measurements) or superseded plans.
+
 Three pieces of work, which depend on each other in this order:
 
 - **A. Claude and Codex as models**: run through the subscription CLIs
@@ -54,9 +59,12 @@ names its own model:
 ```elixir
 config :tiny_axe, :models,
   default: {:ollama, "gemma4:e4b-it-qat"},
-  escalate: [{:claude, "haiku"}, {:claude, "sonnet"}],
-  browser: {:claude, "haiku"}
+  escalate: [{:claude, "claude-haiku-5-5"}],
+  agent: {:claude, "claude-haiku-5-5"}
 ```
+
+(Updated 2026-10-09: as built, the browser role is `agent:`, and Sonnet was
+dropped from the ladder.)
 
 ### How each CLI is run
 
@@ -95,8 +103,9 @@ could use their own tools, they would go around every rule in this repo.
   `Decider.Local`. Jev is also fast and built for the job.
 - **Gemma stays the default generator.** It's free, private and fast for the
   tasks it passes (32 of 34 in the last eval).
-- **Escalation ladder: Gemma → Haiku → Sonnet**, triggered by evidence rather
-  than by a guess:
+- **Escalation ladder: Gemma → Haiku 5.5** (Sonnet was dropped on
+  2026-10-09; Haiku 5.5 is the only Claude model), triggered by evidence
+  rather than by a guess:
   - code still fails its check after the local attempts
   - every attempt falls below the verifier's threshold
   - the Organizer or Commander couldn't make a working plan within its rounds
@@ -156,7 +165,8 @@ too.
 ### Phase 2: what was built (2026-09-29)
 
 - **`TinyAxe.Escalation`** holds the ladder (`config :tiny_axe, :models,
-  escalate:`, which defaults to Claude haiku, then Claude sonnet), the
+  escalate:`, which defaulted to Claude haiku, then Claude sonnet; since
+  2026-10-09 it's one rung, Claude Haiku 5.5), the
   `:escalate` switch, and permission for each rung. A rung that leaves the
   machine needs two things:
   - **your say-so for the session:** `:ask`, `:allowed` or `:denied`
@@ -462,7 +472,7 @@ The browser and purchase work is never tested on real shops.
 - **Scripted fakes** of `claude` and `codex` (shell scripts that print their
   JSON event formats) test the backends without using the subscription.
 - `mix tiny_axe.eval` gains:
-  - browser tasks against the fixture shop, comparing Gemma, Haiku, Sonnet
+  - browser tasks against the fixture shop, comparing Gemma, Haiku 5.5
     and a Codex model as the driver (success, steps, time, calls that left the
     machine)
   - escalation tasks, where Gemma fails and a larger model may fix it
@@ -534,9 +544,10 @@ Each phase ends with its tests passing, as with the file operations.
 
 ## Open decisions (2026-10-04)
 
-- **The agent's driver** (`config :tiny_axe, :models, agent:`, Haiku for now):
-  Claude Sonnet is recommended for capability, and the eval can decide whether
-  Haiku is enough for simple reads.
+- **The agent's driver** (`config :tiny_axe, :models, agent:`): decided
+  2026-10-09: Claude Haiku 5.5, and no Sonnet anywhere (the agent or
+  escalation). The earlier recommendation of Sonnet for capability is
+  dropped.
 - **Which real MCP servers to connect** (Phase 8 built the tooling): the user
   picks. GitHub needs a token in the keyring.
 
@@ -549,7 +560,8 @@ The user went with the recommendations:
      resolves to `claude-haiku-5-5`; the agent and the first escalation rung
      are pinned to `claude-haiku-5-5`, with Jev still the decider.)
    - `sonnet` resolves to `claude-sonnet-5`. There is no Sonnet 5.5; the
-     alias follows the latest Sonnet.
+     alias follows the latest Sonnet. (2026-10-09: Sonnet is no longer used;
+     Haiku 5.5 is the only Claude model.)
    - Luna is Codex's `gpt-6-luna`.
 2. **What may leave the machine:** escalations and the browser driver. The
    verifier stays with Jev. tiny-axe asks once per session before the first

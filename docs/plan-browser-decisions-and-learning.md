@@ -5,7 +5,9 @@ classification benchmark and gate repairs; Phase 1 added bounded evidence,
 task context, versioned decision traces, Jev metadata and criteria, and
 answer validation (see "Phase 1 built"). Phases 2–5 remain pending: shared
 decision tools, execution binding, outcome verification, candidate
-selection, and validated memory. It builds on
+selection, and validated memory. The browser agent's driver is Claude
+Haiku 5.5, the only Claude model tiny-axe uses (no Sonnet); Jev makes the
+decisions. It builds on
 [the browser and CLI model plan](plan-browser-and-cli-models.md) and preserves
 the browser and purchase changes already in the working tree.
 

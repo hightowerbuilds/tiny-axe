@@ -2,8 +2,8 @@ defmodule TinyAxe.Escalation do
   @moduledoc """
   When a request goes up to a bigger model, and whether it may.
 
-  The ladder (`config :tiny_axe, :models, escalate: [...]`, e.g. Claude haiku,
-  then Claude sonnet) is climbed only on evidence that the local model fell
+  The ladder (`config :tiny_axe, :models, escalate: [...]`; by default one
+  rung, Claude Haiku 5.5) is climbed only on evidence that the local model fell
   short: code that still fails its check, no attempt the verifier accepts, a
   plan that couldn't be made to work. Each rung starts the request afresh.
 

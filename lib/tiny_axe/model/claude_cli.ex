@@ -9,8 +9,8 @@ defmodule TinyAxe.Model.ClaudeCLI do
   (`--safe-mode`; `--bare` would skip the subscription login) and our own
   system prompt, so it's a model, not an agent: tiny-axe keeps the tools.
 
-  `opts`: `:model` (an alias such as `haiku` or `sonnet`, or a full name),
-  `:format` (a JSON Schema: the answer is that JSON, as text), `:on_usage`
+  `opts`: `:model` (a full name such as `claude-haiku-5-5`, or an alias such
+  as `haiku`), `:format` (a JSON Schema: the answer is that JSON, as text), `:on_usage`
   (also gets `:quota`, the subscription's usage windows). Temperature isn't
   available here and is ignored. See docs/plan-browser-and-cli-models.md for
   the event format this reads.

@@ -1,7 +1,7 @@
 defmodule TinyAxe.EscalationTest do
   @moduledoc """
-  Escalation: when the local model falls short, the ladder (Claude haiku, then
-  sonnet) is tried, if the user allows it. The local model is scripted; the
+  Escalation: when the local model falls short, the ladder (one rung, Claude
+  Haiku 5.5) is tried, if the user allows it. The local model is scripted; the
   bigger models are the fake `claude` (test/support/fake_cli), which answers
   with what it was given, so no test uses a real subscription.
   """
@@ -190,18 +190,14 @@ defmodule TinyAxe.EscalationTest do
       assert done(events) == "local 2"
     end
 
-    test "if haiku falls short too, sonnet is next; if both do, the best attempt overall wins" do
+    test "if haiku falls short too, there's no other rung, and the best attempt overall wins" do
       script(claude_ok: false)
       events = run("Something hard", :allowed)
 
-      assert [
-               %{to: "Claude Haiku 5.5"},
-               %{to: "Claude sonnet", reason: "Claude Haiku 5.5 fell short too"}
-             ] =
-               all(events, :escalate)
+      assert [%{to: "Claude Haiku 5.5"}] = all(events, :escalate)
 
-      # Two attempts each for haiku and sonnet; none beat local 2's 50.
-      assert length(all(events, :attempt)) == 7
+      # Three local attempts and two for haiku; none beat local 2's 50.
+      assert length(all(events, :attempt)) == 5
       assert done(events) == "local 2"
       refute Enum.any?(events, &match?({:answered_by, _}, &1))
     end
@@ -221,7 +217,7 @@ defmodule TinyAxe.EscalationTest do
       script()
       events = run("SCENARIO:not_logged_in Something hard", :allowed)
 
-      assert [%{to: "Claude Haiku 5.5", reason: {:not_logged_in, :claude}}, %{to: "Claude sonnet"}] =
+      assert [%{to: "Claude Haiku 5.5", reason: {:not_logged_in, :claude}}] =
                all(events, :escalate_failed)
 
       assert done(events) == "local 2"
