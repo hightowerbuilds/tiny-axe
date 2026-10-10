@@ -32,3 +32,7 @@ config :tiny_axe, purchases_config: Path.join(System.tmp_dir!(), "tiny_axe_test_
 # No candidate checks unless a test turns them on (TinyAxe.Browser.Choices),
 # so other tests' scripted deciders see only the questions they expect.
 config :tiny_axe, browser_choose: :off
+
+# No example retrieval unless a test turns it on (TinyAxe.Browser.Examples),
+# so other tests' journals and results are as before.
+config :tiny_axe, browser_examples: :off, browser_examples_persist: false

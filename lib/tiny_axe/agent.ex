@@ -57,7 +57,13 @@ defmodule TinyAxe.Agent do
     case Gate.open_task(notify, intent: intent, objective: objective(prompt, history)) do
       {:ok, task} ->
         try do
-          request = %{prompt: prompt, history: history, system: system_prompt(servers)}
+          # Reviewed examples for this request's workflow, when retrieval is
+          # on (TinyAxe.Browser.Examples): the same for every driver.
+          request = %{
+            prompt: prompt,
+            history: history,
+            system: system_prompt(servers, Gate.briefing(task.id))
+          }
 
           # The driver's own text is held back: the user sees the answer only
           # once the completion step has checked it. Tool lines still stream.
@@ -158,12 +164,16 @@ defmodule TinyAxe.Agent do
 
   @doc false
   # Every driver gets this same prompt, with the browser's decision tool
-  # explained the same way when the task has a browser; the gate enforces
+  # explained the same way when the task has a browser, and any reviewed
+  # examples retrieved for it (`briefing`, advice only); the gate enforces
   # the checks whatever a driver makes of it.
-  def system_prompt(servers) do
+  def system_prompt(servers, briefing \\ "") do
     browser =
       if Enum.any?(MCP.tools(servers), &(&1.policy["browser"] == true)),
-        do: "\n\n" <> TinyAxe.Browser.Decisions.instructions(),
+        do:
+          "\n\n" <>
+            TinyAxe.Browser.Decisions.instructions() <>
+            if(briefing in [nil, ""], do: "", else: "\n\n" <> briefing),
         else: ""
 
     """

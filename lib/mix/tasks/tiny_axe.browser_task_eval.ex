@@ -29,7 +29,9 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
   `--choose off|shadow|on` sets candidate selection for the run
   (`TinyAxe.Browser.Choices`; default the configured one), and
   `--choose-hints` / `--no-choose-hints` whether the gate's own candidate
-  check is shown to the agent when it's on.
+  check is shown to the agent when it's on. `--examples off|shadow|on` sets
+  reviewed-example retrieval (`TinyAxe.Browser.Examples`; default the
+  configured one); runs use the shipped curated set and never persist.
 
   A JSON report goes to `eval/results/` (or `--output`): resolved models,
   the git commit, the caps and what was used, a summary per split, and a
@@ -57,7 +59,8 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
           tasks: :string,
           output: :string,
           choose: :string,
-          choose_hints: :boolean
+          choose_hints: :boolean,
+          examples: :string
         ]
       )
 
@@ -102,8 +105,16 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
         other -> Mix.raise("unknown --choose #{inspect(other)} (off, shadow or on)")
       end
 
+    examples =
+      case opts[:examples] do
+        nil -> nil
+        mode when mode in ~w(off shadow on) -> String.to_atom(mode)
+        other -> Mix.raise("unknown --examples #{inspect(other)} (off, shadow or on)")
+      end
+
     Mix.shell().info(
       "#{length(tasks)} tasks × #{repeat}, driver #{label(driver)}, decider #{inspect(decider)}, " <>
+        "examples #{examples || TinyAxe.Browser.Examples.mode()}, " <>
         "choose #{choose || TinyAxe.Browser.Choices.mode()}" <>
         if(opts[:choose_hints] != nil, do: " (hints #{opts[:choose_hints]})", else: "") <>
         "; " <>
@@ -120,6 +131,7 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
         max_minutes: opts[:max_minutes] || 10,
         choose: choose,
         choose_hints: opts[:choose_hints],
+        examples: examples,
         on_result: &Mix.shell().info(line(&1))
       )
 
@@ -204,7 +216,8 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
 
     "#{mark} #{String.pad_trailing(r.id, 28)} #{String.pad_trailing(to_string(r.split), 8)}" <>
       "#{Float.round(r.efficiency.wall_ms / 1000, 1)}s  calls×#{r.tool_calls} jev×#{r.efficiency.jev_calls} " <>
-      "asked×#{r.approval.prompts} choose×#{r.choices.agent}/#{r.choices.checks} held×#{r.choices.held} #{flags}"
+      "asked×#{r.approval.prompts} choose×#{r.choices.agent}/#{r.choices.checks} held×#{r.choices.held} " <>
+      "examples×#{length(r.examples.start)}/#{length(r.examples.step)}#{if TaskEval.confirmed?(r), do: " confirmed", else: ""} #{flags}"
   end
 
   defp summary(report) do
@@ -216,6 +229,9 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
 
       """
       #{split}: completed #{s.completed}/#{s.scored} (95% CI #{inspect(s.completion_ci95)}); \
+      confirmed #{s.confirmed_completed}/#{s.scored} (95% CI #{inspect(s.confirmed_ci95)}); \
+      agent verified #{s.agent_verified.confirmed}/#{s.agent_verified.sent} sends \
+      (all in #{s.agent_verified.runs_all_confirmed}/#{s.agent_verified.runs_with_sends} runs); \
       dangerous misses #{s.dangerous_misses}; unwanted effects #{s.unwanted_effects}; \
       false completions #{s.false_completions} (#{s.claims_unjudged} unjudged); \
       false alarms #{s.false_alarms} (replies #{s.replies.delivered} delivered, \
@@ -224,7 +240,8 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
       #{s.approval.declined} declined, #{s.approval.handoffs} handoffs); \
       abstained usefully #{s.useful_abstention.abstained}/#{s.useful_abstention.of}; \
       recovered #{s.recovery.recovered}/#{s.recovery.runs_with_failed_calls}; \
-      choices #{s.choices.agent} asked by the agent, #{s.choices.checks} by the gate (#{s.choices.held} held)
+      choices #{s.choices.agent} asked by the agent, #{s.choices.checks} by the gate (#{s.choices.held} held); \
+      examples #{s.examples.start} at start, #{s.examples.step} after calls (shown in #{s.examples.runs_shown} runs)
         tool calls #{e.tool_calls}, decider calls #{e.jev_calls} (+#{e.evaluator_jev_calls} scoring), \
       decision p50/p95 #{e.decision_ms_p50 || "–"}/#{e.decision_ms_p95 || "–"} ms, \
       task p50/p95 #{secs(e.wall_ms_p50)}/#{secs(e.wall_ms_p95)}\

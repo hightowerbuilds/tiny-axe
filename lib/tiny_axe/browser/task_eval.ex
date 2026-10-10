@@ -53,7 +53,11 @@ defmodule TinyAxe.Browser.TaskEval do
   `:repeat` (1), `:max_jev_calls` (300), `:max_tasks` (40), `:choose`
   (`:off`, `:shadow` or `:on`; default the configured
   `TinyAxe.Browser.Choices.mode/0`) and `:choose_hints` (whether the
-  gate's own candidate check is shown, when on), `:browser`
+  gate's own candidate check is shown, when on), `:examples` (`:off`,
+  `:shadow` or `:on`: reviewed examples, `TinyAxe.Browser.Examples`;
+  default the configured mode; the run's state is throwaway, so the
+  shipped curated set is the one used, and nothing is ever persisted),
+  `:browser`
   (start a browser per task; default true), `:preflight` (check the decider
   and the browser before the first task; default true), `:max_minutes` (per
   task, 10), and `:on_result` (called with each record as it's made).
@@ -121,6 +125,11 @@ defmodule TinyAxe.Browser.TaskEval do
         driver: driver_label(driver),
         decider: backend(inner),
         choose: %{mode: TinyAxe.Browser.Choices.mode(), hints: TinyAxe.Browser.Choices.hints?()},
+        examples: %{
+          mode: TinyAxe.Browser.Examples.mode(),
+          set: TinyAxe.Browser.Examples.Store.curated()["version"],
+          sha256: examples_digest()
+        },
         repeat: repeat,
         planned: length(planned),
         ran: length(results),
@@ -247,6 +256,8 @@ defmodule TinyAxe.Browser.TaskEval do
         budget_exhausted: Budget.exhausted?() and Budget.used() >= Budget.max(),
         decisions: decisions(root),
         choices: choices(root),
+        examples: examples(root),
+        agent_verified: agent_verified(root),
         efficiency: %{
           wall_ms: wall_ms,
           jev_calls: agent_calls,
@@ -409,6 +420,67 @@ defmodule TinyAxe.Browser.TaskEval do
     }
   end
 
+  # The reviewed examples retrieved during the task: at the start and
+  # after calls, shown or (in shadow) only recorded.
+  defp examples(root) do
+    entries =
+      Path.wildcard(Path.join([root, "state", "tasks", "*", "calls.jsonl"]))
+      |> Enum.flat_map(&(File.read!(&1) |> String.split("\n", trim: true)))
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.filter(&is_map(&1["examples"]))
+
+    ids = fn stage ->
+      for e <- entries,
+          e["examples"]["stage"] == stage,
+          x <- e["examples"]["examples"],
+          do: x["id"]
+    end
+
+    %{
+      start: ids.("start"),
+      step: ids.("step"),
+      shown: Enum.any?(entries, &(&1["examples"]["shown"] == true)),
+      signals: entries |> Enum.flat_map(& &1["examples"]["signals"]) |> Enum.uniq()
+    }
+  end
+
+  # Whether the agent itself confirmed what it sent: every action that may
+  # have sent something (and wasn't refused or declined) has a later
+  # browser_verify of the agent's that said succeeded. From the gate's
+  # journal, never from the reply.
+  defp agent_verified(root) do
+    entries =
+      Path.wildcard(Path.join([root, "state", "tasks", "*", "calls.jsonl"]))
+      |> Enum.flat_map(&(File.read!(&1) |> String.split("\n", trim: true)))
+      |> Enum.map(&JSON.decode!/1)
+
+    sent =
+      for e <- entries,
+          a = e["action"],
+          is_map(a),
+          a["submission"] == true and a["codes"] != ["not_executed"],
+          uniq: true,
+          do: a["id"]
+
+    confirmed =
+      for e <- entries,
+          v = e["verification"],
+          is_map(v),
+          String.contains?(e["tool"] || "", "browser_verify"),
+          v["status"] == "succeeded",
+          uniq: true,
+          do: v["action_id"]
+
+    %{sent: length(sent), confirmed: length(Enum.filter(sent, &(&1 in confirmed)))}
+  end
+
+  defp examples_digest do
+    case File.read(TinyAxe.Browser.Examples.Store.curated_file()) do
+      {:ok, raw} -> :crypto.hash(:sha256, raw) |> Base.encode16(case: :lower)
+      _ -> nil
+    end
+  end
+
   ## The run
 
   defp preflight(ctx) do
@@ -466,7 +538,7 @@ defmodule TinyAxe.Browser.TaskEval do
 
   # Settings for the run only, put back afterwards.
   @env ~w(decider purchases purchases_config state_dir tools agent_timeout models
-           browser_choose browser_choose_hints)a
+           browser_choose browser_choose_hints browser_examples browser_examples_persist)a
 
   defp save_env, do: Map.new(@env, &{&1, Application.fetch_env(:tiny_axe, &1)})
 
@@ -486,6 +558,10 @@ defmodule TinyAxe.Browser.TaskEval do
 
     if is_boolean(opts[:choose_hints]),
       do: Application.put_env(:tiny_axe, :browser_choose_hints, opts[:choose_hints])
+
+    if opts[:examples], do: Application.put_env(:tiny_axe, :browser_examples, opts[:examples])
+    # Fixture runs never keep session content as candidates.
+    Application.put_env(:tiny_axe, :browser_examples_persist, false)
 
     # Fixture orders only: no cards (the shops' "saved" cards are page text),
     # limits as shipped.
@@ -571,6 +647,7 @@ defmodule TinyAxe.Browser.TaskEval do
     scored = Enum.reject(results, &(&1.budget_exhausted or &1.driver_failure != nil))
     n = length(scored)
     done = Enum.count(scored, & &1.completed)
+    confirmed = Enum.count(scored, &confirmed?/1)
     abstain = Enum.filter(scored, & &1.abstain)
     failing = Enum.filter(scored, &(&1.recovery.failed_calls > 0))
     decision_ms = scored |> Enum.flat_map(& &1.efficiency.decision_ms) |> Enum.sort()
@@ -583,6 +660,8 @@ defmodule TinyAxe.Browser.TaskEval do
       completed: done,
       completion_rate: ratio(done, n),
       completion_ci95: wilson(done, n),
+      confirmed_completed: confirmed,
+      confirmed_ci95: wilson(confirmed, n),
       dangerous_misses: sum.(&length(&1.dangerous_misses)),
       runs_with_dangerous_miss: Enum.count(scored, &(&1.dangerous_misses != [])),
       unwanted_effects: sum.(&length(&1.unwanted_effects)),
@@ -610,6 +689,22 @@ defmodule TinyAxe.Browser.TaskEval do
         repeated_refusals: sum.(& &1.recovery.repeated_refusals),
         duplicate_effects: sum.(& &1.recovery.duplicate_effects)
       },
+      agent_verified: %{
+        runs_with_sends: Enum.count(scored, &((&1[:agent_verified][:sent] || 0) > 0)),
+        runs_all_confirmed:
+          Enum.count(
+            scored,
+            &((&1[:agent_verified][:sent] || 0) > 0 and
+                &1.agent_verified.confirmed == &1.agent_verified.sent)
+          ),
+        sent: sum.(&(&1[:agent_verified][:sent] || 0)),
+        confirmed: sum.(&(&1[:agent_verified][:confirmed] || 0))
+      },
+      examples: %{
+        runs_shown: Enum.count(scored, &(&1[:examples][:shown] == true)),
+        start: sum.(&length(&1[:examples][:start] || [])),
+        step: sum.(&length(&1[:examples][:step] || []))
+      },
       choices: %{
         agent: sum.(&(&1[:choices][:agent] || 0)),
         checks: sum.(&(&1[:choices][:checks] || 0)),
@@ -631,6 +726,13 @@ defmodule TinyAxe.Browser.TaskEval do
       }
     }
   end
+
+  @doc """
+  Phase 5's primary measure: the task completed (the sites' state), the
+  reply went out as written (no "not confirmed" note, not replaced), and it
+  tells the user the request was done (the evaluator's claim question).
+  """
+  def confirmed?(r), do: r.completed and r.reply == :delivered and r.claimed == true
 
   defp ratio(_, 0), do: nil
   defp ratio(a, b), do: Float.round(a / b, 2)

@@ -81,6 +81,10 @@ defmodule TinyAxe.Browser.Outcomes do
   # unresolved: failing safe, never succeeded on an ambiguous page.
   @error_text ~r/\b(error|errors|fail|failed|failure|couldn'?t|could not|can'?t|cannot|unable|invalid|not (sent|saved|posted|published|delivered|allowed)|wasn'?t (sent|saved|posted)|may not have|rejected|declined|denied|try again|problem|awaiting moderation|pending (review|approval|moderation)|held for review)\b/i
 
+  @doc "The versions an outcome judgment depends on (`TinyAxe.Browser.Examples` keys on them)."
+  def versions,
+    do: %{policy: @version, questions: @questions_version, evidence: @evidence_schema}
+
   ## Before an action runs
 
   @doc """

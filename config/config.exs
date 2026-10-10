@@ -97,6 +97,23 @@ config :tiny_axe, :browser,
 # measurements and why the default is what it is: docs/plan-browser-decisions-and-learning.md.
 config :tiny_axe, browser_choose: :shadow, browser_choose_hints: true
 
+# Validated memory (TinyAxe.Browser.Examples): reviewed, versioned lessons
+# from earlier tasks, a few retrieved for a task's workflow and for what its
+# browser calls came to, advice only (never consulted by policy, approvals
+# or purchases). :off; :shadow (retrieved and journaled, never shown); or
+# :on (shown to the driver in the system prompt and in call results, the
+# same for every driver). Separate from :browser_choose. Phase 5's
+# measurements and why the default is what it is:
+# docs/plan-browser-decisions-and-learning.md. Lessons from real sessions
+# are kept (as unvalidated candidates, with redacted evidence apart from
+# the journals for :browser_examples_retention_days) only with
+# :browser_examples_persist; a person promotes them with
+# `mix tiny_axe.browser_examples`.
+config :tiny_axe,
+  browser_examples: :shadow,
+  browser_examples_persist: false,
+  browser_examples_retention_days: 30
+
 # Purchases (TinyAxe.Purchases): off until the user turns them on. The agent
 # can only buy at a checkout tiny-axe reads itself, within these limits, after
 # the user types the exact total.

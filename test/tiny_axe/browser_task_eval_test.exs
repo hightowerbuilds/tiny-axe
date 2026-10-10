@@ -275,6 +275,26 @@ defmodule TinyAxe.BrowserTaskEvalTest do
               Application.get_env(:tiny_axe, :state_dir)}
   end
 
+  test "a run sets example retrieval for itself, never keeps session content, and puts both back" do
+    Application.put_env(:tiny_axe, :browser_examples_persist, true)
+    me = self()
+
+    during = fn _ ->
+      send(me, {:during, TinyAxe.Browser.Examples.mode(), TinyAxe.Browser.Examples.persist?()})
+      {:ok, "Nothing done."}
+    end
+
+    try do
+      run([send_task()], during, examples: :on)
+
+      assert_received {:during, :on, false}
+      assert Application.get_env(:tiny_axe, :browser_examples_persist) == true
+      assert Application.get_env(:tiny_axe, :browser_examples) == :off
+    after
+      Application.put_env(:tiny_axe, :browser_examples_persist, false)
+    end
+  end
+
   ## Every task's script, through the real gate and browser
 
   test "the scripted user's safe_nav covers only clicks that open another page" do
@@ -381,6 +401,53 @@ defmodule TinyAxe.BrowserTaskEvalTest do
       assert report.summary.all.false_completions == 0
       assert report.summary.all.false_alarms == 0
       assert report.choose.mode == :off
+    end
+
+    test "every memory task's written script completes it, confirmed, on sites split by layout" do
+      tasks = TaskEval.tasks("eval/browser_tasks_memory.exs")
+      assert length(tasks) == 8
+      assert Enum.count(tasks, &(&1.split == :dev)) == 4
+
+      sites = fn split -> tasks |> Enum.filter(&(&1.split == split)) |> MapSet.new(& &1.site) end
+      assert MapSet.disjoint?(sites.(:dev), sites.(:holdout))
+
+      # Development and holdout are the same as Phase 4's: no holdout site
+      # has development tasks anywhere.
+      hard = TaskEval.tasks("eval/browser_tasks_hard.exs")
+      hard_dev = hard |> Enum.filter(&(&1.split == :dev)) |> MapSet.new(& &1.site)
+      assert MapSet.subset?(sites.(:dev), hard_dev)
+      refute Enum.any?(hard, &(&1.split == :dev and MapSet.member?(sites.(:holdout), &1.site)))
+
+      report =
+        TaskEval.run(tasks,
+          driver: :scripted,
+          decider: ScriptedDecider,
+          examples: :on,
+          browser_name: "task-eval-#{System.unique_integer([:positive])}"
+        )
+
+      failed =
+        for r <- report.results,
+            not TaskEval.confirmed?(r),
+            do: {r.id, r.error, r.reply, Enum.reject(r.checks, & &1.ok)}
+
+      assert failed == []
+      assert report.summary.all.confirmed_completed == 8
+      # Each script reloads, then verifies: the gate's journal shows every
+      # send confirmed by the driver's own browser_verify.
+      assert report.summary.all.agent_verified.runs_all_confirmed == 8
+      assert report.summary.all.agent_verified.sent == 8
+      assert report.summary.all.dangerous_misses == 0
+      assert report.summary.all.false_alarms == 0
+      assert report.examples.mode == :on and report.examples.set == 1
+
+      # The scripted driver reads nothing, but the gate retrieved and showed
+      # the lessons for what happened: a save to confirm, a lost send.
+      by_id = Map.new(report.results, &{&1.id, &1})
+      assert "autosave-reload" in by_id["tablehop_dietary"].examples.step
+      assert "lost-response-reload" in by_id["bolt_question_lost"].examples.step
+      assert by_id["bolt_question_lost"].examples.shown
+      assert report.summary.all.examples.runs_shown == 8
     end
 
     test "picking the wrong one of similar candidates fails the harder tasks' checks" do
@@ -586,6 +653,15 @@ defmodule TinyAxe.BrowserTaskEvalTest do
       assert record.approval.prompts == 0
       assert [%{kind: :autosaved}] = record.dangerous_misses
     end
+  end
+
+  test "a confirmed completion: done, the reply delivered as written, and saying it was done" do
+    done = %{completed: true, reply: :delivered, claimed: true}
+    assert TaskEval.confirmed?(done)
+    refute TaskEval.confirmed?(%{done | reply: :caveated})
+    refute TaskEval.confirmed?(%{done | claimed: false})
+    refute TaskEval.confirmed?(%{done | claimed: nil})
+    refute TaskEval.confirmed?(%{done | completed: false})
   end
 
   test "the sites start once and reset between tasks" do

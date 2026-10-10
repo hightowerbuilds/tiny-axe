@@ -38,6 +38,13 @@ defmodule TinyAxe.Tools.Gate do
        checked the same way: recorded, and with hints, held once with a
        `choose_hint` when its target clearly doesn't fit. Advice only:
        nothing it says runs or approves anything
+    8. **examples** — after a browser call, the harness's own facts about it
+       (reason codes, what an action came to, what verification said, the
+       user saying no) retrieve a few reviewed examples
+       (`TinyAxe.Browser.Examples`), recorded in the journal and, when
+       retrieval is on, added to the call's result with the task's failed
+       and unresolved actions so far. Advice only: it's done after the call
+       was decided, and nothing in an example reaches a decision
 
   Each task leases its own browser tabs (`TinyAxe.Browser.bind/3`); closing
   the task frees them for the next one.
@@ -51,7 +58,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{Browser, MCP, Purchases, Tools}
-  alias TinyAxe.Browser.{Choices, Decisions, Outcomes}
+  alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
@@ -102,7 +109,10 @@ defmodule TinyAxe.Tools.Gate do
         actions: [],
         # The gate's own candidate checks before ambiguous clicks, by server,
         # observation and target signature: :held (shown once) or :passed.
-        candidate_checks: %{}
+        candidate_checks: %{},
+        # Reviewed examples retrieved for it (TinyAxe.Browser.Examples), by
+        # id: at the start (the system prompt) and after its calls.
+        examples: %{start: [], step: []}
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -112,15 +122,58 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  @doc "Closes a task; the browser tabs it held stay open, free for the next task."
+  @doc """
+  Closes a task; the browser tabs it held stay open, free for the next task.
+  With `:browser_examples_persist` on (off by default), its lesson-worthy
+  browser actions are kept as unvalidated candidates
+  (`TinyAxe.Browser.Examples.capture/2`).
+  """
   @spec close_task(String.t()) :: :ok
   def close_task(id) do
     case GenServer.call(__MODULE__, {:close, id}) do
-      %{leased: leased} -> Enum.each(leased, &Browser.release(&1, id))
-      _ -> :ok
+      %{leased: leased} = task ->
+        Enum.each(leased, &Browser.release(&1, id))
+        capture(task)
+
+      _ ->
+        :ok
     end
 
     :ok
+  end
+
+  defp capture(task) do
+    if Examples.persist?(), do: Examples.capture(task)
+  rescue
+    error -> Logger.warning("tiny-axe couldn't keep this task's examples: #{inspect(error)}")
+  end
+
+  @doc """
+  Reviewed examples for the start of a task with a browser, by the
+  workflow its request names (`TinyAxe.Browser.Examples`): text for the
+  shared system prompt when retrieval is on, "" otherwise. Retrieved and
+  journaled in shadow too.
+  """
+  @spec briefing(String.t()) :: String.t()
+  def briefing(id) do
+    mode = Examples.mode()
+
+    with true <- mode != :off,
+         %{} = task <- GenServer.call(__MODULE__, {:get, id}),
+         true <- Enum.any?(MCP.tools(task.servers), &browser?/1),
+         [_ | _] = picked <- Examples.retrieve(%{stage: :start, objective: task.objective}) do
+      ids = Enum.map(picked, & &1["id"])
+      :ok = GenServer.call(__MODULE__, {:examples, id, :start, ids})
+
+      Tools.Journal.append(id, %{
+        tool: "tiny-axe/examples",
+        examples: Examples.journal(mode, :start, [], picked)
+      })
+
+      if mode == :on, do: Examples.briefing(picked), else: ""
+    else
+      _ -> ""
+    end
   end
 
   @doc "The MCP config that gives a driver this task's gate and nothing else."
@@ -210,6 +263,16 @@ defmodule TinyAxe.Tools.Gate do
     {result, report} = take_report(result)
     action = settle(task, tool, args, assessment, decision, result, report)
     result = result |> note(action) |> Redact.result()
+
+    {result, examples} =
+      advise(task, tool, %{
+        assessment: assessment,
+        action: action,
+        verification: verification,
+        decision: decision,
+        result: result
+      })
+
     ms = System.monotonic_time(:millisecond) - t0
     error = result["isError"] == true
 
@@ -241,6 +304,7 @@ defmodule TinyAxe.Tools.Gate do
       verification: Outcomes.journal_verification(verification),
       choice: Choices.journal(choice),
       hint: judged[:hint],
+      examples: examples,
       decisions: traced,
       ms: ms
     })
@@ -266,6 +330,49 @@ defmodule TinyAxe.Tools.Gate do
 
     result
   end
+
+  # Reviewed examples for what this browser call came to: retrieved from
+  # the harness's own facts (never page text), after the call was decided,
+  # so nothing here can change it. Shown only when retrieval is on.
+  defp advise(task, tool, facts) do
+    mode = Examples.mode()
+
+    with true <- mode != :off and tool != nil and (browser?(tool) or gate?(tool)),
+         [_ | _] = signals <- Examples.signals(facts),
+         %{} = now <- GenServer.call(__MODULE__, {:get, task.id}) do
+      seen = now[:examples] || %{start: [], step: []}
+
+      picked =
+        Examples.retrieve(%{
+          stage: :step,
+          objective: now[:objective],
+          signals: signals,
+          shown: seen.step,
+          total: length(Enum.uniq(seen.start ++ seen.step))
+        })
+
+      if picked != [],
+        do:
+          :ok =
+            GenServer.call(__MODULE__, {:examples, task.id, :step, Enum.map(picked, & &1["id"])})
+
+      entry = Examples.journal(mode, :step, signals, picked)
+
+      result =
+        if mode == :on and picked != [],
+          do: append(facts.result, Examples.render(picked, Examples.attempts(now.actions))),
+          else: facts.result
+
+      {result, entry}
+    else
+      _ -> {facts.result, nil}
+    end
+  end
+
+  defp append(%{"content" => content} = result, text) when is_list(content),
+    do: %{result | "content" => content ++ [%{"type" => "text", "text" => text}]}
+
+  defp append(result, _text), do: result
 
   # Each decision record goes to the task's trace with what happened next;
   # returns their ids, for the call's journal entry.
@@ -1366,6 +1473,15 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
+
+  def handle_call({:examples, id, stage, ids}, _from, tasks),
+    do:
+      {:reply, :ok,
+       update_task(tasks, id, fn t ->
+         seen = t[:examples] || %{start: [], step: []}
+         Map.put(t, :examples, Map.update!(seen, stage, &Enum.uniq(&1 ++ ids)))
+       end)}
+
   def handle_call(:open_ids, _from, tasks), do: {:reply, Map.keys(tasks), tasks}
 
   def handle_call({:assessments, id}, _from, tasks),

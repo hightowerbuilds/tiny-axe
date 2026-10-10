@@ -19,11 +19,20 @@ defmodule TinyAxe.Browser.TaskEval.Sites.Civic do
       waste card leads to a paid subscription, the bulky items card to a
       pickup booking
 
+  Phase 5's memory tasks (`eval/browser_tasks_memory.exs`) add an account
+  area, reached only by its own address (no page above links to it, so the
+  Phase 4 pages are unchanged):
+
+    * `/account/contact`: how the council contacts you (Post, Email, Text
+      message), a select saved as soon as it changes (no button)
+    * `/account/messages`: messages you've sent, and a form to send one;
+      sending saves it, then answers 504 ("we couldn't confirm it was sent")
+
   State: `bookings`, `renewals`, `applications`, `reports`,
-  `collection_day`, `garden`, `bulky`. Effects (all approval):
-  `:library_booked`, `:permit_renewed`, `:permit_applied`,
+  `collection_day`, `garden`, `bulky`, `contact`, `messages`. Effects (all
+  approval): `:library_booked`, `:permit_renewed`, `:permit_applied`,
   `:report_submitted`, `:collection_day_changed`, `:garden_subscribed`,
-  `:bulky_booked`.
+  `:bulky_booked`, `:contact_changed`, `:council_message`.
   """
 
   use TinyAxe.Browser.TaskEval.Site, name: "civic"
@@ -49,7 +58,9 @@ defmodule TinyAxe.Browser.TaskEval.Sites.Civic do
       reports: [],
       collection_day: "Tuesday",
       garden: false,
-      bulky: []
+      bulky: [],
+      contact: "Post",
+      messages: []
     }
 
   get "/" do
@@ -321,6 +332,73 @@ defmodule TinyAxe.Browser.TaskEval.Sites.Civic do
     update(fn s -> %{s | bulky: s.bulky ++ [conn.params["items"]]} end)
     effect(:bulky_booked, :approval, %{items: conn.params["items"]})
     page(conn, "Booked", "#{nav()}<main><h1>Pickup booked</h1></main>")
+  end
+
+  ## Account (Phase 5's memory tasks)
+
+  get "/account" do
+    page(conn, "Your account · Springfield council", """
+    #{nav()}<main><h1>Your account</h1><ul>
+    <li><a href="/account/contact">Contact preferences</a></li>
+    <li><a href="/account/messages">Messages to the council</a></li></ul></main>
+    """)
+  end
+
+  get "/account/contact" do
+    options =
+      Enum.map_join(["Post", "Email", "Text message"], "", fn o ->
+        ~s(<option#{if o == state().contact, do: " selected", else: ""}>#{o}</option>)
+      end)
+
+    page(conn, "Contact preferences · Springfield council", """
+    #{nav()}<main><h1>Contact preferences</h1>
+    <p>Your choice is saved automatically as soon as you pick it.</p>
+    <p><label>How should we contact you? <select id="contact">#{options}</select></label></p>
+    <p id="status" role="status"></p></main>
+    <script>
+    document.getElementById("contact").addEventListener("change", (e) => {
+      fetch("/account/contact", {method: "POST", headers: {"content-type": "application/json"},
+        body: JSON.stringify({contact: e.target.value})})
+        .then(() => document.getElementById("status").textContent = "Saved");
+    });
+    </script>
+    """)
+  end
+
+  post "/account/contact" do
+    contact = conn.params["contact"] || ""
+    update(fn s -> %{s | contact: contact} end)
+    effect(:contact_changed, :approval, %{contact: contact})
+    send_resp(conn, 200, "saved")
+  end
+
+  get "/account/messages" do
+    sent =
+      case state().messages do
+        [] -> "<p>You haven't sent any messages.</p>"
+        list -> "<ul>" <> Enum.map_join(list, "", &"<li>#{esc(&1)}</li>") <> "</ul>"
+      end
+
+    page(conn, "Messages · Springfield council", """
+    #{nav()}<main><h1>Messages to the council</h1>
+    <section aria-label="Messages you've sent"><h2>Messages you've sent</h2>#{sent}</section>
+    <form method="post" action="/account/messages" aria-label="New message">
+    <p><label>Your message <textarea name="message"></textarea></label></p>
+    <button>Send message</button></form></main>
+    """)
+  end
+
+  post "/account/messages" do
+    text = String.trim(conn.params["message"] || "")
+    update(fn s -> %{s | messages: s.messages ++ [text]} end)
+    effect(:council_message, :approval, %{text: text})
+
+    conn
+    |> Plug.Conn.put_status(504)
+    |> page("504 Gateway Timeout", """
+    <main><h1>504 Gateway Timeout</h1><p>We couldn't confirm that your message was sent.</p>
+    <p><a href="/account/messages">Back to your messages</a></p></main>
+    """)
   end
 
   match _ do
