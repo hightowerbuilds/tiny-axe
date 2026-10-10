@@ -1,6 +1,6 @@
 # Plan for browser decisions and learning with Jev
 
-Status (2026-10-10): Phases 0–4 are built. Phase 0 added the
+Status (2026-10-10): Phases 0–5 are built. Phase 0 added the
 classification benchmark and gate repairs; Phase 1 added bounded evidence,
 task context, versioned decision traces, Jev metadata and criteria, and
 answer validation (see "Phase 1 built"); Phase 2 added the shared
@@ -14,8 +14,16 @@ one of several similar controls, shared driver examples, and 16 harder
 tasks on four new sites (see "Phase 4 built"). Holdout completion didn't
 improve (14/16 before and after; Claude Haiku already chose every candidate
 correctly), so candidate selection ships in shadow mode
-(`config :tiny_axe, :browser_choose, :shadow`), not on. Phase 5 remains
-pending: validated memory. The browser agent's driver is Claude
+(`config :tiny_axe, :browser_choose, :shadow`), not on. Phase 5 added
+validated memory: curated, versioned examples, retrieval for every driver,
+promotion rules, retention and rollback, and 8 memory tasks (see "Phase 5
+built"). Retrieval changed what the agent did (it confirmed its own sends
+9/12 times on holdout, from 0/12) but not the pre-registered holdout
+outcome (confirmed completions 9/12 off, 8/12 on; completion 12/12 both),
+so it ships in shadow mode (`config :tiny_axe, :browser_examples,
+:shadow`), not on. Learning has not shown a measured improvement on
+held-out workflows, so the build's last completion condition (see
+"Rollout and completion") isn't met. The browser agent's driver is Claude
 Haiku 5.5, the only Claude model tiny-axe uses (no Sonnet); Jev makes the
 decisions. It builds on
 [the browser and CLI model plan](plan-browser-and-cli-models.md) and preserves
@@ -645,6 +653,154 @@ decision traces, and thresholds remain provisional.
   controls' over-protection of a pay-in-store reservation; validated
   memory (Phase 5).
 
+## Phase 5 built
+
+- **Examples** (`TinyAxe.Browser.Examples`, files in
+  `TinyAxe.Browser.Examples.Store`): `browser-example/1`, one chain each:
+  objective and constraints → observed evidence → candidate actions → Jev
+  answers → policy disposition → executed action → verified result →
+  correction, with its workflows, signals, label and the versions it was
+  learned under (evidence schema, policy, effect and outcome questions).
+  The curated set (`priv/browser/examples.json`, version 1) has 7 synthetic
+  examples written from development tasks and sites only, each labelled
+  with the dev task whose fixture check validates it: a setting that saves
+  itself, a send whose response was lost, a purchase over the limit
+  (abstention), two items that fit (abstention), a list redrawn in place
+  (stale ref, repaired), a page instructing assistants, options chosen by
+  default. No user-denial example: no dev fixture asserts one.
+- **Trust rules** (`validate/1`, `promote/3`): only a fixture assertion
+  (a dev task's check that passed; holdout refused) or a person's review
+  (`mix tiny_axe.browser_examples promote ID --reviewer NAME`) makes an
+  example trusted. User approval, tool success, Jev agreement and an
+  agent's report are refused by name. Unresolved or pending results are
+  refused. A correction comes only from a curator, a reviewer or fixed
+  templates keyed by the harness's reason codes, never page or agent text.
+  No element ref or `asm-`/`act-`/`ver-`/`cho-`/`dec-`/`obs-` id anywhere
+  (also stripped from what's shown). A fixed shape: no field can carry a
+  threshold, policy or approval. Only examples learned under the current
+  versions, and not expired, are retrieved.
+- **Retrieval** (`config :tiny_axe, :browser_examples` `:off | :shadow |
+  :on`, separate from `:browser_choose`):
+  - at the start: up to 2 examples by the workflow the user's own words
+    name (addresses ignored), in the shared system prompt
+    (`Gate.briefing/1`);
+  - after a browser call: signals from the harness's own facts (refusal
+    codes, an edit that sent something, outcome and verification codes, the
+    user saying no; never page text) retrieve up to 2 not yet shown, added
+    to the call's result with the task's failed and unresolved actions so
+    far (a compact view of Phase 3's action records, no new state);
+  - at most 4 per task. Shadow retrieves and journals
+    (`browser-examples-use/1` on the call's entry; a `tiny-axe/examples`
+    entry for the start) and shows nothing. The gate does this after the
+    call is decided and nothing reads it back: assessment, approvals,
+    holds, verification, completion and purchases are identical in every
+    mode.
+- **Store** (`<state>/browser_examples/`, 0700/0600, apart from the task
+  journals): every change (promote, delete, restore, expire, rollback)
+  writes a new set version; deleted examples go to `trash/`; `expire`
+  takes expired ones out and moves evidence and candidates older than
+  `:browser_examples_retention_days` (30) to the system Trash. Nothing is
+  destroyed. `mix tiny_axe.browser_examples` lists, shows, shows history,
+  deletes, restores, rolls back, expires, lists candidates and promotes.
+- **Real sessions**: `:browser_examples_persist`, default false. When on, a
+  closed task's lesson-worthy actions (failed, unresolved, or settled after
+  trouble, read from its journal) become candidates with a template
+  correction and their redacted evidence; never retrieved; an unresolved
+  one can't be promoted until settled. Evaluation runs force it off.
+- **Memory tasks** (`eval/browser_tasks_memory.exs`, 4 dev, 4 holdout, new
+  pages on the Phase 4 sites, reached by their own addresses so earlier
+  pages are unchanged): a setting that saves itself (dev: council contact
+  select, marketplace delivery text area; holdout: restaurant dietary text
+  area, hardware home-store select in a table) and a send whose response is
+  lost (dev: 502 seller question, 504 council message; holdout: 503
+  restaurant message, 502 product question). The 24 and 16 earlier tasks
+  were near-saturated; these are where tiny-axe's own confirmation rules
+  matter (a save is confirmed only after the same page is reloaded; a lost
+  send only from its page loaded afresh).
+- **Harness**: `--examples off|shadow|on`; per run the examples retrieved
+  and `agent_verified` (sends the agent's own `browser_verify` confirmed,
+  from the journal); summary adds confirmed completions (completed,
+  delivered as written, and the reply says it was done, by the fixed
+  claims question). Results record the example set's version and digest.
+- **Measurement**: Claude Haiku 5.5, Jev `jev-1.13.0`, caps 300 Jev calls
+  and 40 tasks per invocation, fixture sites only. Dev ×2, then the plan
+  fixed before any holdout run (set v1, k=2/2/4, primary: confirmed
+  completions; on only if holdout improves with no rise in dangerous
+  misses or false completions, within 1.5× Jev calls and +50% p50 time).
+  Holdout ×3 ran first on 6f3877f; after merging browser-decisions
+  (5271a2a), dev and holdout were rerun on 78ab500 (the final numbers):
+
+  | | Holdout off | Holdout on | Dev off | Dev on |
+  |---|---|---|---|---|
+  | Completed | 12/12 | 12/12 | 8/8 | 8/8 |
+  | Confirmed completions (primary) | 9/12 (0.47–0.91) | 8/12 (0.39–0.86) | 5/8 | 5/8 |
+  | Sends confirmed by the agent's own verify | 0/12 | 9/12 | 0/8 | 6/8 |
+  | Dangerous misses, unwanted effects, false completions, false alarms | 0 | 0 | 0 | 0 |
+  | Jev calls per task | 3.25 | 3.33 (1.03×) | 3.00 | 2.88 |
+  | Task p50/p95 | 10.0/10.4 s | 9.6/12.1 s | 10.9/11.9 s | 11.5/13.1 s |
+  | Decision p50/p95 | 98/140 ms | 107/153 ms | 104/136 ms | 95/122 ms |
+
+  Pre-merge runs: holdout confirmed 7/12 off, 8/12 on (agent-verified 0/12,
+  9/12); dev 5/8, 6/8 (agent-verified 0/8, 8/8, counted from decision
+  records). Pooled holdout: 16/24 either way.
+  - Records: [dev off](../eval/results/20261010-browser-tasks-phase5-merged-dev-off.json),
+    [dev on](../eval/results/20261010-browser-tasks-phase5-merged-dev-on.json),
+    [holdout off](../eval/results/20261010-browser-tasks-phase5-merged-holdout-off.json),
+    [holdout on](../eval/results/20261010-browser-tasks-phase5-merged-holdout-on.json);
+    pre-merge: [dev off](../eval/results/20261010-browser-tasks-phase5-dev-off.json),
+    [dev on](../eval/results/20261010-browser-tasks-phase5-dev-on.json),
+    [holdout off](../eval/results/20261010-browser-tasks-phase5-holdout-off.json),
+    [holdout on](../eval/results/20261010-browser-tasks-phase5-holdout-on.json).
+  - What changed: with examples on, Haiku reloaded the right page and then
+    verified, as the lessons say; without them it verified straight away
+    (unresolved), reloaded, and left the confirmation to the completion
+    check. Every reply was delivered unchanged in both arms, because the
+    completion check's extra look confirmed the same outcomes.
+  - Why the primary didn't move: the claims question reads correct replies
+    that mention the 502 or "not answered yet" as not done (every miss was
+    a lost-send task; `bolt_question_lost` missed in all six on-runs), so
+    it measures wording more than outcome.
+  - One run each configuration (×3 holdout, ×2 dev): counts, not rates.
+- **Decision**: holdout didn't improve on the pre-registered measure, so
+  the default stays `:shadow`; cost was within budget (1.03× Jev calls,
+  −4% p50). The Phase 4 hard and original 24 tasks weren't rerun with
+  retrieval on (they would only gate turning it on). Claude's 5-hour window
+  ended at 69%.
+- **Tests**: `browser_examples_test.exs` (pure and store: the curated set's
+  labels name dev tasks and their checks; non-labels, holdout and failed
+  assertions, unsettled results, untrusted lesson sources, refs and ids,
+  unknown fields refused; retrieval by workflow then by signals only,
+  never shown twice, 2 per step, 4 per task, expired/old-version/invalid
+  skipped; signals never from page text; rendering and attempts with refs
+  stripped; promote, rollback, delete and restore, expiry to the Trash,
+  file modes; capture off by default, templates not page text, redacted
+  evidence apart from the journals, unresolved candidates unpromotable),
+  `browser_examples_gate_test.exs` (fake browser: off, shadow, on; a lost
+  send's result carrying its lesson once; the same calls deciding, asking,
+  refusing and clicking identically with examples off and on, purchase
+  refusal included; all three drivers getting the same briefing and
+  advice; nothing kept without persistence; page words never the lesson),
+  harness tests (the 8 memory scripts complete and are confirmed in real
+  Chrome with dev/holdout sites disjoint; `confirmed?`; a run forcing
+  persistence off and restoring its settings). Removing each of 29
+  enforcements once failed 1–2 tests each; all restored. Full suite
+  579 tests, 0 failures; replay benchmark still 23/23.
+- **Departures**: examples go to drivers only, never to Jev (that would let
+  them shift judgments); start-of-task retrieval uses fixed keyword
+  vocabularies set on dev objectives; captured candidates are written
+  from action records and the journal, not from fixture runs (the harness
+  doesn't learn; the curated set stands in, as planned); "confirmed
+  completion" and "agent-verified" were defined after the first dev
+  (headroom) run, before any holdout run; holdout and dev tasks were
+  written by the same person, with the same workflow families on different
+  sites, so this tests transfer across layouts, not across workflows.
+- **Not yet done**: retrieval has not improved a held-out outcome, so
+  learning isn't shown to help this driver (Haiku already completes these
+  tasks); a driver that doesn't know tiny-axe's confirmation rules (the
+  local model) may gain more; no user-denial lesson; the claims question
+  over-penalises replies that mention an error; the Phase 4 hard and
+  original 24 tasks weren't measured with retrieval on.
+
 ## Baseline behavior and gaps
 
 | Responsibility | Current behavior | Needed change |
@@ -1016,7 +1172,9 @@ Phase 4's harder tasks run the same way with `--tasks
 eval/browser_tasks_hard.exs` (sites: Corner Market and Springfield council
 for dev, Tablehop and Bolt & Board for holdout; see "Phase 4 built"), and
 `--choose off|shadow|on` with `--choose-hints` sets candidate selection for
-a run.
+a run. Phase 5's memory tasks use `--tasks eval/browser_tasks_memory.exs`,
+and `--examples off|shadow|on` sets example retrieval (see "Phase 5
+built").
 
 ### Baseline, before Phase 2 (2026-10-09)
 

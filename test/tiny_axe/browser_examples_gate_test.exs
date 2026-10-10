@@ -195,6 +195,8 @@ defmodule TinyAxe.BrowserExamplesGateTest do
       Gate.clear_holds()
       page(ctx, %{label: "Send note", outcome: "lost"})
       task = open(ctx)
+      # As the agent does: the start's examples first (shown when on).
+      briefing = Gate.briefing(task.id)
       clicks_before = length(log(ctx)["clicks"])
 
       results = [
@@ -221,6 +223,7 @@ defmodule TinyAxe.BrowserExamplesGateTest do
         errors: Enum.map(results, & &1["isError"]),
         asked: asked(),
         clicks: length(log(ctx)["clicks"]) - clicks_before,
+        briefed: briefing != "",
         advice: Enum.map(results, &advice/1)
       }
     end
@@ -234,6 +237,7 @@ defmodule TinyAxe.BrowserExamplesGateTest do
       assert on.errors == off.errors
       assert on.asked == off.asked
       assert on.clicks == off.clicks and off.clicks == 1
+      assert on.briefed and not off.briefed
 
       # The purchase controls are untouched: "Place order" is refused (no
       # purchase was asked for) either way, with its lesson shown only when on.
