@@ -112,7 +112,9 @@ config :tiny_axe, browser_choose: :shadow, browser_choose_hints: true
 config :tiny_axe,
   browser_examples: :shadow,
   browser_examples_persist: false,
-  browser_examples_retention_days: 30
+  browser_examples_retention_days: 30,
+  # Set versions kept in the store; older ones go to the system Trash.
+  browser_examples_versions_kept: 20
 
 # Purchases (TinyAxe.Purchases): off until the user turns them on. The agent
 # can only buy at a checkout tiny-axe reads itself, within these limits, after

@@ -13,14 +13,23 @@ defmodule TinyAxe.Browser.Examples.Store do
       never retrieved
     * `evidence/<id>.json` — the redacted evidence behind a candidate, kept
       for the retention period (`:browser_examples_retention_days`, 30)
-    * `trash/` — deleted examples and consumed candidates, restorable
+    * `trash/` — deleted examples and consumed candidates, restorable for
+      the same retention period
 
-  Nothing here is ever deleted outright: what expires goes to the system
-  Trash (`TinyAxe.Ops.discard/1`), and deleting an example moves it to
-  `trash/`.
+  Nothing here is ever deleted outright: what expires (evidence,
+  candidates, `trash/`, and set versions beyond the newest
+  `:browser_examples_versions_kept`, 20) goes to the system Trash
+  (`TinyAxe.Ops.discard/1`), and deleting an example moves it to `trash/`.
 
-  With no set written yet, the shipped curated set
-  (`priv/browser/examples.json`) is version 1 and active.
+  Every file is written to a temporary name and renamed into place; a set
+  version is created only if no file has that number yet (another writer
+  got there first: the next number is tried), and changes within this
+  node are serialised (`transaction/1`).
+
+  With no `active.json` yet, the shipped curated set
+  (`priv/browser/examples.json`) is version 1 and active. If `active.json`
+  exists but can't be read, or names a version that's gone, retrieval has
+  no examples at all rather than guessing.
   """
 
   require Logger
@@ -74,42 +83,101 @@ defmodule TinyAxe.Browser.Examples.Store do
     end
   end
 
-  @doc "The set retrieval uses."
+  @doc "The set retrieval uses: none at all if `active.json` exists but can't be read."
   def active do
-    with {:ok, %{"version" => v}} <- read(path("active.json")),
-         {:ok, set} <- set(v) do
-      set
+    file = path("active.json")
+
+    if File.exists?(file) do
+      with {:ok, %{"version" => v}} when is_integer(v) <- read(file),
+           {:ok, %{} = set} <- set(v) do
+        set
+      else
+        _ ->
+          Logger.warning("tiny-axe couldn't read #{file}: using no browser examples")
+          %{"version" => nil, "change" => "active.json unreadable", "examples" => []}
+      end
     else
-      _ -> curated()
+      curated()
     end
   end
+
+  @doc "Runs `fun` while holding this node's lock on the store (re-entrant)."
+  def transaction(fun),
+    do: :global.trans({{__MODULE__, :write}, self()}, fun, [node()], :infinity)
 
   @doc """
   Writes the next version with these examples and makes it active. The
   first write keeps the curated set as its own version first, so it can be
-  rolled back to.
+  rolled back to. A number already taken (by another writer) is never
+  overwritten: the next one is tried.
   """
   def write_set(examples, change) do
-    if versions() == [] do
-      c = curated()
-      :ok = write(path("sets/#{c["version"]}.json"), c)
-    end
+    transaction(fn ->
+      if versions() == [] do
+        c = curated()
+        create(c["version"], c)
+      end
 
-    next = Enum.max(versions(), fn -> 0 end) + 1
-    parent = active()["version"]
+      parent = active()["version"]
 
+      with {:ok, next} <-
+             create_next(Enum.max(versions(), fn -> 0 end) + 1, examples, change, parent, 50),
+           :ok <- write(path("active.json"), %{"version" => next}) do
+        prune_versions(next)
+        {:ok, next}
+      end
+    end)
+  end
+
+  defp create_next(_n, _examples, _change, _parent, 0), do: {:error, :no_free_version}
+
+  defp create_next(n, examples, change, parent, tries) do
     set = %{
       "schema" => @set_schema,
-      "version" => next,
+      "version" => n,
       "parent" => parent,
       "change" => change,
       "at" => now(),
       "examples" => examples
     }
 
-    with :ok <- write(path("sets/#{next}.json"), set),
-         :ok <- write(path("active.json"), %{"version" => next}) do
-      {:ok, next}
+    case create(n, set) do
+      :ok -> {:ok, n}
+      {:error, :eexist} -> create_next(n + 1, examples, change, parent, tries - 1)
+      error -> error
+    end
+  end
+
+  @doc false
+  # A set version only if nothing has that number yet: written to a
+  # temporary file, then hard-linked into place (which fails if it exists:
+  # `{:error, :eexist}`, and the next number is tried).
+  def create(n, set) do
+    target = path("sets/#{n}.json")
+    tmp = temp(target)
+
+    with :ok <- write_file(tmp, set) do
+      result = File.ln(tmp, target)
+      File.rm(tmp)
+      result
+    end
+  end
+
+  # Older versions beyond the newest N go to the system Trash (never the
+  # active one); the curated version can always be rolled back to from the
+  # shipped file.
+  defp prune_versions(active) do
+    keep = Application.get_env(:tiny_axe, :browser_examples_versions_kept, 20)
+    all = versions()
+
+    for v <- Enum.take(all, max(length(all) - keep, 0)), v != active do
+      case TinyAxe.Ops.discard(path("sets/#{v}.json")) do
+        :ok ->
+          :ok
+
+        {:error, why} ->
+          Logger.warning("tiny-axe couldn't move set #{v} to the Trash: #{inspect(why)}")
+      end
     end
   end
 
@@ -200,7 +268,7 @@ defmodule TinyAxe.Browser.Examples.Store do
   def expire_files(days, now_s \\ System.os_time(:second)) do
     cutoff = now_s - days * 86_400
 
-    for sub <- ["evidence", "candidates"],
+    for sub <- ["evidence", "candidates", "trash"],
         {:ok, files} <- [File.ls(path(sub))],
         f <- files,
         file = path("#{sub}/#{f}"),
@@ -229,14 +297,32 @@ defmodule TinyAxe.Browser.Examples.Store do
     end
   end
 
-  # Only this user can read what's written here.
+  # Only this user can read what's written here; a file is written whole
+  # under a temporary name, then renamed into place.
   defp write(file, data) do
+    tmp = temp(file)
+
+    with :ok <- write_file(tmp, data) do
+      case File.rename(tmp, file) do
+        :ok ->
+          :ok
+
+        error ->
+          File.rm(tmp)
+          error
+      end
+    end
+  end
+
+  defp write_file(file, data) do
     with :ok <- ensure(Path.dirname(file)),
          :ok <- File.write(file, ""),
          :ok <- File.chmod(file, 0o600) do
       File.write(file, JSON.encode!(data))
     end
   end
+
+  defp temp(file), do: "#{file}.tmp-#{System.unique_integer([:positive])}"
 
   defp ensure(folder) do
     with :ok <- File.mkdir_p(folder) do

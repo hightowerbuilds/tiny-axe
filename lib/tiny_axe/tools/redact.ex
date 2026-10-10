@@ -19,6 +19,43 @@ defmodule TinyAxe.Tools.Redact do
     end)
   end
 
+  @email ~r/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/
+  @phone ~r/(?<![\w.])\+?\(?\d[\d\s().-]{5,}\d(?![\w])/
+  @date ~r/\A\d{4}-\d{2}-\d{2}\z/
+  @street ~r/\b\d{1,5}[A-Za-z]?\s+(?:[A-Z][A-Za-z'-]+\s+){1,4}(?:St|Street|Rd|Road|Ave|Avenue|Ln|Lane|Way|Dr|Drive|Blvd|Boulevard|Ct|Court|Pl|Place|Terrace|Close|Crescent|Square|Row)\b\.?/
+  @token ~r/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-])/
+
+  @doc """
+  Also removes personal details, for content kept long-term (reviewed
+  browser examples, `TinyAxe.Browser.Examples`): card numbers, email
+  addresses, phone numbers (seven digits or more; not dates), street
+  addresses (a number, capitalised words and a street type), and
+  token-like strings (24+ letters and digits mixed).
+  """
+  @spec personal(String.t()) :: String.t()
+  def personal(text) when is_binary(text) do
+    text
+    |> text()
+    |> then(&Regex.replace(@email, &1, "[email removed]"))
+    |> then(&Regex.replace(@token, &1, "[token removed]"))
+    |> then(&Regex.replace(@street, &1, "[address removed]"))
+    |> then(
+      &Regex.replace(@phone, &1, fn match ->
+        digits = String.replace(match, ~r/\D/, "")
+
+        if String.length(digits) >= 7 and not (String.trim(match) =~ @date),
+          do: "[phone removed]",
+          else: match
+      end)
+    )
+  end
+
+  @doc "`personal/1` over every string in a term."
+  def personal_deep(s) when is_binary(s), do: personal(s)
+  def personal_deep(%{} = m), do: Map.new(m, fn {k, v} -> {k, personal_deep(v)} end)
+  def personal_deep(l) when is_list(l), do: Enum.map(l, &personal_deep/1)
+  def personal_deep(other), do: other
+
   @doc "Redacts every text item of an MCP result's `content`."
   @spec result(map()) :: map()
   def result(%{"content" => content} = result) when is_list(content) do

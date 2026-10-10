@@ -13,12 +13,16 @@ defmodule Mix.Tasks.TinyAxe.BrowserExamples do
       mix tiny_axe.browser_examples rollback VERSION   # that version's examples become active again
       mix tiny_axe.browser_examples expire             # expired examples out; old evidence to the Trash
       mix tiny_axe.browser_examples candidates         # captured lessons, never retrieved until promoted
-      mix tiny_axe.browser_examples promote CANDIDATE --reviewer NAME [--lesson TEXT]
+      mix tiny_axe.browser_examples promote CANDIDATE --reviewer NAME \
+        --objective TEXT --observed TEXT [--lesson TEXT]
 
   Every change writes a new version, so nothing is lost and any version can
   be rolled back to. `promote` is a person's review: the only way a lesson
   from a real session becomes trusted (a candidate whose outcome is
-  unresolved can't be promoted). Retrieval itself is switched with
+  unresolved can't be promoted). The reviewer writes the objective and
+  what was observed in their own words; page labels are replaced and
+  personal details scrubbed (see `TinyAxe.Browser.Examples.promote/3` for
+  what a promotion keeps). Retrieval itself is switched with
   `config :tiny_axe, :browser_examples` (off, shadow, on); keeping lessons
   from real sessions with `:browser_examples_persist` (off by default).
   """
@@ -102,12 +106,19 @@ defmodule Mix.Tasks.TinyAxe.BrowserExamples do
   end
 
   defp command(["promote", id | rest]) do
-    {opts, _, _} = OptionParser.parse(rest, strict: [reviewer: :string, lesson: :string])
+    {opts, _, _} =
+      OptionParser.parse(rest,
+        strict: [reviewer: :string, lesson: :string, objective: :string, observed: :string]
+      )
 
     reviewer = opts[:reviewer] || Mix.raise("promote needs --reviewer NAME (a person's review)")
 
     report(
-      Examples.promote(id, %{kind: "human_review", reviewer: reviewer}, lesson: opts[:lesson]),
+      Examples.promote(id, %{kind: "human_review", reviewer: reviewer},
+        lesson: opts[:lesson],
+        objective: opts[:objective],
+        observed: opts[:observed]
+      ),
       "promoted #{id}"
     )
   end

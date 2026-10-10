@@ -112,7 +112,9 @@ defmodule TinyAxe.Tools.Gate do
         candidate_checks: %{},
         # Reviewed examples retrieved for it (TinyAxe.Browser.Examples), by
         # id: at the start (the system prompt) and after its calls.
-        examples: %{start: [], step: []}
+        examples: %{start: [], step: []},
+        # Marks the examples tiny-axe adds to results, which no page can know.
+        examples_nonce: Examples.nonce()
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -151,8 +153,10 @@ defmodule TinyAxe.Tools.Gate do
   @doc """
   Reviewed examples for the start of a task with a browser, by the
   workflow its request names (`TinyAxe.Browser.Examples`): text for the
-  shared system prompt when retrieval is on, "" otherwise. Retrieved and
-  journaled in shadow too.
+  shared system prompt when retrieval is on (with the task's nonce, which
+  marks the examples added to results), "" otherwise. Retrieved and
+  journaled in shadow too. Never raises: bad example data means no
+  examples, never a failed task.
   """
   @spec briefing(String.t()) :: String.t()
   def briefing(id) do
@@ -160,20 +164,26 @@ defmodule TinyAxe.Tools.Gate do
 
     with true <- mode != :off,
          %{} = task <- GenServer.call(__MODULE__, {:get, id}),
-         true <- Enum.any?(MCP.tools(task.servers), &browser?/1),
-         [_ | _] = picked <- Examples.retrieve(%{stage: :start, objective: task.objective}) do
-      ids = Enum.map(picked, & &1["id"])
-      :ok = GenServer.call(__MODULE__, {:examples, id, :start, ids})
+         true <- Enum.any?(MCP.tools(task.servers), &browser?/1) do
+      picked = Examples.retrieve(%{stage: :start, objective: task.objective})
 
-      Tools.Journal.append(id, %{
-        tool: "tiny-axe/examples",
-        examples: Examples.journal(mode, :start, [], picked)
-      })
+      if picked != [] do
+        :ok = GenServer.call(__MODULE__, {:examples, id, :start, Enum.map(picked, & &1["id"])})
 
-      if mode == :on, do: Examples.briefing(picked), else: ""
+        Tools.Journal.append(id, %{
+          tool: "tiny-axe/examples",
+          examples: Examples.journal(mode, :start, [], picked)
+        })
+      end
+
+      if mode == :on, do: Examples.briefing(picked, task.examples_nonce), else: ""
     else
       _ -> ""
     end
+  rescue
+    error ->
+      Logger.warning("tiny-axe left out this task's examples: #{Exception.message(error)}")
+      ""
   end
 
   @doc "The MCP config that gives a driver this task's gate and nothing else."
@@ -333,41 +343,80 @@ defmodule TinyAxe.Tools.Gate do
 
   # Reviewed examples for what this browser call came to: retrieved from
   # the harness's own facts (never page text), after the call was decided,
-  # so nothing here can change it. Shown only when retrieval is on.
+  # so nothing here can change it. Shown only when retrieval is on, as an
+  # item of its own marked with the task's nonce; page text imitating one
+  # is made harmless first. The action has already run and its journal
+  # entry is still to be written, so nothing here may raise: on any error
+  # the result goes back as it was.
   defp advise(task, tool, facts) do
     mode = Examples.mode()
 
     with true <- mode != :off and tool != nil and (browser?(tool) or gate?(tool)),
-         [_ | _] = signals <- Examples.signals(facts),
          %{} = now <- GenServer.call(__MODULE__, {:get, task.id}) do
-      seen = now[:examples] || %{start: [], step: []}
+      page = if mode == :on, do: neutralise(facts.result), else: facts.result
 
-      picked =
-        Examples.retrieve(%{
-          stage: :step,
-          objective: now[:objective],
-          signals: signals,
-          shown: seen.step,
-          total: length(Enum.uniq(seen.start ++ seen.step))
-        })
+      case Examples.signals(facts) do
+        [] ->
+          {page, nil}
 
-      if picked != [],
-        do:
-          :ok =
-            GenServer.call(__MODULE__, {:examples, task.id, :step, Enum.map(picked, & &1["id"])})
+        signals ->
+          seen = now[:examples] || %{start: [], step: []}
 
-      entry = Examples.journal(mode, :step, signals, picked)
+          # Never one already shown in this task, at the start or after a call.
+          picked =
+            Examples.retrieve(%{
+              stage: :step,
+              objective: now[:objective],
+              signals: signals,
+              shown: seen.start ++ seen.step,
+              total: length(Enum.uniq(seen.start ++ seen.step))
+            })
 
-      result =
-        if mode == :on and picked != [],
-          do: append(facts.result, Examples.render(picked, Examples.attempts(now.actions))),
-          else: facts.result
+          if picked != [],
+            do:
+              :ok =
+                GenServer.call(
+                  __MODULE__,
+                  {:examples, task.id, :step, Enum.map(picked, & &1["id"])}
+                )
 
-      {result, entry}
+          entry = Examples.journal(mode, :step, signals, picked)
+
+          result =
+            if mode == :on and picked != [],
+              do:
+                append(
+                  page,
+                  Examples.render(picked, Examples.attempts(now.actions), now.examples_nonce)
+                ),
+              else: page
+
+          {result, entry}
+      end
     else
       _ -> {facts.result, nil}
     end
+  rescue
+    error ->
+      Logger.warning("tiny-axe left out examples for #{task.id}: #{Exception.message(error)}")
+      {facts.result, nil}
   end
+
+  defp neutralise(%{"content" => content} = result) when is_list(content) do
+    %{
+      result
+      | "content" =>
+          Enum.map(content, fn
+            %{"text" => text} = item when is_binary(text) ->
+              %{item | "text" => Examples.neutralise(text)}
+
+            item ->
+              item
+          end)
+    }
+  end
+
+  defp neutralise(result), do: result
 
   defp append(%{"content" => content} = result, text) when is_list(content),
     do: %{result | "content" => content ++ [%{"type" => "text", "text" => text}]}

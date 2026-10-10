@@ -23,6 +23,14 @@
 # the earlier sites' pages are unchanged. Examples may be written only from
 # development tasks; holdout is for checking a change afterwards.
 #
+# USED UP: the 4 holdout tasks below were run, and their results seen,
+# before the decision rule was committed (see "Phase 5 built" in
+# docs/plan-browser-decisions-and-learning.md), and the first retrieval
+# vocabulary had terms taken from their objectives. They are no longer a
+# holdout: any later attempt to turn retrieval on needs fresh holdout
+# tasks, on sites of their own, and a decision rule committed before they
+# are run.
+#
 # Phase 5's primary measure is a confirmed completion: the task completed
 # (the sites' state), the reply went out as written (no "not confirmed"
 # note, not replaced), and it tells the user the request was done.
