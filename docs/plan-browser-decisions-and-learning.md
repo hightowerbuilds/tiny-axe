@@ -1,10 +1,11 @@
 # Plan for browser decisions and learning with Jev
 
-Status: implementation started, 2026-10-05. The first milestone implements
-the Phase 0 classification benchmark and gate repairs, plus initial bounded
-page context. Phases 1–5 remain pending, including the full evidence/trace
-contract, shared decision tools, execution binding, outcome verification,
-candidate selection, and validated memory. It builds on
+Status (2026-10-09): Phases 0 and 1 are built. Phase 0 added the
+classification benchmark and gate repairs; Phase 1 added bounded evidence,
+task context, versioned decision traces, Jev metadata and criteria, and
+answer validation (see "Phase 1 built"). Phases 2–5 remain pending: shared
+decision tools, execution binding, outcome verification, candidate
+selection, and validated memory. It builds on
 [the browser and CLI model plan](plan-browser-and-cli-models.md) and preserves
 the browser and purchase changes already in the working tree.
 
@@ -50,6 +51,47 @@ The benchmark is an initial development set, not a held-out evaluation of
 complete browser tasks. Full driver evaluation and threshold calibration are
 still required. Runtime task journals do not yet have the benchmark's detailed
 decision traces, and thresholds remain provisional.
+
+## Phase 1 built
+
+- **Evidence** (`TinyAxe.Browser.Evidence`): each decision gets a bounded,
+  redacted observation with provenance: `task` (user: the request and any
+  purchase limit, from the harness, never the agent), `target` and
+  `observation` (page), `proposed_action` (agent; typed text reduced to its
+  length), `recent_actions` (harness: the task's last five calls and what the
+  gate did). Budgets: objective 1,000 characters, labels 200, context 2,000,
+  30 form fields, 10 list items; every cut is listed in `truncated`. The
+  observation id is a hash of the cleaned target, for Phase 2's binding.
+- **Decision records**: every BrowserPolicy judgment produces a
+  `browser-decision/1` record: policy and question versions, a question hash,
+  the evidence and its hash, backend, resolved model, usage, request id,
+  latency, per-question answers (unknown and malformed kept apart), the
+  disposition, and reason codes (`purchase_signal`, `sends_signal`,
+  `autosave_signal`, `insufficient_evidence`, `decision_unavailable`,
+  `no_external_effect`). The gate writes them to the task's
+  `decisions.jsonl` with the call's result, and lists their ids in
+  `calls.jsonl`. The browser benchmark attaches the same records.
+- **Decider**: `Decider.decide_traced/2` returns who answered without
+  changing `decide/2`. The Jev adapter sends Noul criteria
+  (`{"true", "false"}`), reports `model` (`jev-1.13.0`), `usage` and
+  `x-typesafe-request-id`, and validates answers: an out-of-range
+  probability, a missing answer, an unoffered choice or an impossible score
+  becomes unknown; a 200 without answers is an error. The local decider puts
+  criteria in its prompt.
+- **Questions, version 2**: richer evidence alone made real Jev score the
+  autosave field and checkbox below the threshold (`sends` 0.24–0.37, from
+  0.52–0.58 before). Jev also varied run to run on identical input. Adding
+  criteria and an atomic `saves_on_change` question (combined in code: yes
+  asks the user, unknown refuses) separated them: 0.88–0.93 on the autosave
+  cases, at most 0.09 on safe ones. Decisions are shown the evidence without
+  ids, timestamps or schema names; records keep them.
+- **Results**: [replay](../eval/results/20261009-browser-policy-replay-phase1.json)
+  23/23; [real Jev, three repeats](../eval/results/20261009-browser-policy-jev-phase1.json)
+  48/48, none under-protected, p50 111 ms per decision. The question changes
+  were made against these development cases, plus one new autosave wording
+  and one unsaved-setting case, so this is not a held-out result.
+- **Not yet traced**: the purchase gate's own Decider checks (buying intent,
+  item match, card purpose) still log only their outcome.
 
 ## Baseline behavior and gaps
 

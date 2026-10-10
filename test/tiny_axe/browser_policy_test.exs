@@ -88,7 +88,7 @@ defmodule TinyAxe.BrowserPolicyTest do
     for label <- ["Add to cart", "Add to bag", "Show more", "Next", "Accept all cookies"],
         do: assert(click(button(label)) == {:local, nil}, label)
 
-    assert_received {:assessed, %{observed_target: _}}
+    assert_received {:assessed, %{target: _, proposed_action: %{source: "agent"}}}
   end
 
   test "an unclear button goes to Jev, and no answer is the stricter class" do
@@ -219,11 +219,147 @@ defmodule TinyAxe.BrowserPolicyTest do
       })
     )
 
-    assert_received {:state, %{observed_target: target} = state}
+    assert_received {:state, %{target: target} = state}
     assert target["page"] == "https://shop.example/review"
     assert target["form"]["action"] == "https://shop.example/action"
-    assert target["contextTruncated"] == true
+    assert "target.context" in state.truncated
     refute inspect(state) =~ "secret"
     refute inspect(state) =~ "4242"
+  end
+
+  describe "decision records" do
+    defp traced(meta, decide, context \\ nil) do
+      me = self()
+
+      result =
+        BrowserPolicy.classify("browser_click", %{"ref" => "e1"}, fn _ -> meta end,
+          decide: decide,
+          context: context,
+          on_decision: &send(me, {:record, &1})
+        )
+
+      assert_received {:record, record}
+      {result, record}
+    end
+
+    defp answers(spends, sends, autosave \\ %{noul: 0.0}),
+      do: fn _, _ ->
+        {:ok, %{spends: spends, sends: sends, saves_on_change: autosave},
+         %{
+           backend: "jev",
+           model: "jev-1.13.0",
+           usage: %{input_tokens: 9, output_tokens: 2},
+           request_id: "req_1",
+           ms: 12
+         }}
+      end
+
+    test "a record explains the input, the judgment and the disposition" do
+      {result, r} =
+        traced(button("⚙"), answers(%{noul: 0.01}, %{noul: 0.02}), %{
+          objective: "tidy my settings",
+          recent: [%{tool: "browser_snapshot", class: :read, decision: :ran, error: false}]
+        })
+
+      assert result == {:local, nil}
+      assert r.schema == "browser-decision/1"
+      assert r.id =~ ~r/\Adec-[0-9a-f]{12}\z/
+      assert %{policy_version: "browser-policy/2", questions_version: "browser-effects/2"} = r
+
+      assert BrowserPolicy.versions() == %{
+               policy: r.policy_version,
+               questions: r.questions_version
+             }
+
+      assert r.evidence_schema == "browser-evidence/1"
+      assert r.evidence.task.objective == "tidy my settings"
+      assert [%{"tool" => "browser_snapshot"}] = r.evidence.recent_actions.items
+      assert r.observation_id == r.evidence.observation.id
+      assert r.evidence_hash == TinyAxe.Browser.Evidence.hash(r.evidence)
+      assert %{backend: "jev", model: "jev-1.13.0", request_id: "req_1", ms: 12} = r
+
+      assert r.answers == %{
+               spends: %{p: 0.01, unknown: false},
+               sends: %{p: 0.02, unknown: false},
+               saves_on_change: %{p: 0.0, unknown: false}
+             }
+
+      assert %{disposition: :local, reason_codes: ["no_external_effect"], error: nil} = r
+    end
+
+    test "each disposition carries its reason code" do
+      assert {{:commit, _}, %{reason_codes: ["purchase_signal"]}} =
+               traced(button("⚙"), answers(%{noul: 0.9}, %{noul: nil, unknown: true}))
+
+      assert {{:outward, _}, %{reason_codes: ["sends_signal"]}} =
+               traced(button("⚙"), answers(%{noul: 0.0}, %{noul: 0.8}))
+
+      # The page's own "saved immediately", even when "sends" is unsure.
+      assert {{:outward, why}, %{reason_codes: ["autosave_signal"]}} =
+               traced(button("⚙"), answers(%{noul: 0.0}, %{noul: 0.2}, %{noul: 0.9}))
+
+      assert why =~ "saved as soon as it changes"
+
+      assert {{:refused, _}, %{reason_codes: ["insufficient_evidence"]}} =
+               traced(
+                 button("⚙"),
+                 answers(%{noul: 0.0}, %{noul: 0.0}, %{noul: nil, unknown: true})
+               )
+
+      assert {{:refused, _},
+              %{reason_codes: ["insufficient_evidence"], answers: %{sends: %{unknown: true}}}} =
+               traced(button("⚙"), answers(%{noul: 0.0}, %{noul: nil, unknown: true}))
+
+      assert {{:refused, why},
+              %{reason_codes: ["decision_unavailable"], answers: nil, error: ":down"}} =
+               traced(button("⚙"), fn _, _ -> {:error, :down} end)
+
+      assert why =~ "unavailable"
+    end
+
+    test "a malformed answer is kept in the record, and refuses like an unknown one" do
+      decide = fn _, _ ->
+        {:ok,
+         %{spends: %{noul: nil, unknown: true, invalid: %{"noul" => 1.7}}, sends: %{noul: 0.0}}}
+      end
+
+      assert {{:refused, _}, r} = traced(button("⚙"), decide)
+      assert r.answers.spends == %{p: nil, unknown: true, invalid: ~s(%{"noul" => 1.7})}
+      assert r.reason_codes == ["insufficient_evidence"]
+      # A decider that only gives answers is traced without who answered.
+      assert %{backend: nil, model: nil} = r
+    end
+
+    test "the decider sees what the action does, not ids and timestamps; the record keeps them" do
+      me = self()
+
+      {_result, r} =
+        traced(button("⚙"), fn state, _ ->
+          send(me, {:shown, state})
+          answers(%{noul: 0.0}, %{noul: 0.0}).(state, nil)
+        end)
+
+      assert_received {:shown, shown}
+      refute Map.has_key?(shown, :observation) or Map.has_key?(shown, :schema)
+      refute Map.has_key?(shown.target, "source")
+      assert shown.target["text"] == "⚙" and shown.proposed_action.source == "agent"
+      assert %{observation: %{id: "obs-" <> _, captured_at: _}} = r.evidence
+    end
+
+    test "the record holds no card numbers or URL secrets" do
+      {_result, r} =
+        traced(
+          button("⚙", %{
+            "page" => "https://shop.example/a?token=secret",
+            "context" => "Card 4242 4242 4242 4242"
+          }),
+          answers(%{noul: 0.0}, %{noul: 0.0}),
+          %{objective: "use 4242 4242 4242 4242"}
+        )
+
+      text = JSON.encode!(r)
+      refute text =~ "4242"
+      refute text =~ "secret"
+    end
   end
 end

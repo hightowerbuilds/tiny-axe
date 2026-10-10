@@ -206,6 +206,56 @@ defmodule TinyAxe.BrowserInteractionTest do
     refute_received {:asked, _}
   end
 
+  test "each decision is traced with its evidence, linked to the call and what happened", ctx do
+    me = self()
+
+    {:ok, task} =
+      Gate.open_task(&send(me, {:gate, &1}),
+        servers: [ctx.server],
+        objective: "open the settings, card 4242 4242 4242 4242"
+      )
+
+    on_exit(fn -> Gate.close_task(task.id) end)
+    ctx = %{ctx | task: task}
+
+    page = open(ctx, "/shop")
+    mystery = ref(page, "button", "⚙")
+
+    Decider.Script.script(fn
+      :sends, _, _ -> 0.9
+      _, _, _ -> nil
+    end)
+
+    act(ctx, "browser_click", %{ref: mystery}, :deny)
+    assert_received {:asked, %{class: :outward}}
+
+    [navigate, click] = TinyAxe.Tools.Journal.read(task.id)
+    assert navigate["decisions"] == []
+    assert [id] = click["decisions"]
+
+    assert [record] = TinyAxe.Tools.Journal.decisions(task.id)
+    assert record["id"] == id
+    assert record["task"] == task.id
+    assert record["tool"] == "#{ctx.server}__browser_click"
+    assert record["policy_version"] == "browser-policy/2"
+    assert record["backend"] == "script"
+    assert record["disposition"] == "outward"
+    assert record["reason_codes"] == ["sends_signal"]
+    assert record["answers"]["sends"] == %{"p" => 0.9, "unknown" => false}
+    # What happened next: the user said no.
+    assert record["result"] == %{"decision" => "denied", "error" => true}
+
+    evidence = record["evidence"]
+    assert evidence["task"]["objective"] =~ "open the settings"
+    assert evidence["target"]["text"] == "⚙"
+    assert evidence["observation"]["page"] == ctx.site <> "/shop"
+
+    assert [%{"tool" => "browser_navigate", "class" => "read", "decision" => "ran"}] =
+             evidence["recent_actions"]["items"]
+
+    refute File.read!(Path.join(TinyAxe.Tools.Journal.dir(task.id), "decisions.jsonl")) =~ "4242"
+  end
+
   test "accepting a page's dialog asks first, quoting it", ctx do
     page = open(ctx, "/dialog")
     out = text(act(ctx, "browser_click", %{ref: ref(page, "button", "Tidy")}))
@@ -309,7 +359,7 @@ defmodule TinyAxe.BrowserInteractionTest do
     for {tool, args} <- actions do
       assert act(ctx, tool, args, :deny)["isError"] == true
       assert_received {:asked, %{class: :outward}}
-      assert_received {:observed, %{observed_target: target}}
+      assert_received {:observed, %{target: target}}
       assert target["context"] =~ "saved immediately"
     end
 

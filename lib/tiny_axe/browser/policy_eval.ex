@@ -17,20 +17,20 @@ defmodule TinyAxe.Browser.PolicyEval do
     mode = Keyword.get(opts, :mode, :replay)
     repeat = Keyword.get(opts, :repeat, 1)
     budget = Keyword.get(opts, :max_decisions, 40)
-    decide = Keyword.get(opts, :decide, &Decider.decide/2)
+    decide = Keyword.get(opts, :decide, &Decider.decide_traced/2)
 
     unless mode in [:replay, :live] and repeat in 1..20 and budget in 1..1000,
       do: raise(ArgumentError, "expected mode replay/live, repeat 1..20, max_decisions 1..1000")
 
     selected = Enum.reject(cases, &(mode == :live and Map.get(&1, :fault, false)))
     ref = make_ref()
-    Process.put(ref, %{calls: 0, traces: [], exhausted: false})
+    Process.put(ref, %{calls: 0, traces: [], records: [], exhausted: false})
 
     try do
       results =
         for iteration <- 1..repeat, scenario <- selected do
           before = Process.get(ref).calls
-          Process.put(ref, %{Process.get(ref) | traces: [], exhausted: false})
+          Process.put(ref, %{Process.get(ref) | traces: [], records: [], exhausted: false})
           start = System.monotonic_time(:millisecond)
 
           judge = fn state, questions ->
@@ -56,7 +56,12 @@ defmodule TinyAxe.Browser.PolicyEval do
               scenario.tool,
               scenario.args,
               fn _ -> scenario.target end,
-              decide: judge
+              decide: judge,
+              context: Map.get(scenario, :context),
+              on_decision: fn record ->
+                run = Process.get(ref)
+                Process.put(ref, %{run | records: [record | run.records]})
+              end
             )
 
           run = Process.get(ref)
@@ -72,6 +77,8 @@ defmodule TinyAxe.Browser.PolicyEval do
             insufficient_protection: not run.exhausted and weaker?(actual, scenario.expected),
             decisions: run.calls - before,
             traces: Enum.reverse(run.traces),
+            # What the gate would journal: evidence, versions, answers, disposition.
+            records: Enum.reverse(run.records),
             ms: System.monotonic_time(:millisecond) - start
           }
         end
@@ -79,7 +86,7 @@ defmodule TinyAxe.Browser.PolicyEval do
       scored = Enum.reject(results, & &1.skipped)
 
       %{
-        schema_version: 1,
+        schema_version: 2,
         mode: mode,
         note:
           if(mode == :replay,

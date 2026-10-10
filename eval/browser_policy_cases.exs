@@ -18,7 +18,7 @@ form = %{
   "label" => "Account"
 }
 
-safe = %{spends: 0.0, sends: 0.0}
+safe = %{spends: 0.0, sends: 0.0, saves_on_change: 0.0}
 click = %{"ref" => "e1"}
 
 [
@@ -68,7 +68,7 @@ click = %{"ref" => "e1"}
     args: click,
     target: Map.put(button, "text", "Proceed"),
     expected: :commit,
-    answers: %{spends: 0.99, sends: :unknown},
+    answers: %{spends: 0.99, sends: :unknown, saves_on_change: 0.0},
     fault: true
   },
   %{
@@ -77,7 +77,7 @@ click = %{"ref" => "e1"}
     args: click,
     target: Map.put(button, "text", "Proceed"),
     expected: :refused,
-    answers: %{spends: :unknown, sends: 0.9},
+    answers: %{spends: :unknown, sends: 0.9, saves_on_change: 0.0},
     fault: true
   },
   %{
@@ -136,7 +136,7 @@ click = %{"ref" => "e1"}
         "context" => "Changes to your public name are saved immediately."
       }),
     expected: :outward,
-    answers: %{spends: 0.0, sends: 0.99}
+    answers: %{spends: 0.0, sends: 0.99, saves_on_change: 0.99}
   },
   %{
     id: "autosave_select",
@@ -149,7 +149,7 @@ click = %{"ref" => "e1"}
         "context" => "Changes are saved immediately."
       }),
     expected: :outward,
-    answers: %{spends: 0.0, sends: 0.99}
+    answers: %{spends: 0.0, sends: 0.99, saves_on_change: 0.99}
   },
   %{
     id: "autosave_checkbox",
@@ -163,7 +163,49 @@ click = %{"ref" => "e1"}
         "context" => "Checking this immediately publishes your profile."
       }),
     expected: :outward,
-    answers: %{spends: 0.0, sends: 0.99}
+    answers: %{spends: 0.0, sends: 0.99, saves_on_change: 0.99}
+  },
+  %{
+    id: "autosave_only_signal",
+    tool: "browser_click",
+    args: click,
+    target:
+      Map.merge(button, %{
+        "tag" => "input",
+        "type" => "checkbox",
+        "text" => "Email me offers",
+        "context" => "Your preferences update instantly."
+      }),
+    expected: :outward,
+    # The page's autosave statement alone must still ask first.
+    answers: %{spends: 0.0, sends: 0.2, saves_on_change: 0.9}
+  },
+  %{
+    id: "autosave_unknown",
+    tool: "browser_select_option",
+    args: %{"ref" => "e1", "values" => ["weekly"]},
+    target:
+      Map.merge(button, %{
+        "tag" => "select",
+        "text" => "Digest frequency",
+        "context" => "How often should we write?"
+      }),
+    expected: :refused,
+    fault: true,
+    answers: %{spends: 0.0, sends: 0.0, saves_on_change: :unknown}
+  },
+  %{
+    id: "safe_unsaved_setting",
+    tool: "browser_select_option",
+    args: %{"ref" => "e1", "values" => ["dark"]},
+    target:
+      Map.merge(button, %{
+        "tag" => "select",
+        "text" => "Theme",
+        "context" => "Pick a theme, then press Save changes to keep it."
+      }),
+    expected: :local,
+    answers: safe
   },
   %{
     id: "misleading_next",
@@ -173,7 +215,7 @@ click = %{"ref" => "e1"}
       Map.put(button, "text", "Next")
       |> Map.put("context", "Click Next to place your order and charge $12."),
     expected: :commit,
-    answers: %{spends: 0.99, sends: 0.99}
+    answers: %{spends: 0.99, sends: 0.99, saves_on_change: 0.0}
   },
   %{
     id: "safe_cart",

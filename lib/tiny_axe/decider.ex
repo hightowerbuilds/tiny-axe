@@ -7,6 +7,10 @@ defmodule TinyAxe.Decider do
 
       %{type: :noul, instructions: "Is this command destructive?"}
 
+      # Optional: what a yes and a no mean.
+      %{type: :noul, instructions: "Would this click pay now?",
+        criteria: %{true: "It charges money now", false: "Anything confirmed later"}}
+
       %{type: :choice, instructions: "What kind of task is this?",
         options: %{code: "Writing or changing code", text: "Prose or notes"}}
 
@@ -29,6 +33,11 @@ defmodule TinyAxe.Decider do
   @type question ::
           %{type: :noul, instructions: String.t()}
           | %{
+              type: :noul,
+              instructions: String.t(),
+              criteria: %{true: String.t(), false: String.t()}
+            }
+          | %{
               type: :choice,
               instructions: String.t(),
               options: %{(atom() | String.t()) => String.t()}
@@ -40,9 +49,18 @@ defmodule TinyAxe.Decider do
   @callback decide(state :: String.t() | map(), questions :: %{atom() => question()}) ::
               {:ok, %{atom() => answer()}} | {:error, term()}
 
+  @doc """
+  Like `decide/2`, also returning what answered: `:model` (the resolved
+  model, e.g. "jev-1.13.0"), `:usage` (`%{input_tokens: n, output_tokens: n}`)
+  and `:request_id`, each when known. Implementations without it are traced
+  by backend alone.
+  """
+  @callback decide_meta(state :: String.t() | map(), questions :: %{atom() => question()}) ::
+              {:ok, %{atom() => answer()}, map()} | {:error, term()}
+
   @doc "The most options a `:choice` question can have with this implementation."
   @callback max_options() :: pos_integer()
-  @optional_callbacks max_options: 0
+  @optional_callbacks max_options: 0, decide_meta: 2
 
   @spec max_options() :: pos_integer()
   def max_options do
@@ -91,9 +109,37 @@ defmodule TinyAxe.Decider do
   @spec decide(String.t() | map(), %{atom() => question()}) ::
           {:ok, %{atom() => answer()}} | {:error, term()}
   def decide(state, questions) do
+    case decide_traced(state, questions) do
+      {:ok, answers, _meta} -> {:ok, answers}
+      {:error, reason, _meta} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  `decide/2` with a record of what answered, for decision traces: `:backend`
+  (e.g. "jev"), `:ms`, and `:model`, `:usage` and `:request_id` when the
+  implementation reports them (`c:decide_meta/2`).
+  """
+  @spec decide_traced(String.t() | map(), %{atom() => question()}) ::
+          {:ok, %{atom() => answer()}, map()} | {:error, term(), map()}
+  def decide_traced(state, questions) do
+    impl = impl()
+    Code.ensure_loaded(impl)
     t0 = System.monotonic_time()
-    result = impl().decide(state, questions)
+
+    {result, meta} =
+      if function_exported?(impl, :decide_meta, 2) do
+        case impl.decide_meta(state, questions) do
+          {:ok, answers, meta} -> {{:ok, answers}, meta}
+          {:error, _} = error -> {error, %{}}
+        end
+      else
+        {impl.decide(state, questions), %{}}
+      end
+
     ms = System.convert_time_unit(System.monotonic_time() - t0, :native, :millisecond)
+    meta = Map.merge(%{backend: backend(impl), model: nil, usage: nil, request_id: nil}, meta)
+    meta = Map.put(meta, :ms, ms)
 
     # Timed and counted for `mix tiny_axe.eval`.
     :telemetry.execute([:tiny_axe, :decider, :call], %{ms: ms, questions: map_size(questions)}, %{
@@ -101,7 +147,7 @@ defmodule TinyAxe.Decider do
     })
 
     case result do
-      {:ok, answers} = ok ->
+      {:ok, answers} ->
         # Unknown (no usable evidence) and failed are both "unavailable" to the
         # user, but the log keeps them apart.
         unknown = for {key, %{unknown: true}} <- answers, do: key
@@ -109,13 +155,16 @@ defmodule TinyAxe.Decider do
         if unknown != [],
           do: Logger.info("decider had no usable evidence for #{inspect(unknown)}")
 
-        ok
+        {:ok, answers, meta}
 
-      {:error, reason} = error ->
+      {:error, reason} ->
         Logger.warning("decider failed for #{inspect(Map.keys(questions))}: #{inspect(reason)}")
-        error
+        {:error, reason, meta}
     end
   end
+
+  # "jev" for TinyAxe.Decider.Jev; tests' scripted deciders read as "script".
+  defp backend(impl), do: impl |> Module.split() |> List.last() |> Macro.underscore()
 
   def impl, do: Application.get_env(:tiny_axe, :decider, TinyAxe.Decider.Local)
 end

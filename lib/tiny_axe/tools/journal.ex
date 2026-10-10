@@ -3,7 +3,12 @@ defmodule TinyAxe.Tools.Journal do
   A record of every tool call a task made, one JSON line each, in
   `<state>/tasks/<task>/calls.jsonl`: the tool, its arguments and a summary of
   its result (both redacted), what the gate decided, and how long it took.
-  The newest 50 tasks are kept.
+
+  Browser decisions go beside it, in `decisions.jsonl`: one record each
+  (`TinyAxe.Tools.BrowserPolicy`), with the redacted evidence it was shown,
+  the policy, question and evidence versions, what answered, the answers,
+  the disposition and its reason codes, and the call's result. A call's
+  entry lists its decisions' ids. The newest 50 tasks are kept.
   """
 
   @keep 50
@@ -23,9 +28,20 @@ defmodule TinyAxe.Tools.Journal do
     File.write!(Path.join(dir(id), "calls.jsonl"), line <> "\n", [:append])
   end
 
+  @spec append_decision(String.t(), map()) :: :ok
+  def append_decision(id, record) do
+    line = record |> Map.put(:at, DateTime.utc_now() |> DateTime.to_iso8601()) |> JSON.encode!()
+    File.write!(Path.join(dir(id), "decisions.jsonl"), line <> "\n", [:append])
+  end
+
   @spec read(String.t()) :: [map()]
-  def read(id) do
-    case File.read(Path.join(dir(id), "calls.jsonl")) do
+  def read(id), do: read_lines(id, "calls.jsonl")
+
+  @spec decisions(String.t()) :: [map()]
+  def decisions(id), do: read_lines(id, "decisions.jsonl")
+
+  defp read_lines(id, file) do
+    case File.read(Path.join(dir(id), file)) do
       {:ok, raw} -> raw |> String.split("\n", trim: true) |> Enum.map(&JSON.decode!/1)
       {:error, _} -> []
     end

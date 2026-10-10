@@ -79,15 +79,21 @@ defmodule TinyAxe.Decider.Local do
   end
 
   # Returns {label => answer_value, prompt}
-  defp build_prompt(state_text, %{type: :noul, instructions: instructions}) do
+  defp build_prompt(state_text, %{type: :noul, instructions: instructions} = question) do
     labels = %{"Yes" => true, "No" => false}
+
+    meaning =
+      case question[:criteria] do
+        %{} = c -> "\nYes means: #{c[true] || c["true"]}\nNo means: #{c[false] || c["false"]}"
+        _ -> ""
+      end
 
     prompt = """
     <state>
     #{state_text}
     </state>
 
-    Question: #{instructions}
+    Question: #{instructions}#{meaning}
     Reply with Yes or No.
     """
 

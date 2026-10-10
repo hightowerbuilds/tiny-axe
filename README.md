@@ -96,7 +96,12 @@ mix tiny_axe.browser_eval --live --decider jev     # synthetic observations sent
 mix tiny_axe.browser_eval --live --decider local --max-decisions 40
 ```
 
-It executes no browser actions. Replay checks policy composition; live mode
+Each browser decision tiny-axe makes for real is traced in the task's
+`~/.local/state/tiny-axe/tasks/<task>/decisions.jsonl`: the redacted evidence
+it was shown, the policy and question versions, which Jev model answered,
+the answers, and what the gate then did.
+
+The benchmark executes no browser actions. Replay checks policy composition; live mode
 checks classification with the configured decider and excludes injected
 outage cases. JSON results include evidence, questions, answers, source hashes,
 and budget skips. This is not a complete browser-task success rate. See the

@@ -17,7 +17,9 @@ defmodule TinyAxe.Tools.Gate do
        they allowed that tool for the session; commits are refused until the
        purchase gate exists
     4. **forward** to the server, then **redact** the result
-    5. **journal** the call, and report it to the task (`{:tool_call, ...}`)
+    5. **journal** the call, and report it to the task (`{:tool_call, ...}`);
+       each browser decision behind it goes to the task's decision trace
+       (`TinyAxe.Tools.Journal.append_decision/2`) with what happened next
 
   A refusal comes back to the agent as a tool error saying why, so it can
   carry on or tell the user.
@@ -31,14 +33,17 @@ defmodule TinyAxe.Tools.Gate do
   alias TinyAxe.Tools.{BrowserPolicy, Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
+  # Where this call's browser decisions collect (the caller's process).
+  @traced {__MODULE__, :decisions}
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
   @doc """
   Opens a task: its own address and token for the driver. `notify` gets the
   task's events (and approval questions). `opts`: `:servers` (`:all` or a
-  list of names), `:max_calls`, `:max_minutes`, and `:intent`, what the user
-  asked to buy, if anything (`TinyAxe.Purchases.intent/2`).
+  list of names), `:max_calls`, `:max_minutes`, `:intent`, what the user
+  asked to buy, if anything (`TinyAxe.Purchases.intent/2`), and `:objective`,
+  the user's request, which browser decisions are shown as the task.
   """
   @spec open_task((term() -> any()), keyword()) :: {:ok, map()} | {:error, term()}
   def open_task(notify, opts \\ []) do
@@ -61,7 +66,10 @@ defmodule TinyAxe.Tools.Gate do
         calls: 0,
         recent: [],
         allowed: MapSet.new(),
-        intent: Keyword.get(opts, :intent)
+        intent: Keyword.get(opts, :intent),
+        objective: opts |> Keyword.get(:objective) |> then(&(&1 && Redact.text(&1))),
+        # The latest calls and what the gate did, newest last, for decisions.
+        outcomes: []
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -116,44 +124,65 @@ defmodule TinyAxe.Tools.Gate do
     t0 = System.monotonic_time(:millisecond)
     tool = Enum.find(MCP.tools(task.servers), &(&1.name == name))
 
-    {decision, result} =
+    {class, {decision, result}} =
       case tool && GenServer.call(__MODULE__, {:begin, task.id, name, args}) do
         nil ->
-          {:refused, refusal("there's no tool called #{name}")}
+          {nil, {:refused, refusal("there's no tool called #{name}")}}
 
         {:limit, why} ->
           task.notify.({:tool_limit, %{task: task.id, reason: why}})
-          {:refused, refusal(why)}
+          {nil, {:refused, refusal(why)}}
 
         {:ok, allowed} ->
           # A call missing what the tool requires goes back to the agent to fix,
           # before anything is inspected or the user is asked.
           case missing(tool.definition, args) do
             [] ->
-              {class, reason} = classify(tool, args)
+              {class, reason} = classify(task, tool, args)
 
               task.notify.(
                 {:tool_call, %{tool: name, class: class, reason: reason, args: Redact.deep(args)}}
               )
 
-              decide(task, tool, args, {class, reason}, allowed)
+              {class, decide(task, tool, args, {class, reason}, allowed)}
 
             keys ->
-              {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}
+              {nil, {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}}
           end
       end
 
     result = Redact.result(result)
     ms = System.monotonic_time(:millisecond) - t0
+    error = result["isError"] == true
+    traced = take_decisions()
+
+    for record <- traced do
+      Tools.Journal.append_decision(
+        task.id,
+        Map.merge(record, %{
+          task: task.id,
+          tool: name,
+          result: %{decision: decision, error: error}
+        })
+      )
+    end
 
     Tools.Journal.append(task.id, %{
       tool: name,
       args: Redact.deep(args),
       decision: decision,
-      error: result["isError"] == true,
+      error: error,
       result: summary(result),
+      decisions: Enum.map(traced, & &1.id),
       ms: ms
     })
+
+    if tool do
+      GenServer.cast(
+        __MODULE__,
+        {:outcome, task.id, %{tool: tool.tool, class: class, decision: decision, error: error}}
+      )
+    end
 
     task.notify.(
       {:tool_result,
@@ -170,13 +199,22 @@ defmodule TinyAxe.Tools.Gate do
 
   # Browser actions are classed by what they'd do on the page (the gate looks
   # first, with browser_inspect); other tools by their server's policy.
-  defp classify(tool, args) do
+  defp classify(task, tool, args) do
     cond do
       hidden?(tool) ->
         {:refused, "that tool is for tiny-axe only"}
 
       tool.policy["browser"] == true ->
-        BrowserPolicy.classify(tool.tool, args, &look_at(tool.server, &1))
+        context = %{
+          objective: Map.get(task, :objective),
+          intent: Map.get(task, :intent),
+          recent: Map.get(task, :outcomes, [])
+        }
+
+        BrowserPolicy.classify(tool.tool, args, &look_at(tool.server, &1),
+          context: context,
+          on_decision: &Process.put(@traced, [&1 | Process.get(@traced, [])])
+        )
         |> then(fn {class, reason} ->
           {Policy.stricter(class_floor(tool), class) |> keep_special(class), reason}
         end)
@@ -185,6 +223,9 @@ defmodule TinyAxe.Tools.Gate do
         {Policy.classify(tool.definition, tool.policy), nil}
     end
   end
+
+  # The decision records made while classing this call, oldest first.
+  defp take_decisions, do: (Process.delete(@traced) || []) |> Enum.reverse()
 
   # A browser tool's own policy class is a floor (e.g. never below read); a
   # handoff stays a handoff.
@@ -719,5 +760,15 @@ defmodule TinyAxe.Tools.Gate do
             {:reply, {:ok, MapSet.member?(task.allowed, name)}, Map.put(tasks, id, task)}
         end
     end
+  end
+
+  # What a call came to, for the next browser decisions' recent actions.
+  @impl true
+  def handle_cast({:outcome, id, outcome}, tasks) do
+    {:noreply,
+     if(Map.has_key?(tasks, id),
+       do: update_in(tasks, [id, :outcomes], &Enum.take(&1 ++ [outcome], -5)),
+       else: tasks
+     )}
   end
 end

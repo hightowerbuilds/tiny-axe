@@ -45,7 +45,7 @@ defmodule TinyAxe.Agent do
     # A purchase is watched from the start: the browser window is shown.
     if intent && TinyAxe.Browser.running?(), do: TinyAxe.Browser.show()
 
-    case Gate.open_task(notify, intent: intent) do
+    case Gate.open_task(notify, intent: intent, objective: objective(prompt, history)) do
       {:ok, task} ->
         try do
           request = %{prompt: prompt, history: history, system: system_prompt(servers)}
@@ -124,6 +124,13 @@ defmodule TinyAxe.Agent do
 
   defp deliver({:fell_short, why}, notify), do: notify.({:error, {:agent_fell_short, why}})
   defp deliver({:error, reason}, notify), do: notify.({:error, reason})
+
+  # The task as browser decisions see it: the user's own recent words, so a
+  # reply like "yes, the blue one" keeps what it answers. Never the agent's.
+  defp objective(prompt, history) do
+    said = history |> Enum.filter(&(&1.role == "user")) |> Enum.map(& &1.content) |> Enum.take(-3)
+    Enum.join(said ++ [prompt], " / ")
+  end
 
   @doc false
   def system_prompt(servers) do
