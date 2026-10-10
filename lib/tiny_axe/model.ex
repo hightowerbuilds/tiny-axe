@@ -56,10 +56,20 @@ defmodule TinyAxe.Model do
   def remote?({backend, _}), do: backend in [:claude, :codex]
   def remote?(_), do: false
 
-  @doc "A model's name for the user: \"Claude haiku\", \"Codex gpt-6-luna\"."
+  @doc """
+  A model's name for the user: "Claude haiku", "Claude Haiku 5.5" (for
+  `claude-haiku-5-5`), "Codex gpt-6-luna".
+  """
   @spec label(choice()) :: String.t()
   def label({:ollama, model}), do: model
-  def label({:claude, model}), do: "Claude #{model}"
+
+  def label({:claude, model}) do
+    case Regex.run(~r/\Aclaude-([a-z]+)-(\d+)-(\d+)\z/, model) do
+      [_, family, major, minor] -> "Claude #{String.capitalize(family)} #{major}.#{minor}"
+      nil -> "Claude #{model}"
+    end
+  end
+
   def label({:codex, model}), do: "Codex #{model}"
 
   # Every model call reports its duration and backend as a telemetry event

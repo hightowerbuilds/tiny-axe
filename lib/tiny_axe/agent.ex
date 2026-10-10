@@ -36,7 +36,7 @@ defmodule TinyAxe.Agent do
   def run(history, prompt, notify, opts \\ []) do
     remote = Keyword.get(opts, :remote, :denied)
     servers = MCP.running()
-    choice = Model.role(:agent) || {:claude, "haiku"}
+    choice = Model.role(:agent) || {:claude, "claude-haiku-5-5"}
 
     # What the user asked to buy, if anything, from their own words: nothing on
     # a page can change it (TinyAxe.Purchases).

@@ -103,9 +103,11 @@ config :tiny_axe, :purchases,
 # the agent (requests that need tools: MCP servers, the browser) is driven by
 # its own model: {:claude, _} or {:codex, _} run that CLI's agent loop with the
 # tool gate as their only tools; {:ollama, _} runs tiny-axe's own loop.
+# Haiku is pinned to Haiku 5.5 by its full name (Jev still makes the
+# decisions), so an alias moving to a new model can't change results unseen.
 config :tiny_axe, :models,
-  escalate: [{:claude, "haiku"}, {:claude, "sonnet"}],
-  agent: {:claude, "haiku"}
+  escalate: [{:claude, "claude-haiku-5-5"}, {:claude, "sonnet"}],
+  agent: {:claude, "claude-haiku-5-5"}
 
 # The agent: how long a run may take, how hard Claude/Codex think, and how many
 # turns tiny-axe's own loop gives the local model.

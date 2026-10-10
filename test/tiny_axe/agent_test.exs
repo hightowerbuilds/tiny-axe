@@ -194,13 +194,13 @@ defmodule TinyAxe.AgentTest do
 
       assert [
                %{
-                 to: "Claude haiku",
+                 to: "Claude Haiku 5.5",
                  reason: "the local model ran out of steps before it finished"
                }
              ] =
                all(events, :escalate)
 
-      assert {:answered_by, %{model: "Claude haiku"}} in events
+      assert {:answered_by, %{model: "Claude Haiku 5.5"}} in events
     end
   end
 

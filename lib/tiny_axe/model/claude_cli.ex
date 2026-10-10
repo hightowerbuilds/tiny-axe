@@ -20,7 +20,7 @@ defmodule TinyAxe.Model.ClaudeCLI do
 
   alias TinyAxe.Model.CLI
 
-  @default_model "haiku"
+  @default_model "claude-haiku-5-5"
   # With no system prompt, Claude Code would use its own agent prompt.
   @plain "You are a helpful assistant."
   # Longer system prompts go in the prompt file, away from the argument limit.

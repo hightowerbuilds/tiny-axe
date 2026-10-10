@@ -223,7 +223,9 @@ defmodule TinyAxe.ModelCLITest do
   end
 
   test "roles, labels, and which models leave the machine" do
-    assert [{:claude, "haiku"} | _] = Model.role(:escalate)
+    assert [{:claude, "claude-haiku-5-5"} | _] = Model.role(:escalate)
+    assert Model.role(:agent) == {:claude, "claude-haiku-5-5"}
+    assert Model.label({:claude, "claude-haiku-5-5"}) == "Claude Haiku 5.5"
     assert Model.label({:claude, "haiku"}) == "Claude haiku"
     assert Model.label({:codex, "gpt-6-luna"}) == "Codex gpt-6-luna"
     assert Model.remote?({:claude, "haiku"}) and Model.remote?({:codex, "gpt-6-luna"})

@@ -545,7 +545,9 @@ Each phase ends with its tests passing, as with the file operations.
 The user went with the recommendations:
 
 1. **Models:**
-   - `haiku` resolves to `claude-haiku-4-5-20251001`.
+   - `haiku` resolves to `claude-haiku-4-5-20251001`. (2026-10-09: it now
+     resolves to `claude-haiku-5-5`; the agent and the first escalation rung
+     are pinned to `claude-haiku-5-5`, with Jev still the decider.)
    - `sonnet` resolves to `claude-sonnet-5`. There is no Sonnet 5.5; the
      alias follows the latest Sonnet.
    - Luna is Codex's `gpt-6-luna`.

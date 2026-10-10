@@ -119,11 +119,11 @@ defmodule TinyAxe.EscalationTest do
       script()
       events = run("Something hard", :allowed)
 
-      assert [%{to: "Claude haiku", reason: why}] = all(events, :escalate)
+      assert [%{to: "Claude Haiku 5.5", reason: why}] = all(events, :escalate)
       assert why =~ "no answer reached the verifier's threshold (the best scored 50/100)"
       assert from_claude?(done(events))
-      assert model_of(done(events)) == "haiku"
-      assert {:answered_by, %{model: "Claude haiku"}} in events
+      assert model_of(done(events)) == "claude-haiku-5-5"
+      assert {:answered_by, %{model: "Claude Haiku 5.5"}} in events
       # Three local attempts, then Claude's first.
       assert length(all(events, :attempt)) == 4
     end
@@ -155,7 +155,7 @@ defmodule TinyAxe.EscalationTest do
       script()
       events = run("Something hard", :ask, true)
 
-      assert [%{to: "Claude haiku", reason: _}] = all(events, :ask_remote)
+      assert [%{to: "Claude Haiku 5.5", reason: _}] = all(events, :ask_remote)
       assert from_claude?(done(events))
     end
 
@@ -195,8 +195,8 @@ defmodule TinyAxe.EscalationTest do
       events = run("Something hard", :allowed)
 
       assert [
-               %{to: "Claude haiku"},
-               %{to: "Claude sonnet", reason: "Claude haiku fell short too"}
+               %{to: "Claude Haiku 5.5"},
+               %{to: "Claude sonnet", reason: "Claude Haiku 5.5 fell short too"}
              ] =
                all(events, :escalate)
 
@@ -221,7 +221,7 @@ defmodule TinyAxe.EscalationTest do
       script()
       events = run("SCENARIO:not_logged_in Something hard", :allowed)
 
-      assert [%{to: "Claude haiku", reason: {:not_logged_in, :claude}}, %{to: "Claude sonnet"}] =
+      assert [%{to: "Claude Haiku 5.5", reason: {:not_logged_in, :claude}}, %{to: "Claude sonnet"}] =
                all(events, :escalate_failed)
 
       assert done(events) == "local 2"
@@ -272,12 +272,12 @@ defmodule TinyAxe.EscalationTest do
       File.mkdir_p!(Path.join(dir, "Papers"))
       events = run("Move nowhere.pdf into Papers", :allowed)
 
-      assert [%{to: "Claude haiku", reason: "its file plan still had problems after 5 tries"}] =
+      assert [%{to: "Claude Haiku 5.5", reason: "its file plan still had problems after 5 tries"}] =
                all(events, :escalate)
 
       # The fake answers the plan's JSON Schema with a reply and no steps.
       assert done(events) =~ "--json-schema"
-      assert {:answered_by, %{model: "Claude haiku"}} in events
+      assert {:answered_by, %{model: "Claude Haiku 5.5"}} in events
     end
 
     test "commands the local model can't get past the checks go to Claude", %{dir: dir} do
@@ -296,7 +296,7 @@ defmodule TinyAxe.EscalationTest do
 
       events = run("Install the dependencies", :allowed)
 
-      assert [%{to: "Claude haiku", reason: "its commands still had problems after 4 tries"}] =
+      assert [%{to: "Claude Haiku 5.5", reason: "its commands still had problems after 4 tries"}] =
                all(events, :escalate)
 
       assert done(events) =~ "--json-schema"
