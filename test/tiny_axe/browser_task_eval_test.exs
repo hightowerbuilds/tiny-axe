@@ -277,6 +277,75 @@ defmodule TinyAxe.BrowserTaskEvalTest do
 
   ## Every task's script, through the real gate and browser
 
+  test "a task file's code digest is the same however it's formatted" do
+    dir = Path.join(System.tmp_dir!(), "task_digest_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    a = Path.join(dir, "a.exs")
+    b = Path.join(dir, "b.exs")
+    c = Path.join(dir, "c.exs")
+
+    File.write!(
+      a,
+      ~s([%{id: "t", objective: "Buy {harbor}", expect: [{:answer, "x", [~r/\\$1/]}]}]\n)
+    )
+
+    File.write!(b, """
+    # A comment, and another layout.
+    [
+      %{
+        id: "t",
+        objective: "Buy {harbor}",
+        expect: [{:answer, "x", [~r/\\$1/]}]
+      }
+    ]
+    """)
+
+    File.write!(
+      c,
+      ~s([%{id: "t", objective: "Buy {pine}", expect: [{:answer, "x", [~r/\\$1/]}]}]\n)
+    )
+
+    assert TaskEval.digest(a).ast == TaskEval.digest(b).ast
+    assert TaskEval.digest(a).file != TaskEval.digest(b).file
+    assert TaskEval.digest(a).ast != TaskEval.digest(c).ast
+  end
+
+  # safe_nav (eval/browser_tasks_hard.exs) approves clicks that only open a
+  # page; that's sound only while every effect those sites record comes
+  # from a POST route.
+  test "the harder tasks' sites record effects and change state only on POST" do
+    for site <- ~w(market civic tablehop bolt) do
+      file = "lib/tiny_axe/browser/task_eval/sites/#{site}.ex"
+      {:ok, ast} = Code.string_to_quoted(File.read!(file))
+
+      {_, gets} =
+        Macro.prewalk(ast, [], fn
+          {verb, _, [path, [do: body]]} = node, acc when verb in [:get, :match] ->
+            {node, [{path, body} | acc]}
+
+          node, acc ->
+            {node, acc}
+        end)
+
+      assert gets != [], site
+
+      for {path, body} <- gets do
+        {_, calls} =
+          Macro.prewalk(body, [], fn
+            {name, _, args} = node, acc when name in [:effect, :update] and is_list(args) ->
+              {node, [name | acc]}
+
+            node, acc ->
+              {node, acc}
+          end)
+
+        assert calls == [], "#{site}: #{Macro.to_string(path)} calls #{inspect(calls)}"
+      end
+    end
+  end
+
   test "the scripted user's safe_nav covers only clicks that open another page" do
     task = %{safe_nav: [~r/./]}
 
@@ -484,6 +553,60 @@ defmodule TinyAxe.BrowserTaskEvalTest do
 
       # Put back as it was.
       assert TinyAxe.Browser.Choices.mode() == :off
+    end
+
+    test "a wrong candidate clicked in Chrome is held, naming the right one by its ref" do
+      previous = Application.get_env(:tiny_axe, :decider)
+      on_exit(fn -> Application.put_env(:tiny_axe, :decider, previous) end)
+
+      # Fits: the new white charger from Voltra Official; everything else no.
+      right? = fn item -> (item[:row] || "") =~ "White $39.00 · New · Sold by Voltra Official" end
+
+      TinyAxe.Decider.Script.script(fn
+        :pick, _q, state ->
+          case Enum.find(state.candidates.items, right?) do
+            nil -> :none
+            item -> String.to_atom(item.id)
+          end
+
+        key, _q, state ->
+          case Atom.to_string(key) do
+            "fits_" <> i ->
+              if right?.(Enum.at(state.candidates.items, String.to_integer(i) - 1)),
+                do: 0.9,
+                else: 0.05
+
+            _ ->
+              nil
+          end
+      end)
+
+      tasks = Map.new(TaskEval.tasks("eval/browser_tasks_hard.exs"), &{&1.id, &1})
+
+      task = %{
+        tasks["market_charger"]
+        | script: [
+            {:go, "market", "/search?q=charger"},
+            # The Renewed one.
+            {:click, "button", "Add to cart", 4},
+            {:say, "Added."}
+          ]
+      }
+
+      report =
+        TaskEval.run([task],
+          driver: :scripted,
+          decider: TinyAxe.Decider.Script,
+          choose: :on,
+          choose_hints: true,
+          browser_name: "task-eval-#{System.unique_integer([:positive])}"
+        )
+
+      assert [r] = report.results
+      assert [%{held: true, result: "chosen", suggested: ref}] = r.choices.results
+      assert ref =~ ~r/^(f\d+)?e\d+$/
+      # Nothing reached the shop.
+      assert r.effects == []
     end
 
     test "an answer claiming what couldn't be confirmed reaches no one: no false completion" do

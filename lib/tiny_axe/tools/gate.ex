@@ -413,13 +413,21 @@ defmodule TinyAxe.Tools.Gate do
 
         # Held because something like it may already have gone through: only
         # the user can say to do it again, never the agent.
-        assessment =
-          if "outcome_unresolved" in assessment.reason_codes and
-               repeat_ok?(task, tool, args, assessment),
-             do: release(task, assessment) && assess(task, tool, args, :execute, %{}),
-             else: assessment
+        repeat =
+          "outcome_unresolved" in assessment.reason_codes and
+            repeat_ok?(task, tool, args, assessment)
 
-        {assessment, choice, hint} = check_candidates(task, tool, args, assessment)
+        assessment =
+          if repeat,
+            do: release(task, assessment) && assess(task, tool, args, :execute, %{}),
+            else: assessment
+
+        # The user has just said to do this very action again: nothing holds
+        # it now, or the hold they lifted would be gone without it running.
+        {assessment, choice, hint} =
+          if repeat,
+            do: {assessment, nil, nil},
+            else: check_candidates(task, tool, args, assessment)
 
         task =
           task
@@ -495,14 +503,13 @@ defmodule TinyAxe.Tools.Gate do
   ## Choosing (TinyAxe.Browser.Choices)
 
   # One choice among elements on the task's tab, looked at afresh.
-  defp choose(task, server, refs, mode, args, target \\ nil) do
+  defp choose(task, server, refs, mode, args) do
     Decisions.choose(
       %{
         task: task.id,
         server: server,
         mode: mode,
         refs: refs,
-        target: target,
         observation: args["observation_id"],
         subgoal: args["subgoal"]
       },
@@ -513,43 +520,95 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   # Before a click on a control whose label others on the page share: the
-  # same choice, made by the gate, once per target and observation. In
+  # same choice, made by the gate, once per element (its ref and signature:
+  # same-label controls share a signature, never a ref) and observation. In
   # shadow it's only recorded; on with hints, a target that clearly doesn't
-  # fit is held once (nothing runs, no action record), and repeating the
-  # call goes ahead with the usual checks. Never for a refused, purchase or
-  # handoff class: those keep their own paths.
+  # fit is held once (nothing runs; its record says so), and repeating the
+  # call goes ahead with the usual checks. Only for local and outward
+  # clicks: refused, purchase and handoff classes keep their own paths. The
+  # page is described without a snapshot, so the agent's refs are untouched
+  # unless a hint is about to name one.
   defp check_candidates(task, tool, args, assessment) do
     ref = args["ref"]
-    key = {tool.server, assessment.binding.observation, assessment.binding.targets[ref]}
+    key = {tool.server, assessment.binding.observation, ref, assessment.binding.targets[ref]}
 
     with true <- Choices.checks?(),
-         true <- tool.tool == "browser_click" and is_binary(ref),
-         true <- assessment.class in [:local, :outward],
+         true <- Choices.checkable?(tool.tool, ref, assessment.class),
          false <- GenServer.call(__MODULE__, {:checked?, task.id, key}),
-         [_, _ | _] = refs <- similar(task, tool.server, ref) do
+         {:ok, [_, _ | _] = found} <- similar(task, tool.server, ref, false) do
+      metas = found |> Enum.with_index(1) |> Map.new(fn {m, i} -> {"similar-#{i}", m} end)
+      target = Enum.find_value(metas, fn {id, m} -> m["target"] == true && id end)
       mode = if Choices.mode() == :on, do: :hint, else: :shadow
-      choice = choose(task, tool.server, refs, mode, %{}, ref)
-      hint = if mode == :hint, do: Choices.hint(choice, ref)
+
+      choice =
+        Decisions.choose(
+          %{
+            task: task.id,
+            server: tool.server,
+            mode: mode,
+            refs: for(i <- 1..map_size(metas), do: "similar-#{i}"),
+            target: target
+          },
+          inspect: &metas[&1],
+          more: fn -> extract(task, tool.server) end,
+          context: %{objective: Map.get(task, :objective), intent: Map.get(task, :intent)}
+        )
+
+      hint =
+        if mode == :hint and target,
+          do: choice |> Choices.hint(target) |> name_refs(task, tool.server, ref, metas)
 
       :ok =
         GenServer.call(__MODULE__, {:checked, task.id, key, if(hint, do: :held, else: :passed)})
 
-      if hint,
-        do: {%{assessment | action_id: nil}, choice, hint},
-        else: {assessment, choice, nil}
+      {assessment, choice, hint}
     else
-      _ -> {assessment, nil, nil}
+      # Nothing else on the page shares its label: remembered, not looked at again.
+      {:ok, _} ->
+        :ok = GenServer.call(__MODULE__, {:checked, task.id, key, :unique})
+        {assessment, nil, nil}
+
+      _ ->
+        {assessment, nil, nil}
     end
   end
 
-  # The controls on the task's tab that share the target's role and name.
-  defp similar(task, server, ref) do
-    with {:ok, %{"content" => content} = result} <-
-           MCP.call(server, "browser_snapshot", Browser.bind(%{}, task.id), 30_000),
-         false <- result["isError"] == true do
-      content |> Enum.map_join("\n", &(&1["text"] || "")) |> Choices.similar(ref)
+  # A hint names the agent's own ref for the target and, for another
+  # candidate, its ref on the page now; one that can't be found isn't held.
+  defp name_refs(nil, _task, _server, _ref, _metas), do: nil
+
+  defp name_refs(%{"advice" => "other_candidate"} = hint, task, server, ref, metas) do
+    wanted = metas[hint["suggested_ref"]]
+
+    with {:ok, now} <- similar(task, server, ref, true),
+         %{"ref" => found} when is_binary(found) <-
+           Enum.find(
+             now,
+             &(&1["row"] == wanted["row"] and &1["signature"] == wanted["signature"])
+           ) do
+      %{hint | "target" => ref, "suggested_ref" => found}
     else
-      _ -> []
+      _ -> nil
+    end
+  end
+
+  defp name_refs(hint, _task, _server, ref, _metas), do: %{hint | "target" => ref}
+
+  # The controls on the task's tab that share the target's role and name,
+  # described by the browser (with their refs only when asked).
+  defp similar(task, server, ref, refs) do
+    with {:ok, %{"content" => [%{"text" => json} | _]} = result} <-
+           MCP.call(
+             server,
+             "browser_similar",
+             Browser.bind(%{"ref" => ref, "refs" => refs}, task.id),
+             30_000
+           ),
+         false <- result["isError"] == true,
+         {:ok, %{"candidates" => found}} when is_list(found) <- JSON.decode(json) do
+      {:ok, found}
+    else
+      _ -> :error
     end
   end
 

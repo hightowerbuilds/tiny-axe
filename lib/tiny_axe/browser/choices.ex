@@ -30,8 +30,9 @@ defmodule TinyAxe.Browser.Choices do
   Unclear answers first trigger one more round with more evidence: the
   page's readable text and each candidate's wider surroundings.
 
-  A choice is bound to its task, server, observation and the signatures of
-  the candidates it saw. Turned on and off by `config :tiny_axe,
+  A choice is bound to its task, server, observation and each candidate it
+  saw: its ref, signature and a hash of its row (same-label controls share a
+  signature; the row tells them apart). Turned on and off by `config :tiny_axe,
   :browser_choose` (`mode/0`): `:off`, `:shadow` (the gate's own checks
   are made and recorded, never shown to the agent, and `browser_choose`
   isn't offered) or `:on`.
@@ -192,8 +193,16 @@ defmodule TinyAxe.Browser.Choices do
           {result, chosen, codes ++ missing, records, judged}
       end
 
-    signatures =
-      for c <- found, into: %{}, do: {c.ref, c.meta["signature"]}
+    seen =
+      for c <- found,
+          into: %{},
+          do:
+            {c.id,
+             %{
+               ref: c.ref,
+               signature: c.meta["signature"],
+               row: c.meta["row"] && Evidence.hash(c.meta["row"])
+             }}
 
     %{
       schema: @schema,
@@ -210,7 +219,7 @@ defmodule TinyAxe.Browser.Choices do
         task: request.task,
         server: request.server,
         observation: observation,
-        signatures: signatures
+        candidates: seen
       },
       decisions:
         Enum.map(records, &Map.merge(&1, %{choice_id: id, choice_mode: to_string(request.mode)})),
@@ -241,7 +250,6 @@ defmodule TinyAxe.Browser.Choices do
           "advice" => "other_candidate",
           "target" => target_ref,
           "suggested_ref" => choice.chosen["ref"],
-          "suggested" => choice.chosen["context"] || choice.chosen["label"],
           "next_step" =>
             "act on #{choice.chosen["ref"]} instead; if you're sure #{target_ref} is right, repeat the same call"
         }
@@ -320,37 +328,13 @@ defmodule TinyAxe.Browser.Choices do
   end
 
   @doc """
-  The refs of the controls on a snapshot that share the role and name of
-  the one at `ref` (it included), in page order, skipping disabled ones; at
-  most #{@max}, around it.
+  Whether the gate checks a direct action before it runs: a click on a ref
+  whose class is local or outward. Refused, purchase (`:commit`,
+  `:payment_step`), handoff and read classes keep their own paths.
   """
-  @spec similar(String.t(), String.t()) :: [String.t()]
-  def similar(snapshot, ref) when is_binary(snapshot) and is_binary(ref) do
-    controls =
-      for [_, role, name, rest] <-
-            Regex.scan(~r/^\s*- (\w+) "((?:[^"\\]|\\.)*)"([^\n]*)$/m, snapshot),
-          [_, r] <- [Regex.run(~r/\[ref=((?:f\d+)?e\d+)\]/, rest)],
-          do: %{role: role, name: name, ref: r, disabled: rest =~ "[disabled]"}
-
-    case Enum.find(controls, &(&1.ref == ref)) do
-      nil ->
-        []
-
-      target ->
-        same =
-          Enum.filter(
-            controls,
-            &(&1.role == target.role and &1.name == target.name and
-                (not &1.disabled or &1.ref == ref))
-          )
-
-        at = Enum.find_index(same, &(&1.ref == ref))
-        start = max(min(at - div(@max, 2), length(same) - @max), 0)
-        same |> Enum.slice(start, @max) |> Enum.map(& &1.ref)
-    end
-  end
-
-  def similar(_snapshot, _ref), do: []
+  @spec checkable?(String.t(), term(), atom()) :: boolean()
+  def checkable?("browser_click", ref, class) when is_binary(ref), do: class in [:local, :outward]
+  def checkable?(_tool, _ref, _class), do: false
 
   ## Judging
 
@@ -628,7 +612,7 @@ defmodule TinyAxe.Browser.Choices do
   defp next_step("handoff", codes, _c) do
     if "decision_unavailable" in codes,
       do:
-        "tiny-axe couldn't judge them: go ahead only if the page makes it clear, otherwise tell the user",
+        "tiny-axe couldn't judge them: don't guess; stop and tell the user, or ask them which one",
       else: "this needs the user: use browser_handoff"
   end
 

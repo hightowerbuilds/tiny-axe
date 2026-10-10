@@ -260,7 +260,9 @@ defmodule TinyAxe.Browser.Outcomes do
     det = deterministic(r, ex)
 
     cond do
-      r.decision in [:refused, :denied] ->
+      # Refused, declined, or held by the gate's candidate check
+      # (TinyAxe.Browser.Choices): it never ran.
+      r.decision in [:refused, :denied, :advised] ->
         {:failed, ["not_executed"], []}
 
       # Only the purchase gate's own receipt settles an order, and only an
@@ -1025,11 +1027,12 @@ defmodule TinyAxe.Browser.Outcomes do
 
   defp sig_keys(r), do: Enum.filter(r.keys, &String.contains?(&1, "|sig:"))
 
-  # What was stopped was the effect itself: the user said no, it needed
-  # approval or a purchase, or the decision about its effect refused it.
+  # What was stopped was the effect itself: the user said no, the gate held
+  # it as the wrong candidate, it needed approval or a purchase, or the
+  # decision about its effect refused it.
   defp effect_attempt?(r),
     do:
-      r.decision == :denied or r.class in @submits or
+      r.decision in [:denied, :advised] or r.class in @submits or
         Enum.any?(r.assessment_codes, &(&1 in @effect_refusals))
 
   # One atomic question per action the answer could contradict, all in one
@@ -1138,6 +1141,9 @@ defmodule TinyAxe.Browser.Outcomes do
     cond do
       "not_executed" in codes and r.decision == :denied ->
         "the user said no"
+
+      "not_executed" in codes and r.decision == :advised ->
+        "tiny-axe held it: its candidate check found it doesn't match the request"
 
       "not_executed" in codes ->
         "it wasn't done (tiny-axe stopped it)"

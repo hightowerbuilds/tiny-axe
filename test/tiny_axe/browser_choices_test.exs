@@ -92,12 +92,10 @@ defmodule TinyAxe.BrowserChoicesTest do
       assert [%{kind: "choose", choice_id: id, choice_mode: "agent"}] = c.decisions
       assert id == c.id
 
-      assert c.binding == %{
-               task: "t1",
-               server: "browser",
-               observation: "obs-1",
-               signatures: %{"e1" => "sig-e1", "e2" => "sig-e2", "e3" => "sig-e3"}
-             }
+      assert %{task: "t1", server: "browser", observation: "obs-1", candidates: seen} = c.binding
+      assert seen["c1"].ref == "e1" and seen["c1"].signature == "sig-e1"
+      # Same-label controls can share a signature; their rows tell them apart.
+      assert seen["c1"].row != seen["c3"].row
 
       public = Choices.public(c)
       assert public["authority"] =~ "advice only"
@@ -171,6 +169,7 @@ defmodule TinyAxe.BrowserChoicesTest do
       c = choose(~w(e1 e3), %{}, decide: fn _, _ -> {:error, :timeout} end)
       assert c.result == "handoff"
       assert c.reason_codes == ["decision_unavailable"]
+      assert c.next_step =~ "don't guess; stop and tell the user, or ask them"
 
       rows = %{"e7" => %{"text" => "Password", "tag" => "input", "sensitive" => true}}
       c = choose(~w(e7), %{}, inspect: inspect_fun(rows))
@@ -268,7 +267,8 @@ defmodule TinyAxe.BrowserChoicesTest do
       hint = Choices.hint(c, "e1")
       assert hint["advice"] == "other_candidate"
       assert hint["suggested_ref"] == "e3"
-      assert hint["suggested"] =~ "Voltra Official"
+      # Page text never goes into tiny-axe's own words.
+      refute inspect(hint) =~ "Voltra Official"
       assert hint["next_step"] =~ "repeat the same call"
 
       result = Choices.hint_result(hint)
@@ -299,26 +299,16 @@ defmodule TinyAxe.BrowserChoicesTest do
       assert Choices.hint(c, "e1") == nil
     end
 
-    test "finds the controls that share the target's role and name, skipping disabled ones" do
-      snapshot = """
-      Page: http://civic.test/library/book · observation obs-3
-      - button "Monday" [ref=e4]
-      - row "Eastside, Tuesday 08:30 Full" [ref=e9]:
-        - button "Book" [disabled] [ref=e10]
-      - row "Eastside, Tuesday 09:30 Free" [ref=e11]:
-        - button "Book" [ref=e12] [cursor=pointer]
-      - row "Eastside, Tuesday 10:00 Free" [ref=e13]:
-        - button "Book" [ref=e14]
-      - link "Book a library appointment" [ref=e15]
-      """
+    test "only local or outward clicks on a ref are checked" do
+      for class <- [:local, :outward],
+          do: assert(Choices.checkable?("browser_click", "e2", class))
 
-      assert Choices.similar(snapshot, "e12") == ["e12", "e14"]
-      assert Choices.similar(snapshot, "e4") == ["e4"]
-      assert Choices.similar(snapshot, "e99") == []
+      for class <- [:read, :commit, :payment_step, :handoff, :refused],
+          do: refute(Choices.checkable?("browser_click", "e2", class))
 
-      many = Enum.map_join(1..20, "\n", &~s(- button "Add" [ref=e#{&1}]))
-      around = Choices.similar(many, "e15")
-      assert length(around) == 8 and "e15" in around
+      refute Choices.checkable?("browser_click", nil, :local)
+      refute Choices.checkable?("browser_press_key", "e2", :local)
+      refute Choices.checkable?("browser_type", "e2", :outward)
     end
   end
 

@@ -32,7 +32,9 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
   check is shown to the agent when it's on.
 
   A JSON report goes to `eval/results/` (or `--output`): resolved models,
-  the git commit, the caps and what was used, a summary per split, and a
+  the git commit and a hash of uncommitted changes to the code, the task
+  file's digests (as written, and of its parsed code), the caps and what was
+  used, a summary per split, and a
   record per task run. Purchases are fixture purchases only.
   """
 
@@ -126,12 +128,14 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
     report =
       Map.merge(report, %{
         at: DateTime.utc_now() |> DateTime.to_iso8601(),
-        git: revision(),
+        git: TaskEval.revision(),
         split: split,
         driver_model: driver_model(driver),
         decider_module: inspect(decider),
         configured_jev_model: Application.get_env(:tiny_axe, :jev, [])[:model],
-        tasks_sha256: digest(opts[:tasks] || "eval/browser_tasks.exs"),
+        tasks_sha256: TaskEval.digest(opts[:tasks] || "eval/browser_tasks.exs").file,
+        # The same for any formatting of the file: a hash of its parsed code.
+        tasks_ast_sha256: TaskEval.digest(opts[:tasks] || "eval/browser_tasks.exs").ast,
         note:
           "Fixture sites only; scored from server-side effects and final state. " <>
             "The scripted user approves the steps each task labels and refuses the rest."
@@ -240,19 +244,6 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
 
   defp secs(nil), do: "–"
   defp secs(ms), do: "#{Float.round(ms / 1000, 1)}s"
-
-  defp revision do
-    case System.cmd("git", ~w(rev-parse HEAD), stderr_to_stdout: true) do
-      {rev, 0} ->
-        {status, _} = System.cmd("git", ~w(status --porcelain))
-        %{commit: String.trim(rev), dirty: status != ""}
-
-      _ ->
-        nil
-    end
-  end
-
-  defp digest(path), do: :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower)
 
   defp json_safe(value) when is_tuple(value), do: value |> Tuple.to_list() |> json_safe()
   defp json_safe(%Regex{} = re), do: Regex.source(re)

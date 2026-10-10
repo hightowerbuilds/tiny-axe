@@ -337,6 +337,68 @@ async function after(p, note = "") {
   return text(`${await header(p)}${note}\n\n${untrusted(await snapshot(p))}`);
 }
 
+// What an element is, for the gate: run in the page, on the element; no
+// field values or scripts.
+const describeElement = (el, sel) => {
+  const abs = (u) => { try { return new URL(u, location.href).href; } catch { return null; } };
+  const form = el.form || el.closest("form");
+  const submit = form?.querySelector('button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]');
+  const isSubmit = (el.tagName === "BUTTON" && (el.type || "submit") === "submit") ||
+    (el.tagName === "INPUT" && ["submit", "image"].includes(el.type));
+  const fields = form ? [...form.elements].map((f) => ({ tag: f.tagName.toLowerCase(), type: f.type || "", name: f.name || "", autocomplete: f.autocomplete || "" })) : [];
+  // Context for the decision maker, without copying field values or scripts.
+  // Work on a clone so observing never fires a page's input/change handlers.
+  const region = el.closest("form, fieldset, section, article, main") || el.parentElement || el;
+  const clone = region.cloneNode(true);
+  clone.querySelectorAll("input, textarea, select, script, style, iframe").forEach(n => n.remove());
+  const contextText = (clone.textContent || "").replace(/\s+/g, " ").trim();
+  const label = el.getAttribute("aria-label") || [...(el.labels || [])].map(l => l.innerText).join(" ") ||
+    el.innerText || (el.type === "submit" ? el.value : "") || el.title || "";
+  // The row it sits in, for choosing among similar controls: the smallest
+  // enclosing element with text of its own beyond the control's (a list
+  // item, a table row, a card), short of the page's main region; no field
+  // values.
+  const words = (node) => {
+    const c = node.cloneNode(true);
+    c.querySelectorAll("input, textarea, select, script, style").forEach((n) => n.remove());
+    const walk = document.createTreeWalker(c, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    while (walk.nextNode()) parts.push(walk.currentNode.nodeValue);
+    return parts.join(" ").replace(/\s+/g, " ").trim();
+  };
+  const own = words(el);
+  let row = null;
+  for (let n = el.parentElement; n && !n.matches("body, main, [role=main]"); n = n.parentElement) {
+    const t = words(n);
+    if (t.replace(own, "").trim().length >= 8) { row = t; break; }
+  }
+  const pressed = el.getAttribute("aria-pressed");
+  return {
+    row: row ? row.slice(0, 300) : null,
+    checked: ["checkbox", "radio"].includes(el.type) ? el.checked : (pressed === null ? null : pressed === "true"),
+    tag: el.tagName.toLowerCase(),
+    type: el.type || "",
+    role: el.getAttribute("role") || "",
+    text: label.trim().slice(0, 200),
+    context: contextText.slice(0, 2000),
+    contextTruncated: contextText.length > 2000,
+    href: el.closest("a[href]") ? abs(el.closest("a[href]").getAttribute("href")) : null,
+    sensitive: el.matches(sel),
+    isSubmit,
+    inForm: !!form,
+    form: form ? {
+      action: abs(form.getAttribute("action") || location.href),
+      method: (form.getAttribute("method") || "get").toLowerCase(),
+      submitText: submit ? (submit.innerText || submit.value || submit.getAttribute("aria-label") || "").trim().slice(0, 200) : null,
+      fields,
+      hasPassword: fields.some((f) => f.type === "password"),
+      hasPayment: [...form.querySelectorAll(sel)].some((f) => f.type !== "password"),
+      label: (form.getAttribute("aria-label") || form.querySelector("h1,h2,h3,legend")?.innerText || "").trim().slice(0, 100),
+    } : null,
+    page: location.href,
+  };
+};
+
 // What the gate needs to classify an action on an element (or the focused one).
 // It also reports the tab's observation id and the target's signature.
 async function inspect(p, ref) {
@@ -346,69 +408,60 @@ async function inspect(p, ref) {
     return { ...info, observation: observation(p), signature: signature(info) };
   }
   const loc = ref ? target(p, ref) : p.locator(":focus");
-  const info = await loc.first().evaluate((el, sel) => {
-    const abs = (u) => { try { return new URL(u, location.href).href; } catch { return null; } };
-    const form = el.form || el.closest("form");
-    const submit = form?.querySelector('button:not([type]), button[type="submit"], input[type="submit"], input[type="image"]');
-    const isSubmit = (el.tagName === "BUTTON" && (el.type || "submit") === "submit") ||
-      (el.tagName === "INPUT" && ["submit", "image"].includes(el.type));
-    const fields = form ? [...form.elements].map((f) => ({ tag: f.tagName.toLowerCase(), type: f.type || "", name: f.name || "", autocomplete: f.autocomplete || "" })) : [];
-    // Context for the decision maker, without copying field values or scripts.
-    // Work on a clone so observing never fires a page's input/change handlers.
-    const region = el.closest("form, fieldset, section, article, main") || el.parentElement || el;
-    const clone = region.cloneNode(true);
-    clone.querySelectorAll("input, textarea, select, script, style, iframe").forEach(n => n.remove());
-    const contextText = (clone.textContent || "").replace(/\s+/g, " ").trim();
-    const label = el.getAttribute("aria-label") || [...(el.labels || [])].map(l => l.innerText).join(" ") ||
-      el.innerText || (el.type === "submit" ? el.value : "") || el.title || "";
-    // The row it sits in, for choosing among similar controls: the smallest
-    // enclosing element with text of its own beyond the control's (a list
-    // item, a table row, a card), short of the page's main region; no field
-    // values.
-    const words = (node) => {
-      const c = node.cloneNode(true);
-      c.querySelectorAll("input, textarea, select, script, style").forEach((n) => n.remove());
-      const walk = document.createTreeWalker(c, NodeFilter.SHOW_TEXT);
-      const parts = [];
-      while (walk.nextNode()) parts.push(walk.currentNode.nodeValue);
-      return parts.join(" ").replace(/\s+/g, " ").trim();
-    };
-    const own = words(el);
-    let row = null;
-    for (let n = el.parentElement; n && !n.matches("body, main, [role=main]"); n = n.parentElement) {
-      const t = words(n);
-      if (t.replace(own, "").trim().length >= 8) { row = t; break; }
-    }
-    const pressed = el.getAttribute("aria-pressed");
-    return {
-      row: row ? row.slice(0, 300) : null,
-      checked: ["checkbox", "radio"].includes(el.type) ? el.checked : (pressed === null ? null : pressed === "true"),
-      tag: el.tagName.toLowerCase(),
-      type: el.type || "",
-      role: el.getAttribute("role") || "",
-      text: label.trim().slice(0, 200),
-      context: contextText.slice(0, 2000),
-      contextTruncated: contextText.length > 2000,
-      href: el.closest("a[href]") ? abs(el.closest("a[href]").getAttribute("href")) : null,
-      sensitive: el.matches(sel),
-      isSubmit,
-      inForm: !!form,
-      form: form ? {
-        action: abs(form.getAttribute("action") || location.href),
-        method: (form.getAttribute("method") || "get").toLowerCase(),
-        submitText: submit ? (submit.innerText || submit.value || submit.getAttribute("aria-label") || "").trim().slice(0, 200) : null,
-        fields,
-        hasPassword: fields.some((f) => f.type === "password"),
-        hasPayment: [...form.querySelectorAll(sel)].some((f) => f.type !== "password"),
-        label: (form.getAttribute("aria-label") || form.querySelector("h1,h2,h3,legend")?.innerText || "").trim().slice(0, 100),
-      } : null,
-      page: location.href,
-    };
-  }, SENSITIVE, { timeout: 5000 });
+  const info = await loc.first().evaluate(describeElement, SENSITIVE, { timeout: 5000 });
+  return described(p, info);
+}
+
+// What the page reported, redacted, with the tab's observation id and the
+// element's signature.
+function described(p, info) {
   return {
     ...info, text: redact(info.text), context: redact(info.context), row: info.row && redact(info.row), dialog: null,
     observation: observation(p), signature: signature(info),
   };
+}
+
+// The controls that share an element's tag, role, type and label (it
+// included, disabled and hidden ones left out), at most eight around it,
+// each described as browser_inspect does: the gate's candidate check. No
+// snapshot is taken, so the agent's refs stay as its own snapshot left them;
+// only when `withRefs` (the gate is about to name one in a hint, holding the
+// click) does it take one, to give each its ref.
+const MAX_SIMILAR = 8;
+async function similar(p, ref, withRefs) {
+  if (dialogs.get(p)) return { candidates: [] };
+  const handle = await target(p, ref).first().elementHandle({ timeout: 5000 });
+  const list = await handle.evaluateHandle((el, max) => {
+    const labelOf = (e) => (e.getAttribute("aria-label") || [...(e.labels || [])].map((l) => l.innerText).join(" ") ||
+      e.innerText || (e.type === "submit" ? e.value : "") || e.title || "").trim();
+    const kind = (e) => [e.tagName, e.getAttribute("role") || "", e.type || ""].join("|");
+    const label = labelOf(el), k = kind(el);
+    const same = [...document.querySelectorAll(el.tagName)].filter((e) => e === el ||
+      (kind(e) === k && labelOf(e) === label && !e.disabled && e.getClientRects().length > 0));
+    const at = same.indexOf(el);
+    const start = Math.max(Math.min(at - Math.floor(max / 2), same.length - max), 0);
+    return same.slice(start, start + max);
+  }, MAX_SIMILAR);
+  const els = [...(await list.getProperties()).values()].map((h) => h.asElement()).filter(Boolean);
+  if (els.length < 2) return { candidates: [] };
+  const candidates = [];
+  for (const el of els) {
+    const info = described(p, await el.evaluate(describeElement, SENSITIVE));
+    candidates.push({ ...info, target: await el.evaluate((a, b) => a === b, handle) });
+  }
+  if (withRefs) {
+    const snap = await snapshot(p);
+    const name = candidates[0].text;
+    for (const m of snap.matchAll(/^\s*- \w+ "((?:[^"\\]|\\.)*)"[^\n]*\[ref=((?:f\d+)?e\d+)\]/gm)) {
+      if (m[1] !== name) continue;
+      const found = await p.locator(`aria-ref=${m[2]}`).elementHandle({ timeout: 1000 }).catch(() => null);
+      if (!found) continue;
+      for (let i = 0; i < els.length; i++) {
+        if (!candidates[i].ref && await els[i].evaluate((a, b) => a === b, found)) candidates[i].ref = m[2];
+      }
+    }
+  }
+  return { candidates };
 }
 
 // What identifies a target: its page, what it is, its label, where it leads
@@ -1222,6 +1275,14 @@ const TOOLS = {
       return text(JSON.stringify(await inspect(await page(lease), ref)));
     },
   },
+  browser_similar: {
+    description: "For tiny-axe's gate only: the controls on the page that share an element's role and label, described like browser_inspect.",
+    inputSchema: obj({ ref: { type: "string" }, refs: { type: "boolean" } }, ["ref"]),
+    annotations: { readOnlyHint: true },
+    async run({ ref, refs }, lease) {
+      return text(JSON.stringify(await similar(await page(lease), ref, refs === true)));
+    },
+  },
   browser_observe: {
     description: "For tiny-axe's gate only: the page as it is now, and what an earlier action did.",
     inputSchema: obj({ action: { type: "string" } }),
@@ -1274,7 +1335,7 @@ function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
 let queue = Promise.resolve();
 
 // What can still be done while a dialog has the page frozen.
-const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read", "browser_release", "browser_observe"]);
+const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_similar", "browser_read", "browser_release", "browser_observe"]);
 function serial(fn) {
   const run = queue.then(fn, fn);
   queue = run.catch(() => {});

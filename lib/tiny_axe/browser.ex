@@ -78,7 +78,7 @@ defmodule TinyAxe.Browser do
           if(Keyword.get(opts, :no_window, false), do: "1", else: "0")
       },
       # "browser": classed per action by TinyAxe.Tools.BrowserPolicy; the gate
-      # alone uses browser_inspect.
+      # alone uses browser_inspect, browser_observe and browser_similar.
       "policy" => %{
         "read" => @read,
         "browser" => true,
@@ -88,7 +88,8 @@ defmodule TinyAxe.Browser do
           "browser_fill_card",
           "browser_show",
           "browser_release",
-          "browser_observe"
+          "browser_observe",
+          "browser_similar"
         ]
       }
     }
