@@ -1,6 +1,11 @@
-// The viewer's page: a sidebar of notes and a note or home view, kept up to
-// date as tiny-axe writes the vault. Text from notes always goes in as text;
-// the only HTML inserted is a note body the server rendered (render.ts).
+// The viewer's page: a sidebar of notes beside the graph, the overview or a
+// note with its local graph, kept up to date as tiny-axe writes the vault.
+// Text from notes always goes in as text; the only HTML inserted is a note
+// body the server rendered (render.ts).
+
+import type { GraphData } from "../src/graph.ts";
+import { choices, isFiltered, neighbourhood, NO_FILTERS, visibleMask, type Filters } from "./filter.ts";
+import { GraphView, type Dims } from "./graph.ts";
 
 type Value = string | number | boolean | null | string[];
 
@@ -38,6 +43,7 @@ const tree = $<HTMLElement>("tree");
 const search = $<HTMLInputElement>("search");
 
 let overview: Overview | null = null;
+let graph: GraphData | null = null;
 
 // Elements, with text set as text.
 function h(tag: string, attrs: Record<string, string> = {}, ...children: (Node | string | null)[]) {
@@ -75,23 +81,34 @@ const ORDER: Record<string, (a: Entry, b: Entry) => number> = {
 };
 const byTitle = (a: Entry, b: Entry) => a.title.localeCompare(b.title);
 
-function openFolders(): Set<string> {
+// Open folders, filters, 2D or 3D and the local graph's depth are
+// remembered in this browser, as a convenience; the page works without.
+function recall<T>(key: string, fallback: T): T {
   try {
-    return new Set(JSON.parse(localStorage.getItem("open-folders") ?? '["Sites"]'));
+    const saved = localStorage.getItem(key);
+    return saved === null ? fallback : (JSON.parse(saved) as T);
   } catch {
-    return new Set(["Sites"]);
+    return fallback;
   }
+}
+
+function remember(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // See recall.
+  }
+}
+
+function openFolders(): Set<string> {
+  return new Set(recall<string[]>("open-folders", ["Sites"]));
 }
 
 function rememberFolder(name: string, open: boolean) {
   const folders = openFolders();
   if (open) folders.add(name);
   else folders.delete(name);
-  try {
-    localStorage.setItem("open-folders", JSON.stringify([...folders]));
-  } catch {
-    // Remembering open folders is a convenience.
-  }
+  remember("open-folders", [...folders]);
 }
 
 function renderSummary() {
@@ -148,9 +165,9 @@ function showProblem(error: unknown) {
   main.replaceChildren(h("p", { class: "problem" }, (error as Error).message));
 }
 
-function renderHome() {
+function renderOverview() {
   if (!overview) return;
-  document.title = "tiny-axe know-how";
+  document.title = "Overview · tiny-axe know-how";
   const s = overview.summary;
   const notes = (folder: string) => overview!.folders.find((f) => f.name === folder)?.notes ?? [];
 
@@ -171,7 +188,13 @@ function renderHome() {
       "div",
       { class: "home" },
       h("h1", {}, "What tiny-axe knows"),
-      h("p", { class: "lede" }, "Every site, page and decision path tiny-axe has used on the web, from its own records."),
+      h(
+        "p",
+        { class: "lede" },
+        "Every site, page and decision path tiny-axe has used on the web, from its own records. ",
+        h("a", { href: "/" }, "Open the graph"),
+        ".",
+      ),
       h(
         "div",
         { class: "tiles" },
@@ -246,18 +269,255 @@ async function renderNote(id: string) {
           ]),
         );
 
-  main.replaceChildren(h("article", { class: "note" }, h("div", { class: "crumbs" }, note.folder), badges, body, backlinks));
+  const crumbs = h(
+    "div",
+    { class: "crumbs" },
+    h("span", {}, note.folder),
+    h("a", { class: "button", href: graphHref(note.id) }, "Show in graph"),
+  );
+  const article = h("article", { class: "note" }, crumbs, badges, body, backlinks);
+  main.replaceChildren(h("div", { class: "note-page" }, article, localPanel(note.id)));
+}
+
+// The graph (home): every note, with filters and a 2D/3D switch
+
+const KINDS: Record<string, string> = {
+  site: "Sites",
+  page: "Pages",
+  control: "Controls",
+  path: "Paths",
+  tool: "Tools",
+  task: "Tasks",
+  workflow: "Workflows",
+};
+const TRUST = ["observed", "verified", "validated"];
+
+const graphHref = (id: string) => `/?focus=${encodeURIComponent(id)}`;
+
+let dims: Dims = recall<number>("graph-dims", 2) === 3 ? 3 : 2;
+let filters: Filters = { ...NO_FILTERS, ...recall<Partial<Filters>>("graph-filters", {}) };
+let mask: Uint8Array = new Uint8Array(0);
+let moving = false;
+let globalView: GraphView | null = null;
+
+const graphHolder = h("div", { class: "graph-holder" });
+const graphTools = h("div", { class: "graph-tools" });
+const graphStatus = h("p", { class: "graph-status", "aria-live": "polite" });
+const graphPage = h("section", { class: "graph-page", "aria-label": "Graph" }, graphHolder, graphTools, graphStatus);
+
+function globalGraph(): GraphView {
+  if (!globalView) {
+    globalView = new GraphView({
+      label: "A graph of every note and its links. The sidebar lists the same notes.",
+      background: "--bg",
+      open: (id) => go(noteHref(id)),
+      status: (now) => {
+        moving = now;
+        renderStatus();
+      },
+    });
+    globalView.setDims(dims);
+    if (graph) {
+      globalView.setData(graph.nodes, graph.links);
+      applyFilters();
+    }
+  }
+  return globalView;
+}
+
+function applyFilters() {
+  if (!graph) return;
+  mask = visibleMask(graph, filters);
+  globalView?.setVisible(mask);
+  remember("graph-filters", filters);
+  renderStatus();
+  const marker = graphTools.querySelector(".filters summary .on");
+  if (marker) marker.textContent = isFiltered(filters) ? "on" : "";
+  graphTools.querySelector<HTMLButtonElement>(".reset")?.toggleAttribute("disabled", !isFiltered(filters));
+}
+
+function renderStatus() {
+  if (!graph) return;
+  const shown = mask.reduce((a, b) => a + b, 0);
+  const lines = graph.links.filter(([a, b]) => mask[a] && mask[b]).length;
+  const notes = shown === graph.nodes.length ? `${shown} notes` : `${shown} of ${graph.nodes.length} notes`;
+  graphStatus.textContent = `${notes} · ${lines} links${moving ? " · laying out…" : ""}`;
+}
+
+function setDims(next: Dims) {
+  dims = next;
+  remember("graph-dims", dims);
+  globalView?.setDims(dims);
+  localView?.setDims(dims);
+  for (const button of graphTools.querySelectorAll<HTMLButtonElement>(".mode button")) {
+    button.setAttribute("aria-pressed", String(button.value === String(dims)));
+  }
+}
+
+// The controls over the graph, rebuilt when the vault changes. Changing a
+// filter updates the graph without rebuilding them, so focus stays put.
+function renderTools() {
+  if (!graph) return;
+  const c = choices(graph);
+  const count = (kind: string) => graph!.nodes.filter((n) => n.kind === kind).length;
+
+  const toggle = (label: Node | string, checked: boolean, change: (on: boolean) => void) => {
+    const box = h("input", { type: "checkbox" }) as HTMLInputElement;
+    box.checked = checked;
+    box.addEventListener("change", () => change(box.checked));
+    return h("label", { class: "check" }, box, label);
+  };
+  const hideIn = (list: "hideKinds" | "hideTrust" | "hideClasses", value: string) => (on: boolean) => {
+    filters = { ...filters, [list]: on ? filters[list].filter((v) => v !== value) : [...filters[list], value] };
+    applyFilters();
+  };
+  const select = (label: string, values: string[], current: string | null, all: string, change: (v: string | null) => void) => {
+    const el = h("select", {}, h("option", { value: "" }, all), ...values.map((v) => h("option", { value: v }, v))) as HTMLSelectElement;
+    el.value = current ?? "";
+    el.addEventListener("change", () => change(el.value || null));
+    return h("label", { class: "field" }, h("span", {}, label), el);
+  };
+  const date = (label: string, current: string | null, change: (v: string | null) => void) => {
+    const el = h("input", { type: "date" }) as HTMLInputElement;
+    el.value = current ?? "";
+    el.addEventListener("change", () => change(el.value || null));
+    return h("label", { class: "field" }, h("span", {}, label), el);
+  };
+  const group = (legend: string, ...children: (Node | null)[]) =>
+    h("fieldset", {}, h("legend", {}, legend), ...children);
+
+  const mode = h(
+    "div",
+    { class: "mode", role: "group", "aria-label": "Layout" },
+    ...([2, 3] as const).map((d) => {
+      const b = h("button", { type: "button", value: String(d), "aria-pressed": String(d === dims) }, `${d}D`);
+      b.addEventListener("click", () => setDims(d));
+      return b;
+    }),
+  );
+  const fit = h("button", { type: "button", class: "fit", title: "Bring every note into view" }, "Fit");
+  fit.addEventListener("click", () => globalView?.fit(true));
+
+  const reset = h("button", { type: "button", class: "reset" }, "Clear filters") as HTMLButtonElement;
+  reset.disabled = !isFiltered(filters);
+  reset.addEventListener("click", () => {
+    filters = { ...NO_FILTERS };
+    applyFilters();
+    renderTools();
+  });
+
+  const panel = h(
+    "details",
+    { class: "filters", ...(recall("filters-open", false) ? { open: "" } : {}) },
+    h("summary", {}, "Filters ", h("span", { class: "on" }, isFiltered(filters) ? "on" : "")),
+    group(
+      "Notes",
+      ...c.kinds.map((k) =>
+        toggle(
+          h("span", { class: "with-dot" }, h("span", { class: `dot ${k}`, "aria-hidden": "true" }), `${KINDS[k] ?? k} `, h("span", { class: "count" }, String(count(k)))),
+          !filters.hideKinds.includes(k),
+          hideIn("hideKinds", k),
+        ),
+      ),
+    ),
+    group(
+      "Trust",
+      ...TRUST.filter((t) => c.trust.includes(t)).map((t) =>
+        toggle(h("span", { class: "with-dot" }, h("span", { class: `dot ring ${t}`, "aria-hidden": "true" }), t), !filters.hideTrust.includes(t), hideIn("hideTrust", t)),
+      ),
+    ),
+    c.classes.length === 0
+      ? null
+      : group("Policy class (paths)", ...c.classes.map((v) => toggle(v, !filters.hideClasses.includes(v), hideIn("hideClasses", v)))),
+    group(
+      "Where and who",
+      c.sites.length === 0 ? null : select("Site", c.sites, filters.site, "All sites", (site) => ((filters = { ...filters, site }), applyFilters())),
+      c.drivers.length === 0
+        ? null
+        : select("Driver", c.drivers, filters.driver, "Any driver", (driver) => ((filters = { ...filters, driver }), applyFilters())),
+    ),
+    group(
+      "Seen",
+      date("From", filters.from, (from) => ((filters = { ...filters, from }), applyFilters())),
+      date("To", filters.to, (to) => ((filters = { ...filters, to }), applyFilters())),
+    ),
+    toggle("Hide notes with no links shown", filters.hideOrphans, (on) => ((filters = { ...filters, hideOrphans: on }), applyFilters())),
+    reset,
+  ) as HTMLDetailsElement;
+  panel.addEventListener("toggle", () => remember("filters-open", panel.open));
+
+  graphTools.replaceChildren(h("div", { class: "row" }, mode, fit), panel);
+}
+
+function renderGraph(focus: string | null) {
+  document.title = "tiny-axe know-how";
+  if (main.firstElementChild !== graphPage) main.replaceChildren(graphPage);
+  if (!graphTools.hasChildNodes()) renderTools();
+  const view = globalGraph();
+  view.attach(graphHolder);
+  if (focus) view.focus(focus);
+  else view.setSelected(null);
+}
+
+// A note's local graph: the notes within 1–3 links of it
+
+let localView: GraphView | null = null;
+let depth = Math.min(3, Math.max(1, recall<number>("local-depth", 1)));
+
+function localPanel(id: string) {
+  if (!localView) {
+    localView = new GraphView({
+      label: "A graph of the notes linked to this one. They're listed in the note and under Linked from.",
+      background: "--panel",
+      open: (next) => go(noteHref(next)),
+    });
+    localView.setDims(dims);
+  }
+  const view = localView;
+  const show = () => {
+    if (!graph) return;
+    const near = neighbourhood(graph, id, depth);
+    view.setData(near.nodes, near.links);
+    view.setSelected(id);
+    view.autoFit();
+  };
+
+  const slider = h("input", { type: "range", min: "1", max: "3", step: "1", "aria-label": "Depth" }) as HTMLInputElement;
+  slider.value = String(depth);
+  const shown = h("output", {}, String(depth));
+  slider.addEventListener("input", () => {
+    depth = Number(slider.value);
+    shown.textContent = String(depth);
+    remember("local-depth", depth);
+    show();
+  });
+
+  const holder = h("div", { class: "local-holder" });
+  view.attach(holder);
+  show();
+  return h(
+    "aside",
+    { class: "local", "aria-label": "Local graph" },
+    h("header", {}, h("h2", {}, "Local graph"), h("label", { class: "depth" }, "Depth ", slider, shown)),
+    holder,
+  );
 }
 
 // Routing
 
-async function route(scroll = true) {
+type Arrival = "push" | "start" | "reload";
+
+async function route(arrival: Arrival = "push") {
   try {
-    const m = location.pathname.match(/^\/note\/(.+)$/);
-    if (m) await renderNote(decodeURIComponent(m[1]));
-    else renderHome();
+    const path = location.pathname;
+    const note = path.match(/^\/note\/(.+)$/);
+    main.classList.toggle("full", !note && path !== "/overview");
+    if (note) await renderNote(decodeURIComponent(note[1]));
+    else if (path === "/overview") renderOverview();
+    else renderGraph(arrival === "reload" ? null : new URLSearchParams(location.search).get("focus"));
     renderTree();
-    if (scroll) {
+    renderNav();
+    if (arrival === "push") {
       window.scrollTo(0, 0);
       main.focus({ preventScroll: true });
     }
@@ -266,15 +526,29 @@ async function route(scroll = true) {
   }
 }
 
+function renderNav() {
+  for (const a of document.querySelectorAll<HTMLAnchorElement>(".views a")) {
+    const here = new URL(a.href).pathname === location.pathname;
+    if (here) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+}
+
+function go(href: string) {
+  if (href !== location.pathname + location.search) history.pushState(null, "", href);
+  $("sidebar").classList.remove("open");
+  route();
+}
+
+const ROUTES = (path: string) => path === "/" || path === "/overview" || path.startsWith("/note/");
+
 document.addEventListener("click", (event) => {
   const a = (event.target as Element).closest("a");
   if (!a || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
   const url = new URL(a.href, location.href);
-  if (url.origin !== location.origin || !(url.pathname === "/" || url.pathname.startsWith("/note/"))) return;
+  if (url.origin !== location.origin || !ROUTES(url.pathname)) return;
   event.preventDefault();
-  if (url.pathname !== location.pathname) history.pushState(null, "", url.pathname);
-  $("sidebar").classList.remove("open");
-  route();
+  go(url.pathname + url.search);
 });
 
 window.addEventListener("popstate", () => route());
@@ -291,8 +565,13 @@ search.addEventListener("input", () => {
 });
 
 async function load() {
-  overview = await get<Overview>("/api/vault");
+  [overview, graph] = await Promise.all([get<Overview>("/api/vault"), get<GraphData>("/api/graph")]);
   renderSummary();
+  if (globalView) {
+    globalView.setData(graph.nodes, graph.links);
+    applyFilters();
+  }
+  renderTools();
 }
 
 // tiny-axe writes notes as tasks finish; show them without a reload.
@@ -302,7 +581,7 @@ function listen() {
     try {
       await load();
       if (search.value.trim()) await runSearch();
-      await route(false);
+      await route("reload");
     } catch (error) {
       showProblem(error);
     }
@@ -310,6 +589,6 @@ function listen() {
 }
 
 load()
-  .then(() => route(false))
+  .then(() => route("start"))
   .then(listen)
   .catch(showProblem);

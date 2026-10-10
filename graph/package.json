@@ -13,10 +13,13 @@
     "check": "tsc -p ."
   },
   "dependencies": {
-    "marked": "18.0.14"
+    "d3-force-3d": "3.0.6",
+    "marked": "18.0.14",
+    "three": "0.186.0"
   },
   "devDependencies": {
     "@types/node": "26.6.2",
+    "@types/three": "0.186.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2"
   }

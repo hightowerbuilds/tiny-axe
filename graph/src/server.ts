@@ -10,7 +10,8 @@ import { watch, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { FOLDERS } from "./format.ts";
-import { loadVault, toGraph, type Vault, type VaultNote } from "./vault.ts";
+import { loadVault, type Vault, type VaultNote } from "./vault.ts";
+import { graphView } from "./graph.ts";
 import { renderer } from "./render.ts";
 
 export interface Options {
@@ -90,14 +91,14 @@ export async function start(options: Options): Promise<Running> {
 
     const path = url.pathname;
     if (path === "/api/vault") return json(res, overview(vault));
-    if (path === "/api/graph") return json(res, toGraph(vault));
+    if (path === "/api/graph") return json(res, graphView(vault));
     if (path === "/api/note") {
       const note = vault.notes.get(url.searchParams.get("id") ?? "");
       return note ? json(res, detail(vault, note, render)) : json(res, { error: "no such note" }, 404);
     }
     if (path === "/api/search") return json(res, { results: search(vault, url.searchParams.get("q") ?? "") });
     if (path === "/api/events") return events(req, res);
-    if (path === "/" || path.startsWith("/note/")) return file(res, options.web, "index.html");
+    if (path === "/" || path === "/overview" || path.startsWith("/note/")) return file(res, options.web, "index.html");
     if (path.startsWith("/static/")) return file(res, options.web, path.slice("/static/".length));
     return send(res, 404, "text/plain; charset=utf-8", "Not found.\n");
   }

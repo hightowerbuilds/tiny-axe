@@ -1,11 +1,14 @@
 # Plan for the know-how graph
 
-Status (2026-10-09): G0 and G3 built. G0: the format is in
+Status (2026-10-10): G0, G3 and G4 built. G0: the format is in
 [vault-format.md](vault-format.md), with a fixture vault, `TinyAxe.Vault.Format`
 and the viewer's reader, each tested against it. G3: `tiny-axe graph`
 serves the vault (`graph/`: token, 127.0.0.1 only, note view, backlinks,
-search, live updates); until G4 its home page is an overview rather than the
-graph. G1, G2 and G4 onward pending. This runs alongside
+search, live updates). G4: the home page is the graph (flat 2D by default,
+3D a switch away), with filters, hover, drag, and a local graph beside each
+note; the G3 overview moved to `/overview`. It holds 60 frames a second
+with 4,928 notes on integrated graphics (`graph/scripts/sample-vault.ts`).
+G1, G2 and G5 onward pending. This runs alongside
 [the browser decisions and learning plan](plan-browser-decisions-and-learning.md)
 (Phases 2–5 in progress there) and reads what that work records. It never
 changes the gate, the browser policy or the purchase controls.
@@ -201,17 +204,19 @@ All read-only until G6. Each has its own address, so the browser's back
 button moves between them.
 
 1. **Graph (home)**: every note as a node, links as lines, force-directed.
-   Colour by folder, size by use, a ring for trust (grey observed, blue
+   Colour by folder, size by use, a ring for trust (none for observed, blue
    verified, green validated), red for refused/handed-off paths. Hover
    highlights a node's neighbours; labels fade in as you zoom. Filters:
    folder, site, trust, policy class, date range, driver. A switch between
    a flat 2D layout (Obsidian's look) and 3D. Click a node to open its
-   note.
+   note; drag one to move it. `/?focus=NOTE` flies the camera to a note.
 2. **Note**: the rendered Markdown, a properties panel, "Linked from", and
    a local graph beside it (depth 1–3). Clicking a `[[link]]` or a node in
    the local graph opens that note. A "Graph" button returns to the home
    view, flying the camera to this note.
-3. **Sidebar** on both: the folders as a file tree, search across titles
+3. **Overview** (`/overview`): counts, sites by use, recent tasks, and
+   the paths the gate stopped.
+4. **Sidebar** on all of them: the folders as a file tree, search across titles
    and bodies, and a summary line ("14 sites, 9 workflows (3 verified),
    41 tools (6 outward, 2 refused)").
 
@@ -220,11 +225,18 @@ button moves between them.
 - **Server**: TypeScript run directly by Node 26, using only `node:http`,
   `node:fs` and a frontmatter parser. It parses the vault into a link index
   at start and keeps it current from file events. JSON endpoints: the graph,
-  one note, backlinks, a local graph, search.
-- **Page**: TypeScript bundled by Vite. `three` with `3d-force-graph`
-  (Three.js rendering, d3-force-3d layout, with 2D and 3D modes) for both
-  graphs, and `three-spritetext` for labels. `marked` renders Markdown and
-  `DOMPurify` cleans it, since labels come from web pages.
+  one note with its backlinks, search. The page works out local graphs
+  from the graph it already has.
+- **Page**: TypeScript bundled by esbuild. `three` draws both graphs: the
+  dots as one instanced mesh and the lines as one set of segments, so a
+  large vault is two draw calls. `d3-force-3d` lays them out in a Web
+  Worker, in 2D or 3D, so the page stays smooth while it settles. Labels are
+  text on a 2D canvas over the graph, fading in with zoom. The server
+  renders Markdown with `marked`, with raw HTML shown as text and only
+  http/https/mailto links kept, since labels come from web pages.
+- **Filters**: a filter on something a note doesn't have (a policy class
+  on a site, a driver on a page) leaves that note showing. A site filter
+  keeps only that site's notes, and the tools used there.
 - **Where it lives**: source in `graph/` at the repo root (its own
   `package.json`, `tsconfig.json`, tests with Node's own test runner).
   Built output and the server go to `priv/graph/`, so the release carries them and works offline.
@@ -304,6 +316,6 @@ doesn't know.
 2. **Phase 5's example store**: make the vault that store (recommended: one
    place for what tiny-axe knows), or keep them separate and only show
    Phase 5's examples here. Needs agreeing with the learning plan's work.
-3. **Default graph mode**: flat 2D like Obsidian, with 3D a switch away
-   (recommended), or 3D first.
+3. ~~**Default graph mode**~~: decided (2026-10-10): flat 2D like Obsidian,
+   with 3D a switch away.
 4. **Default port**: 4747 (recommended), or a random free port each run.

@@ -29,5 +29,17 @@ await build({
   logLevel: "warning",
 });
 
+// The force layout runs in a worker of its own (web/layout.ts).
+await build({
+  entryPoints: ["web/layout.ts"],
+  outfile: "dist/web/layout.js",
+  bundle: true,
+  format: "esm",
+  target: "es2022",
+  minify: true,
+  sourcemap: true,
+  logLevel: "warning",
+});
+
 await cp("web/index.html", "dist/web/index.html");
 await cp("web/style.css", "dist/web/style.css");

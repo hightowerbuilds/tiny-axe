@@ -102,7 +102,7 @@ test("it's read-only", async () => {
 });
 
 test("the page is served with a strict content policy", async () => {
-  for (const path of ["/", "/note/shop.example"]) {
+  for (const path of ["/", "/overview", "/?focus=shop.example", "/note/shop.example"]) {
     const reply = await get(path);
     assert.equal(reply.status, 200);
     assert.match(reply.body, /<script type="module" src="\/static\/app.js">/);
@@ -110,6 +110,8 @@ test("the page is served with a strict content policy", async () => {
     assert.equal(reply.headers["x-content-type-options"], "nosniff");
   }
   assert.equal((await get("/static/style.css")).headers["content-type"], "text/css; charset=utf-8");
+  // The layout's worker comes from the page's own folder, which the policy allows.
+  assert.equal((await get("/static/layout.js")).headers["content-type"], "text/javascript; charset=utf-8");
 });
 
 test("nothing outside the page's folder is served", async () => {
@@ -165,6 +167,17 @@ test("nothing in a note becomes markup or loads anything", async () => {
   assert.match(html, /<span class="wikilink missing" title="No such note">a missing note<\/span>/);
 });
 
+test("the graph's lines are the notes' links, and the reverse", async () => {
+  const graph = await api("/api/graph");
+  const lines = new Set(graph.links.map(([a, b]: [number, number]) => `${graph.nodes[a].id} → ${graph.nodes[b].id}`));
+  const links = new Set<string>();
+  for (const { id } of graph.nodes) {
+    for (const target of (await api(`/api/note?id=${encodeURIComponent(id)}`)).links) links.add(`${id} → ${target}`);
+  }
+  assert.deepEqual(lines, links);
+  assert.equal(graph.nodes.length, 29);
+});
+
 test("an unknown note is a 404", async () => {
   assert.equal((await get("/api/note?id=nope")).status, 404);
 });
@@ -207,4 +220,5 @@ test("a note written to the vault is pushed to open pages", async () => {
   events.destroy();
 
   assert.equal((await api("/api/vault")).summary.sites, 4);
+  assert.ok((await api("/api/graph")).nodes.some((n: { id: string }) => n.id === "new.example"));
 });
