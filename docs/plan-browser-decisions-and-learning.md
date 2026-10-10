@@ -485,19 +485,28 @@ decision traces, and thresholds remain provisional.
   - Result: `choice_id`, result, candidate, each candidate's fit
     (yes/no/unsure/not found), reason codes, next step, evidence references,
     and `"authority": "advice only"`. A choice is bound to its task,
-    server, observation and the candidates' signatures; nothing it says is
-    consulted by assessment, approvals, holds or purchases.
+    server, observation and each candidate's ref, signature and row hash
+    (same-label controls share a signature); nothing it says is consulted
+    by assessment, approvals, holds or purchases.
   - **The gate's own check**: before a direct click whose target shares
-    its role and name with other controls on the page (from a fresh
-    snapshot; up to 8, disabled ones skipped), when the click's class is
-    local or outward (never refused, purchase or handoff paths), the same
-    choice is made once per task, observation and target signature. In
-    shadow it's only recorded. On, with `:browser_choose_hints`, a target
-    that clearly doesn't fit is held once: nothing runs, no action record,
-    and the result says so with a machine-readable `choose_hint` (the
-    suggested ref, or that none fits); repeating the same call goes ahead
-    with the usual checks. Held when another candidate was chosen and the
-    target fits below 0.3, or when none fits (the target below 0.5).
+    its tag, role, type and label with other controls on the page (up to
+    8, disabled ones skipped), when the click's class is local or outward
+    (never refused, purchase or handoff paths), the same choice is made
+    once per task, observation and element (its ref and signature). The
+    browser describes the candidates itself (`browser_similar`, hidden),
+    without a snapshot: Playwright resolves an agent's ref against the last
+    snapshot taken, so a snapshot of the gate's could break the ref of an
+    element relabelled in place. A label found unique is remembered, not
+    looked at again. In shadow the check is only recorded. On, with
+    `:browser_choose_hints`, a target that clearly doesn't fit is held
+    once: nothing runs, its action record says so (failed, `not_executed`,
+    "tiny-axe held it"), which the completion check counts, and the result
+    carries a machine-readable `choose_hint` with refs only, no page text
+    (the suggested ref, or that none fits; refs come from one snapshot,
+    taken only then); repeating the same call goes ahead with the usual
+    checks. Held when another candidate was chosen and the target fits
+    below 0.3, or when none fits (the target below 0.5). Never held when
+    the user has just approved doing it again after an unresolved outcome.
   - **Switches**: `config :tiny_axe, :browser_choose` `:off` (as Phase 3),
     `:shadow` (default: the gate's checks recorded, never shown; no tool, no
     instructions) or `:on` (tool, instructions, and with
@@ -515,7 +524,11 @@ decision traces, and thresholds remain provisional.
     (`--choose off|shadow|on`, `--choose-hints`), and merges runs made in
     parts under the per-invocation caps.
 - **Measurement**: Claude Haiku 5.5 driving, Jev `jev-1.13.0`, default caps
-  per invocation, uncommitted trees on bb325a7. Agreed budget, set with the
+  per invocation, on a dirty bb325a7 tree: before the Phase 3 re-review
+  fixes (ba31f37) and before the Phase 4 review fixes (the check then keyed
+  on the target's signature, which same-label controls share, took a
+  snapshot, and left no record for a held click; no click was held in any
+  real run). Agreed budget, set with the
   user before any Phase 4 run: at most 1.5× the baseline's Jev calls per
   task and +50% p50 task time.
   - [First baseline](../eval/results/20261010-browser-tasks-phase4-baseline-unlabelled.json)
@@ -544,8 +557,11 @@ decision traces, and thresholds remain provisional.
     (8/8). Haiku never called `browser_choose` in any of the 24 dev runs,
     instructions and examples notwithstanding, so the proactive check is
     the only way choosing reaches this driver: it stays part of `:on`
-    (`:browser_choose_hints` true). No holdout record was looked at before
-    this.
+    (`:browser_choose_hints` true). Holdout records weren't used for
+    questions or thresholds, but one was seen first: the unlabelled
+    baseline showed holdout `bolt_drill` stopping at "Reserve for
+    collection" (navigation the scripted user refused), and `safe_nav`,
+    added for that kind of question on every new site, covers it.
   - [On](../eval/results/20261010-browser-tasks-phase4-on.json) (`--choose
     on --choose-hints`, same repeats and parts) and
     [the 24 original tasks on](../eval/results/20261010-browser-tasks-phase4-original24.json)
@@ -584,20 +600,26 @@ decision traces, and thresholds remain provisional.
 - **Tests**: `browser_choices_test.exs` (pure: the four results, best of
   bad never accepted, ambiguity, more evidence once, outage, fixed
   questions and labelled sources, ref validation, gone and stale targets,
-  hint rules, finding similar controls, the switch);
+  hint rules, which classes are checked, the switch);
   `browser_choose_test.exs` (gate with the fake browser, now with candidate
   rows: off, shadow and on; the tool's contract and trace; no authority:
   the chosen element is still asked about; need more evidence reading the
   page; validation against the page now; agent arguments not reaching the
-  questions; driver names; holds once per task, target and observation; no
-  action record for a held click; nothing held when the target fits or
-  it's unclear; all three drivers getting the same tool, answer and
-  instructions); harness tests in real Chrome (the 16 scripts complete; 5
-  scripts picking the wrong candidate fail exactly their state check;
-  choosing on records checks with each candidate's row; `safe_nav` only
-  for navigation). Removing each of 20 enforcements once failed 1–3 tests
-  each; all restored. Replay benchmark still 23/23. Full suite 531 tests, 0
-  failures.
+  questions; driver names; the fake browser now gives same-label controls
+  one signature, as the real one does; holds once per task, element and
+  observation, and a held e2 doesn't spare e3; no snapshot in shadow, and
+  unique labels looked at once; a held click's record replacing an answer
+  that claims it; no hold on a repeat the user approved, or when the
+  check's decider fails; purchase and payment-step clicks never checked;
+  nothing held when the target fits or it's unclear; all three drivers
+  getting the same tool, answer and instructions); harness tests (the 16
+  scripts complete in real Chrome; 5 scripts picking the wrong candidate
+  fail exactly their state check; choosing on records checks with each
+  candidate's row; `safe_nav` only for navigation; the new sites record
+  effects only on POST routes; the task file's code digest ignores
+  formatting). Removing each of 20 enforcements once, and each of the 13
+  review fixes, failed 1–2 tests each; all restored. Replay benchmark still
+  23/23. Full suite 549 tests, 0 failures.
 - **Departures**: the gate's check holds a click once, a soft stop the
   agent can override by repeating the call, where the plan only described
   advice on request, because this driver never asks; candidates are
@@ -609,13 +631,19 @@ decision traces, and thresholds remain provisional.
   `browser_choose` is no tool in shadow; the baseline the comparison uses
   was run with Phase 4 switched off, after the harness label fix (the first,
   on HEAD, is kept); the hard-task file's digest in the results is from
-  before `mix format` rewrapped it (same code); thresholds (0.5 pick, 0.5
+  before `mix format` rewrapped it (same code; results now also record
+  `tasks_ast_sha256`, a hash of the parsed file, and `git.tree_sha256`, a
+  hash of uncommitted code changes); thresholds (0.5 pick, 0.5
   fits, 0.3 unfit) are provisional, from 9 dev clicks.
 - **Not yet done**: no driver that chooses wrongly has been measured (the
   local model may); a candidate whose deciding detail is only on its own
   page gets `need_more_evidence`, not a hold; a held click's "repeat to
-  override" could teach agents to repeat; the purchase controls'
-  over-protection of a pay-in-store reservation; validated memory (Phase 5).
+  override" could teach agents to repeat; the review fixes weren't
+  re-measured with real models (no click was held in any real run, so the
+  numbers above shouldn't move, but the check's cost now differs: one
+  `browser_similar` call per new element, no snapshot); the purchase
+  controls' over-protection of a pay-in-store reservation; validated
+  memory (Phase 5).
 
 ## Baseline behavior and gaps
 

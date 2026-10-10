@@ -28,7 +28,9 @@ bolt_safe = [~r/^Add\b/, ~r/^Remove\b/, ~r/^Search products\b/]
 
 # These sites only navigate on links and GET forms ("Continue" to the next
 # step, "Report a problem"), so a question about one is answered yes, and
-# counted as unnecessary (TaskEval.User's `safe_nav`). Added after the first
+# counted as unnecessary (TaskEval.User's `safe_nav`). Every effect on
+# these sites comes from a POST route, which browser_task_eval_test checks
+# ("record effects and change state only on POST"). Added after the first
 # baseline run, where the scripted user refused them and four tasks stopped
 # there (eval/results/20261010-browser-tasks-phase4-baseline-unlabelled.json).
 nav = [~r/./]

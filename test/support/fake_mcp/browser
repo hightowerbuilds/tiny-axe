@@ -10,14 +10,17 @@
 # nothing.
 #
 # A test can add candidates beside e1 (fake_page `candidates`: ref, label,
-# row, and optionally disabled or sensitive): similar buttons in rows of a
-# results list, each with its own signature, for choosing among them.
+# row, and optionally disabled, sensitive, or `meta` merged into what
+# inspection reports): similar buttons in rows of a results list. As on the
+# real server, a signature covers what an element is and its label, not its
+# row, so same-label candidates share one.
 #
 # Tools:
 #   browser_snapshot   read-only: the page, with its observation id
 #   browser_extract    read-only: the page's text, with the candidates' rows
 #   browser_click      clicks e1, unless the expected target changed
 #   browser_inspect    what e1 is, with its signature and the observation id
+#   browser_similar    the elements sharing a ref's label, described; refs only if asked
 #   browser_release    a task's tabs are freed
 #   browser_observe    the page now (its text) and what an action did; fails if `observe` is "fail"
 #   fake_page          sets the button's label, the observation id, the outcome,
@@ -33,6 +36,7 @@ defmodule FakeBrowser do
       tool("browser_extract", %{}, %{readOnlyHint: true}),
       tool("browser_click", %{element: %{type: "string"}, ref: %{type: "string"}}, %{readOnlyHint: false, openWorldHint: true}, ["ref"]),
       tool("browser_inspect", %{ref: %{type: "string"}}, %{readOnlyHint: true}),
+      tool("browser_similar", %{ref: %{type: "string"}, refs: %{type: "boolean"}}, %{readOnlyHint: true}),
       tool("browser_release", %{}, %{readOnlyHint: true}),
       tool("browser_observe", %{action: %{type: "string"}}, %{readOnlyHint: true}),
       tool("fake_page", %{label: %{type: "string"}, observation: %{type: "string"}, outcome: %{type: "string"}, text: %{type: "string"}, observe: %{type: "string"}, candidates: %{type: "array"}}, %{readOnlyHint: true}),
@@ -54,7 +58,30 @@ defmodule FakeBrowser do
   defp signature(state, ref) do
     case state.cands[ref] do
       nil -> nil
-      c -> "sig-" <> (Base.encode16(:crypto.hash(:sha256, ref <> c["label"] <> c["row"]), case: :lower) |> binary_part(0, 12))
+      c -> "sig-" <> (Base.encode16(:crypto.hash(:sha256, "cand" <> c["label"] <> JSON.encode!(c["meta"] || %{})), case: :lower) |> binary_part(0, 12))
+    end
+  end
+
+  defp describe(state, ref) do
+    case state.cands[ref] do
+      nil ->
+        if ref == "e1",
+          do: %{
+            tag: "button", type: "submit", role: "", text: state.label, isSubmit: false, href: nil,
+            page: @page, context: "Item page. #{state.label}", dialog: nil,
+            observation: state.observation, signature: signature(state)
+          }
+
+      cand ->
+        Map.merge(
+          %{
+            "tag" => if(cand["sensitive"], do: "input", else: "button"), "type" => if(cand["sensitive"], do: "password", else: "submit"),
+            "role" => "", "text" => cand["label"], "isSubmit" => false, "href" => nil, "sensitive" => cand["sensitive"] == true,
+            "page" => @page, "context" => "Results. #{cand["row"]}", "row" => cand["row"], "dialog" => nil,
+            "observation" => state.observation, "signature" => signature(state, ref)
+          },
+          cand["meta"] || %{}
+        )
     end
   end
 
@@ -107,29 +134,36 @@ defmodule FakeBrowser do
   end
 
   defp call("browser_inspect", id, args, state) do
-    cand = state.cands[args["ref"]]
-
-    cond do
-      cand ->
-        text(id, JSON.encode!(%{
-          tag: if(cand["sensitive"], do: "input", else: "button"), type: if(cand["sensitive"], do: "password", else: "submit"),
-          role: "", text: cand["label"], isSubmit: false, href: nil, sensitive: cand["sensitive"] == true,
-          page: @page, context: "Results. #{cand["row"]}", row: cand["row"], dialog: nil,
-          observation: state.observation, signature: signature(state, args["ref"])
-        }))
-
-      args["ref"] == "e1" ->
-      text(id, JSON.encode!(%{
-        tag: "button", type: "submit", role: "", text: state.label, isSubmit: false, href: nil,
-        page: @page, context: "Item page. #{state.label}", dialog: nil,
-        observation: state.observation, signature: signature(state)
-      }))
-
-      true ->
-        error(id, "no element #{args["ref"]}")
+    case describe(state, args["ref"]) do
+      nil -> error(id, "no element #{args["ref"]}")
+      meta -> text(id, JSON.encode!(meta))
     end
 
     log(state, :inspects, args)
+  end
+
+  defp call("browser_similar", id, args, state) do
+    ref = args["ref"]
+    label = fn r -> if r == "e1", do: state.label, else: state.cands[r]["label"] end
+
+    same =
+      for r <- ["e1" | Enum.sort(Map.keys(state.cands))],
+          describe(state, r) != nil,
+          label.(r) == label.(ref),
+          r == ref or (state.cands[r] || %{})["disabled"] != true,
+          do: r
+
+    found =
+      if length(same) < 2 or describe(state, ref) == nil,
+        do: [],
+        else:
+          Enum.map(same, fn r ->
+            meta = Map.merge(describe(state, r) |> Map.new(fn {k, v} -> {to_string(k), v} end), %{"target" => r == ref})
+            if args["refs"], do: Map.put(meta, "ref", r), else: meta
+          end)
+
+    text(id, JSON.encode!(%{candidates: found}))
+    log(state, :similars, args)
   end
 
   defp call("browser_click", id, args, state) do
@@ -192,7 +226,7 @@ defmodule FakeBrowser do
   end
 
   defp call("fake_log", id, _args, state) do
-    text(id, JSON.encode!(Map.take(state, [:clicks, :inspects, :releases, :stale, :snapshots, :observes, :extracts])))
+    text(id, JSON.encode!(Map.take(state, [:clicks, :inspects, :releases, :stale, :snapshots, :observes, :extracts, :similars])))
     state
   end
 
@@ -227,5 +261,5 @@ end
 IO.puts(:stderr, "fake browser server starting")
 FakeBrowser.loop(%{
   label: "⚙", observation: "obs-fake-1", outcome: nil, text: "Item page.", observe: nil, actions: %{},
-  cands: %{}, clicks: [], inspects: [], releases: [], stale: [], snapshots: [], observes: [], extracts: []
+  cands: %{}, clicks: [], inspects: [], releases: [], stale: [], snapshots: [], observes: [], extracts: [], similars: []
 })

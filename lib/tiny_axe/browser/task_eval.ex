@@ -414,6 +414,7 @@ defmodule TinyAxe.Browser.TaskEval do
             target: e["choice"]["target"],
             chosen: e["choice"]["chosen"],
             held: is_map(e["hint"]),
+            suggested: e["hint"] && e["hint"]["suggested_ref"],
             codes: e["choice"]["reason_codes"]
           }
         end)
@@ -638,6 +639,69 @@ defmodule TinyAxe.Browser.TaskEval do
 
   defp truncate(s, n),
     do: if(String.length(s) > n, do: String.slice(s, 0, n) <> "…", else: s)
+
+  ## What was run
+
+  @doc """
+  A task file's digests: `file`, its bytes; `ast`, its parsed code without
+  line numbers or comments, the same however it's formatted.
+  """
+  @spec digest(Path.t()) :: %{file: String.t(), ast: String.t()}
+  def digest(path) do
+    source = File.read!(path)
+
+    ast =
+      source
+      |> Code.string_to_quoted!()
+      |> Macro.prewalk(fn
+        {name, _meta, args} -> {name, [], args}
+        other -> other
+      end)
+
+    %{file: sha256(source), ast: sha256(:erlang.term_to_binary(ast, [:deterministic]))}
+  end
+
+  @code_paths ~w(lib priv config mix.exs mix.lock eval)
+
+  @doc """
+  The code a run used: the git commit, whether the tree had uncommitted
+  changes, and a hash of them (the diff against HEAD and untracked files
+  under #{Enum.join(@code_paths, ", ")}, results excluded), so two runs on
+  differently dirty trees can be told apart. Nil outside a git checkout.
+  """
+  @spec revision() :: map() | nil
+  def revision do
+    with {rev, 0} <- System.cmd("git", ~w(rev-parse HEAD), stderr_to_stdout: true),
+         {diff, 0} <-
+           System.cmd(
+             "git",
+             ["diff", "HEAD", "--binary", "--" | @code_paths] ++ [":!eval/results"]
+           ),
+         {untracked, 0} <-
+           System.cmd(
+             "git",
+             ["ls-files", "--others", "--exclude-standard", "--" | @code_paths] ++
+               [":!eval/results"]
+           ) do
+      files =
+        untracked
+        |> String.split("\n", trim: true)
+        |> Enum.sort()
+        |> Enum.map(&[&1, 0, File.read!(&1)])
+
+      dirty = diff != "" or files != []
+
+      %{
+        commit: String.trim(rev),
+        dirty: dirty,
+        tree_sha256: if(dirty, do: sha256([diff, 0 | files]))
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp sha256(data), do: :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
 
   ## The summary
 

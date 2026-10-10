@@ -144,7 +144,8 @@ defmodule TinyAxe.BrowserChooseTest do
     JSON.decode!(text(result))
   end
 
-  defp click(ctx, task, ref), do: call(task, "#{ctx.server}__browser_click", %{ref: ref})
+  defp click(ctx, task, ref, answer \\ :deny),
+    do: call(task, "#{ctx.server}__browser_click", %{ref: ref}, answer)
 
   defp log(ctx) do
     {:ok, result} = MCP.call(ctx.server, "fake_log", %{})
@@ -200,9 +201,13 @@ defmodule TinyAxe.BrowserChooseTest do
       assert entry["hint"] == nil
       assert entry["choice"]["mode"] == "shadow"
       assert entry["choice"]["result"] == "chosen"
-      assert entry["choice"]["chosen"] == "e4"
-      assert entry["choice"]["target"] == "e2"
+      # Candidates as the browser described them, without a snapshot: the
+      # agent's refs are left as its own snapshot made them.
+      assert entry["choice"]["chosen"] == "similar-3"
+      assert entry["choice"]["target"] == "similar-1"
       assert entry["action"]["id"] =~ "act-"
+      assert log(ctx)["snapshots"] == []
+      assert Enum.all?(log(ctx)["similars"], &(&1["refs"] == false))
 
       records = for r <- Tools.Journal.decisions(task.id), r["kind"] == "choose", do: r
       assert [%{"choice_mode" => "shadow", "choice_id" => id}] = records
@@ -228,9 +233,15 @@ defmodule TinyAxe.BrowserChooseTest do
       refute click(ctx, task, "e1")["isError"]
       assert picks() == []
 
+      # Found unique once, it isn't looked at again on the same page; no
+      # snapshot is ever taken for the check.
+      refute click(ctx, task, "e1")["isError"]
+      assert [_] = log(ctx)["similars"]
+      assert log(ctx)["snapshots"] == []
+
       Decider.Script.script(fn _, _, _ -> {:error, :down} end)
       assert click(ctx, task, "e3")["isError"]
-      assert clicked(ctx) == ["e1"]
+      assert clicked(ctx) == ["e1", "e1"]
       assert Enum.all?(entries(task), &(&1["choice"] == nil))
     end
   end
@@ -390,33 +401,126 @@ defmodule TinyAxe.BrowserChooseTest do
       assert text(result) =~ "held this click, so nothing was done"
       [_, json] = String.split(text(result), ". {", parts: 2)
 
-      assert %{
-               "choose_hint" => %{
-                 "advice" => "other_candidate",
-                 "target" => "e2",
-                 "suggested_ref" => "e4",
-                 "suggested" => "Voltra 65W USB-C charger, White · New · Voltra Official" <> _
-               }
-             } = JSON.decode!("{" <> json)
+      # The agent's own refs; no page text in tiny-axe's words.
+      assert %{"choose_hint" => hint} = JSON.decode!("{" <> json)
 
+      assert hint == %{
+               "choice_id" => hint["choice_id"],
+               "advice" => "other_candidate",
+               "target" => "e2",
+               "suggested_ref" => "e4",
+               "next_step" => hint["next_step"]
+             }
+
+      refute text(result) =~ "Voltra Official"
       assert log(ctx)["clicks"] == []
+      # Refs were looked up only to name the suggested one.
+      assert [%{"refs" => false}, %{"refs" => true}] = log(ctx)["similars"]
 
       [entry] = for e <- entries(task), e["tool"] =~ "browser_click", do: e
       assert entry["decision"] == "advised"
-      assert entry["action"] == nil
       assert entry["hint"]["suggested_ref"] == "e4"
       assert entry["choice"]["mode"] == "hint"
-      # Nothing ran, so nothing is left to confirm or hold.
-      assert Gate.complete(task.id, "Done.") == "Done."
+
+      # It never ran, and its record says so: an answer claiming it did is
+      # replaced, and every decision trace points at that record.
+      assert entry["action"]["status"] == "failed"
+      assert entry["action"]["codes"] == ["not_executed"]
+      action = entry["action"]["id"]
+
+      for d <- Tools.Journal.decisions(task.id),
+          d["action_id"],
+          do: assert(d["action_id"] == action)
+
+      choosing(fn key -> if key == :claim_1, do: 0.9 end)
+      done = Gate.complete(task.id, "I added it to your cart.")
+      assert done =~ "not done"
+      assert done =~ "tiny-axe held it: its candidate check found it doesn't match the request"
+      refute done =~ "I added it to your cart."
 
       # Repeated: it goes ahead, with the usual checks and no second look.
+      choosing()
       assert [_] = picks()
       refute click(ctx, task, "e2")["isError"]
       assert clicked(ctx) == ["e2"]
       assert picks() == []
     end
 
-    test "held once per task, target and observation", ctx do
+    test "each same-label control is checked on its own: one held click covers no other",
+         ctx do
+      task = open(ctx)
+      assert text(click(ctx, task, "e2")) =~ "choose_hint"
+
+      # e3 shares e2's label and signature, but it's another element.
+      assert text(click(ctx, task, "e3")) =~ ~s("target":"e3")
+      assert log(ctx)["clicks"] == []
+      assert length(picks()) == 2
+    end
+
+    test "a repeat the user approved isn't held: the hold they lifted can't vanish unrun",
+         ctx do
+      # A first click with hints off, whose response is lost: unresolved.
+      Application.put_env(:tiny_axe, :browser_choose_hints, false)
+      {:ok, _} = MCP.call(ctx.server, "fake_page", %{outcome: "lost"})
+      task = open(ctx)
+      assert text(click(ctx, task, "e2")) =~ "outcome_unresolved"
+
+      # Asked again, the user says do it: it runs, though the check would
+      # have held it as the wrong candidate.
+      Application.put_env(:tiny_axe, :browser_choose_hints, true)
+      result = click(ctx, task, "e2", :once)
+      assert_received {:asked, %{repeat: true}}
+      refute text(result) =~ "choose_hint"
+      assert clicked(ctx) == ["e2", "e2"]
+      assert picks() == []
+    end
+
+    test "a check the decider can't answer holds nothing", ctx do
+      task = open(ctx)
+
+      Decider.Script.script(fn
+        :pick, _q, _state ->
+          {:error, :down}
+
+        key, _q, _state ->
+          if Atom.to_string(key) =~ "fits_", do: {:error, :down}
+      end)
+
+      result = click(ctx, task, "e2")
+      refute result["isError"]
+      assert clicked(ctx) == ["e2"]
+      [entry] = for e <- entries(task), e["tool"] =~ "browser_click", do: e
+      assert entry["decision"] == "ran" and entry["hint"] == nil
+      assert entry["choice"]["result"] == "handoff"
+      assert entry["choice"]["reason_codes"] == ["decision_unavailable"]
+    end
+
+    test "purchase and payment-step clicks are never checked or held", ctx do
+      # A payment form's button: a payment step (purchases are off in tests).
+      payment = %{
+        "isSubmit" => true,
+        "form" => %{"method" => "post", "action" => "http://shop.test/pay", "hasPayment" => true}
+      }
+
+      {:ok, _} =
+        MCP.call(ctx.server, "fake_page", %{
+          candidates: Enum.map(@candidates, &Map.put(&1, :meta, payment))
+        })
+
+      task = open(ctx)
+      assert text(click(ctx, task, "e2")) =~ "spending money isn't enabled"
+
+      # Judged to spend money: a purchase.
+      {:ok, _} = MCP.call(ctx.server, "fake_page", %{candidates: @candidates})
+      choosing(fn key -> if key == :spends, do: 0.9 end)
+      assert text(click(ctx, task, "e3")) =~ "spending money isn't enabled"
+
+      assert picks() == []
+      assert log(ctx)["similars"] == []
+      assert Enum.all?(entries(task), &(&1["choice"] == nil))
+    end
+
+    test "held once per task, element and observation", ctx do
       task = open(ctx)
       assert click(ctx, task, "e3")["isError"]
       refute click(ctx, task, "e3")["isError"]
