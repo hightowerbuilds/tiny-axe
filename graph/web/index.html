@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tiny-axe know-how</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/style.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <aside id="sidebar">
+    <header class="brand">
+      <a href="/">tiny-axe <span>know-how</span></a>
+      <button id="menu" type="button" aria-expanded="false" aria-controls="tree">Notes</button>
+    </header>
+    <p id="summary" class="summary"></p>
+    <input id="search" type="search" placeholder="Search notes" autocomplete="off" aria-label="Search notes">
+    <nav id="tree" aria-label="Notes"></nav>
+  </aside>
+  <main id="main" tabindex="-1"></main>
+</body>
+</html>

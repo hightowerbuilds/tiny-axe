@@ -1,8 +1,11 @@
 # Plan for the know-how graph
 
-Status (2026-10-09): G0 built: the format is in
+Status (2026-10-09): G0 and G3 built. G0: the format is in
 [vault-format.md](vault-format.md), with a fixture vault, `TinyAxe.Vault.Format`
-and the viewer's reader (`graph/`), each tested against it. G1 onward pending. This runs alongside
+and the viewer's reader, each tested against it. G3: `tiny-axe graph`
+serves the vault (`graph/`: token, 127.0.0.1 only, note view, backlinks,
+search, live updates); until G4 its home page is an overview rather than the
+graph. G1, G2 and G4 onward pending. This runs alongside
 [the browser decisions and learning plan](plan-browser-decisions-and-learning.md)
 (Phases 2–5 in progress there) and reads what that work records. It never
 changes the gate, the browser policy or the purchase controls.

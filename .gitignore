@@ -27,3 +27,4 @@ tiny_axe-*.tar
 
 # The graph viewer's packages (graph/).
 /graph/node_modules/
+/graph/dist/
