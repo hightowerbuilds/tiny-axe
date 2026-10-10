@@ -434,17 +434,27 @@ async function checkout(p) {
   const total = totalLine ? amounts(totalLine).slice(-1)[0] : null;
 
   const notItem = /total|tax|vat|shipping|delivery|postage|discount|subtotal|you save|balance|items?:/i;
-  // A price on a line of its own (as on Amazon's checkout) belongs to the
-  // title just above it.
+  // Offers on the page, not things in the order (Amazon's checkout advertises
+  // a "$150 gift card upon approval" for its card).
+  const offer = /upon approval|apply now|sign up|no annual fee|open offer|card ?member/i;
+  // Lines between a product's title and its price: popularity, stock, seller,
+  // options, buttons, and the payment and address blocks.
+  const noise = /^(\d[\d,.]*[k+]* bought|in stock|only \d+ left|ships from|shipped by|sold by|fulfilled by|qty|quantity|change|edit|remove|delete|save for later|arriving|arrives|get it|free returns|returnable|eligible|gift options|add (a )?gift|see (all )?details|condition|colou?r:|size:|style:|pattern:|paying with|ending (in )?\d{4}|deliver|ship to)/i;
+  const titleLike = (l) => !amounts(l).length && !notItem.test(l) && !offer.test(l) && !noise.test(l) &&
+    l.split(/\s+/).length >= 3;
+  // Something in the order can't cost more than the whole order.
+  const inOrder = (l) => total === null || amounts(l).some((a) => a.value <= total.value + 0.005);
   const items = [];
   lines.forEach((l, i) => {
-    if (!amounts(l).length || notItem.test(l)) return;
+    if (!amounts(l).length || notItem.test(l) || offer.test(l) || !inOrder(l)) return;
     const priceOnly = l.replace(MONEY, "").replace(/[^\p{L}]/gu, "") === "";
-    const above = lines[i - 1];
-    if (priceOnly && above && !amounts(above).length && !notItem.test(above)) items.push(`${above} — ${l}`);
-    else if (!priceOnly) items.push(l);
+    if (!priceOnly) return items.push(l);
+    // A price on a line of its own (as on Amazon's checkout) belongs to the
+    // nearest title above it, a few lines up at most.
+    const title = lines.slice(Math.max(0, i - 6), i).reverse().find(titleLike);
+    if (title) items.push(`${title} — ${l}`);
   });
-  items.splice(15);
+  const unique = [...new Set(items)].slice(0, 15);
 
   const shipAt = lines.findIndex((l) => /ship(ping)? to|deliver(y|ing)? to|shipping address|delivery address/i.test(l));
   const shipTo = shipAt >= 0 ? lines.slice(shipAt, shipAt + 3).join(", ") : null;
@@ -476,7 +486,7 @@ async function checkout(p) {
     total: total ? total.value : null,
     total_text: total ? total.text : null,
     currency: total ? total.currency : null,
-    items,
+    items: unique,
     ship_to: shipTo,
     payment,
     card_fields: cards.count,

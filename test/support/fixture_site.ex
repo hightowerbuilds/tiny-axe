@@ -358,6 +358,24 @@ defmodule TinyAxe.FixtureSite do
     """)
   end
 
+  # Amazon's checkout as of October 2026: a card offer with a price far over
+  # the total, and a popularity line between the title and its price.
+  get "/order-amazon-2026" do
+    html(conn, """
+    <title>Place Your Order - Amazon Checkout</title><main><h1>Checkout</h1>
+    <div>Delivering to Sam Lee</div><div>1 HIGH ST, SPRINGFIELD</div><div>Change</div>
+    <div>Paying with Mastercard 2701</div><div>Change</div><div>$150</div>
+    <div>Get a $150 Amazon Gift Card instantly upon approval for Prime Visa. No annual fee. Open offer</div>
+    <div>Arriving tomorrow</div>
+    <div><a href="#">VIOY Headphone Extension Cable 20 FT, 3.5mm Male to Female Braided Aux Cord</a></div>
+    <div>400+ bought in past month</div><div>$8.99</div>
+    <div>Sold by: VIOY US</div><div>Qty: 1</div>
+    <div>Items: $8.99</div><div>Shipping &amp; handling: $0.00</div>
+    <div>Estimated tax: $0.82</div><div>Order total: $9.81</div>
+    <form method="post" action="/place-order"><button>Place your order</button></form></main>
+    """)
+  end
+
   get "/order-insecure" do
     html(conn, """
     <title>Checkout</title><main><h1>Review your order</h1>
