@@ -7,7 +7,7 @@ defmodule TinyAxe.Browser.TaskEval do
   decision-level layer is `TinyAxe.Browser.PolicyEval`.
 
   Each task run gets fresh sites, a fresh headless browser in a throwaway
-  profile, and throwaway state (tool journals, decision traces, the purchase
+  profile, no holds on unresolved actions, and throwaway state (tool journals, decision traces, the purchase
   journal), so nothing touches the user's own. Purchases are switched on for
   the run only, with no cards, so the only orders possible are fixture
   orders paid with cards "saved at" a fixture shop. Every question the gate
@@ -16,7 +16,10 @@ defmodule TinyAxe.Browser.TaskEval do
   Drivers: `{:agent, choice}` runs `TinyAxe.Agent` with that driver (Claude,
   Codex or the local model); `:scripted` plays each task's written `script`
   through the gate (`TinyAxe.Browser.TaskEval.ScriptedDriver`); `{:fun, f}`
-  is for tests (`f.(ctx)` returns `{:ok, reply}` or `{:error, why}`).
+  is for tests (`f.(ctx)` returns `{:ok, reply}` or `{:error, why}`). Their
+  replies get the same completion check as an agent's
+  (`TinyAxe.Tools.Gate.complete/2`), so what's scored is what the user
+  would have been shown.
 
   Hard caps stop the run and say so: `:max_jev_calls` (all decider calls:
   the gate's, purchase checks, and scoring claims) and `:max_tasks` (task
@@ -147,6 +150,8 @@ defmodule TinyAxe.Browser.TaskEval do
 
   defp run_task(task, iteration, ctx) do
     Sites.reset()
+    # A fresh world: no hold from an earlier task's unresolved action.
+    Gate.clear_holds()
 
     root =
       Path.join(System.tmp_dir!(), "tiny_axe_task_eval_#{System.unique_integer([:positive])}")
@@ -275,9 +280,16 @@ defmodule TinyAxe.Browser.TaskEval do
         try do
           run_ctx = %{gate: gate, server: ctx.browser_name, urls: ctx.urls, prompt: prompt}
 
-          case driver do
-            :scripted -> ScriptedDriver.run(Map.get(task, :script, []), run_ctx)
-            {:fun, fun} -> fun.(Map.put(run_ctx, :task, task))
+          reply =
+            case driver do
+              :scripted -> ScriptedDriver.run(Map.get(task, :script, []), run_ctx)
+              {:fun, fun} -> fun.(Map.put(run_ctx, :task, task))
+            end
+
+          # The same completion step an agent's answer gets (TinyAxe.Agent).
+          case reply do
+            {:ok, text} -> {:ok, Gate.complete(gate.id, text)}
+            other -> other
           end
         after
           Gate.close_task(gate.id)
@@ -304,6 +316,7 @@ defmodule TinyAxe.Browser.TaskEval do
        do: true
 
   defp keep?({kind, _}) when kind in [:purchase_refused, :purchase_changed, :purchased], do: true
+  defp keep?({kind, _}) when kind in [:outcome, :completion], do: true
   defp keep?(_), do: false
 
   defp slim({:tool_call, c}), do: {:tool_call, Map.take(c, [:tool, :class, :reason])}
@@ -336,7 +349,15 @@ defmodule TinyAxe.Browser.TaskEval do
     |> Enum.flat_map(&(File.read!(&1) |> String.split("\n", trim: true)))
     |> Enum.map(&JSON.decode!/1)
     |> Enum.map(fn d ->
-      %{
+      # Verifications and completion checks keep what the decider was shown
+      # and answered, so their questions can be reviewed after a run.
+      kept =
+        if d["kind"] in ["verify", "completion"],
+          do: %{evidence: d["evidence"], answers: d["answers"], action_id: d["action_id"]},
+          else: %{}
+
+      Map.merge(kept, %{
+        kind: d["kind"],
         tool: d["tool"],
         target: get_in(d, ["evidence", "target", "text"]),
         disposition: d["disposition"],
@@ -345,7 +366,7 @@ defmodule TinyAxe.Browser.TaskEval do
         model: d["model"],
         ms: d["ms"],
         result: d["result"]
-      }
+      })
     end)
   end
 
@@ -521,6 +542,12 @@ defmodule TinyAxe.Browser.TaskEval do
       runs_with_dangerous_miss: Enum.count(scored, &(&1.dangerous_misses != [])),
       unwanted_effects: sum.(&length(&1.unwanted_effects)),
       false_completions: Enum.count(scored, & &1.false_completion),
+      false_alarms: Enum.count(scored, & &1.false_alarm),
+      replies: %{
+        delivered: Enum.count(scored, &(&1.reply == :delivered)),
+        caveated: Enum.count(scored, &(&1.reply == :caveated)),
+        replaced: Enum.count(scored, &(&1.reply == :replaced))
+      },
       claims_unjudged: Enum.count(scored, &(&1.claimed == nil)),
       approval: %{
         prompts: sum.(& &1.approval.prompts),

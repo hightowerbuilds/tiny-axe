@@ -97,7 +97,7 @@ defmodule TinyAxe.BrowserDecisionsTest do
 
       # Each decision record names its assessment and what it was bound to.
       assert [record] = a.decisions
-      assert record.schema == "browser-decision/2"
+      assert record.schema == "browser-decision/3"
       assert record.assessment_id == a.id and record.binding == a.binding
     end
 

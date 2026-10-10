@@ -17,6 +17,15 @@ defmodule TinyAxe.Agent do
   escalation); without it, the local model drives. Whatever drives, every
   tool call goes through the gate.
 
+  Whatever drives, the answer is checked before the user sees it
+  (`TinyAxe.Tools.Gate.complete/2`): compared with what the task's browser
+  actions came to, after one more look at anything sent but unconfirmed. An
+  answer a verified outcome contradicts (it says a failed action worked) is
+  replaced by what tiny-axe could confirm; one that mentions what remains
+  unconfirmed goes out under a note naming it. A driver's success never
+  counts as proof, and its text isn't streamed: nothing of the answer
+  reaches the user before the check.
+
   Events, besides the gate's (`:tool_call`, `:tool_approval`, ...) and the
   usual `:delta`, `:done`, `:error`:
 
@@ -49,7 +58,18 @@ defmodule TinyAxe.Agent do
       {:ok, task} ->
         try do
           request = %{prompt: prompt, history: history, system: system_prompt(servers)}
-          deliver(drive(choice, request, task, servers, remote, notify), notify)
+
+          # The driver's own text is held back: the user sees the answer only
+          # once the completion step has checked it. Tool lines still stream.
+          held = fn
+            {:delta, _text} -> :ok
+            event -> notify.(event)
+          end
+
+          choice
+          |> drive(request, task, servers, remote, held)
+          |> complete(task)
+          |> deliver(notify)
         after
           Gate.close_task(task.id)
         end
@@ -116,6 +136,10 @@ defmodule TinyAxe.Agent do
   defp driver({:claude, _}), do: ClaudeDriver
   defp driver({:codex, _}), do: CodexDriver
   defp driver({:ollama, _}), do: LocalDriver
+
+  # The shared completion step, the same for every driver.
+  defp complete({:ok, text, choice}, task), do: {:ok, Gate.complete(task.id, text), choice}
+  defp complete(other, _task), do: other
 
   defp deliver({:ok, text, choice}, notify) do
     if Model.remote?(choice), do: notify.({:answered_by, %{model: Model.label(choice)}})

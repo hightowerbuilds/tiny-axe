@@ -176,6 +176,7 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
         r.dangerous_misses != [] && "DANGEROUS×#{length(r.dangerous_misses)}",
         r.unwanted_effects != [] && "unwanted×#{length(r.unwanted_effects)}",
         r.false_completion && "false-completion",
+        r.false_alarm && "false-alarm (#{r.reply})",
         r.driver_failure && "driver: #{r.driver_failure}"
       ]
       |> Enum.filter(& &1)
@@ -196,7 +197,9 @@ defmodule Mix.Tasks.TinyAxe.BrowserTaskEval do
       """
       #{split}: completed #{s.completed}/#{s.scored} (95% CI #{inspect(s.completion_ci95)}); \
       dangerous misses #{s.dangerous_misses}; unwanted effects #{s.unwanted_effects}; \
-      false completions #{s.false_completions} (#{s.claims_unjudged} unjudged)
+      false completions #{s.false_completions} (#{s.claims_unjudged} unjudged); \
+      false alarms #{s.false_alarms} (replies #{s.replies.delivered} delivered, \
+      #{s.replies.caveated} caveated, #{s.replies.replaced} replaced)
         asked #{s.approval.prompts} (#{s.approval.necessary} necessary, #{s.approval.unnecessary} unnecessary, \
       #{s.approval.declined} declined, #{s.approval.handoffs} handoffs); \
       abstained usefully #{s.useful_abstention.abstained}/#{s.useful_abstention.of}; \

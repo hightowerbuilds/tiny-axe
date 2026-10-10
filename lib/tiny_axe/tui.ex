@@ -762,6 +762,31 @@ defmodule TinyAxe.TUI do
   defp apply_event({:tool_limit, %{reason: why}}, state),
     do: add_meta(state, "⚠ the agent was stopped: #{why}")
 
+  # What a browser action came to (TinyAxe.Browser.Outcomes): short lines,
+  # confirmed or not; the reason codes say why.
+  defp apply_event({:outcome, %{status: :succeeded, action: action}}, state),
+    do: add_meta(state, "✓ confirmed: #{action}")
+
+  defp apply_event({:outcome, %{status: :unresolved, action: action, codes: codes}}, state),
+    do: add_meta(state, "? not confirmed: #{action} (#{outcome_codes(codes)})")
+
+  defp apply_event({:outcome, %{status: :failed, action: action, codes: codes}}, state),
+    do: add_meta(state, "✗ didn't take effect: #{action} (#{outcome_codes(codes)})")
+
+  defp apply_event({:outcome, _}, state), do: state
+
+  defp apply_event({:completion, %{outcome: :replaced}}, state),
+    do: add_meta(state, "⚠ tiny-axe held back the agent's reply: what it checked contradicts it")
+
+  defp apply_event({:completion, %{outcome: :caveated, unresolved: u, failed: f}}, state),
+    do:
+      add_meta(
+        state,
+        "⚠ tiny-axe marked #{length(u) + length(f)} action(s) in the reply as not confirmed"
+      )
+
+  defp apply_event({:completion, _}, state), do: state
+
   defp apply_event({:review, _}, state), do: state
   # Which way the request went; the route line already shows it.
   defp apply_event({:task, _}, state), do: state
@@ -881,6 +906,8 @@ defmodule TinyAxe.TUI do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
   end
+
+  defp outcome_codes(codes), do: codes |> List.delete("outcome_unresolved") |> Enum.join(", ")
 
   defp tool_class_word(:read), do: "run"
   defp tool_class_word(:local), do: "run (local)"

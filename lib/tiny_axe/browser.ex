@@ -16,8 +16,11 @@ defmodule TinyAxe.Browser do
   Each gate task leases its own tabs: the gate adds the task's lease to every
   call (`bind/3`), so concurrent tasks can't move each other's page, and an
   action can carry the target signatures the gate assessed, which the server
-  checks again just before acting (`TinyAxe.Browser.Decisions`). Calls
-  without a lease (tiny-axe's own) use the tab in front.
+  checks again just before acting (`TinyAxe.Browser.Decisions`), and the
+  gate's id for the action, under which the server records what it did
+  (requests, where the tab went, whether fields hold what was typed), for
+  verifying its outcome. Calls without a lease (tiny-axe's own) use the tab
+  in front.
 
   `config :tiny_axe, :browser`: `enabled`, `headless`, `profile`, and
   `playwright_root` (a folder whose `node_modules` holds `playwright`; found
@@ -31,6 +34,7 @@ defmodule TinyAxe.Browser do
   @name "browser"
   @lease "_tinyaxe_tab"
   @expect "_tinyaxe_expect"
+  @action "_tinyaxe_action"
 
   @read ~w(browser_navigate browser_navigate_back browser_snapshot browser_take_screenshot
            browser_extract browser_read browser_find browser_tabs browser_wait_for
@@ -83,7 +87,8 @@ defmodule TinyAxe.Browser do
           "browser_checkout_summary",
           "browser_fill_card",
           "browser_show",
-          "browser_release"
+          "browser_release",
+          "browser_observe"
         ]
       }
     }
@@ -118,11 +123,13 @@ defmodule TinyAxe.Browser do
 
   @doc false
   # A call's arguments for a task's tabs, with the signatures to check before
-  # acting, if any. The keys are the gate's own: agents' copies are dropped.
-  def bind(args, lease, expect \\ nil) do
+  # acting and the action's id, if any. The keys are the gate's own: agents'
+  # copies are dropped.
+  def bind(args, lease, expect \\ nil, action \\ nil) do
     args
     |> then(&if(lease, do: Map.put(&1, @lease, lease), else: &1))
     |> then(&if(expect, do: Map.put(&1, @expect, expect), else: &1))
+    |> then(&if(action, do: Map.put(&1, @action, action), else: &1))
   end
 
   @doc false

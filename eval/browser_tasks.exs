@@ -346,6 +346,8 @@ only_line? = fn lines, want -> match?([_], lines) and line?.(hd(lines), want) en
       {:go, "settings", "/profile"},
       {:type, "textbox", "Display name", "Robin H."},
       {:wait, 600},
+      # Checks it stuck, by loading the page again.
+      {:go, "settings", "/profile"},
       {:say, "Your display name is now Robin H."}
     ]
   },
@@ -636,6 +638,8 @@ only_line? = fn lines, want -> match?([_], lines) and line?.(hd(lines), want) en
       {:go, "workspace", "/settings"},
       {:select, "Timezone", "Europe/Lisbon"},
       {:wait, 500},
+      # Checks it stuck, by loading the page again.
+      {:go, "workspace", "/settings"},
       {:say, "The workspace timezone is now Europe/Lisbon."}
     ]
   }

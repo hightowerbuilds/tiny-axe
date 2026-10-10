@@ -24,6 +24,13 @@ defmodule TinyAxe.Tools.Gate do
        each browser decision behind it goes to the task's decision trace
        (`TinyAxe.Tools.Journal.append_decision/2`) with what happened next,
        and the call's entry names its assessment
+    6. **outcome** — a browser action that can change something gets a
+       record (`TinyAxe.Browser.Outcomes`): the browser reports what it did,
+       and anything that may have been sent but can't be confirmed stays
+       unresolved, so the same action isn't sent again. The gate-owned
+       `browser_verify` tool checks an outcome against a fresh look at the
+       page, and `complete/2` checks an agent's answer against the records
+       before it reaches the user (`{:outcome, ...}`, `{:completion, ...}`)
 
   Each task leases its own browser tabs (`TinyAxe.Browser.bind/3`); closing
   the task frees them for the next one.
@@ -37,7 +44,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{Browser, MCP, Purchases, Tools}
-  alias TinyAxe.Browser.Decisions
+  alias TinyAxe.Browser.{Decisions, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
@@ -80,7 +87,9 @@ defmodule TinyAxe.Tools.Gate do
         # (Decisions.remember/2), and the browser servers whose tabs it holds.
         assessments: [],
         floors: %{},
-        leased: MapSet.new()
+        leased: MapSet.new(),
+        # What its browser actions came to (Outcomes), newest first.
+        actions: []
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -128,7 +137,7 @@ defmodule TinyAxe.Tools.Gate do
 
   @doc """
   The tools a task may use, as MCP tool definitions: its servers' tools, and
-  with a browser, the gate's own `browser_assess`.
+  with a browser, the gate's own `browser_assess` and `browser_verify`.
   """
   @spec tools(map()) :: [map()]
   def tools(task) do
@@ -153,14 +162,14 @@ defmodule TinyAxe.Tools.Gate do
     # The gate's own browser keys (tab lease, signatures) come from the gate.
     args = if tool && (browser?(tool) or gate?(tool)), do: Decisions.clean(args), else: args
 
-    {class, assessment, {decision, result}} =
+    {class, judged, {decision, result}} =
       case tool && GenServer.call(__MODULE__, {:begin, task.id, name, args}) do
         nil ->
-          {nil, nil, {:refused, refusal("there's no tool called #{name}")}}
+          {nil, %{}, {:refused, refusal("there's no tool called #{name}")}}
 
         {:limit, why} ->
           task.notify.({:tool_limit, %{task: task.id, reason: why}})
-          {nil, nil, {:refused, refusal(why)}}
+          {nil, %{}, {:refused, refusal(why)}}
 
         {:ok, allowed} ->
           # A call missing what the tool requires goes back to the agent to fix,
@@ -173,28 +182,32 @@ defmodule TinyAxe.Tools.Gate do
                 {:tool_call, %{tool: name, class: class, reason: reason, args: Redact.deep(args)}}
               )
 
-              {class, task[:assessment], decide(task, tool, args, {class, reason}, allowed)}
+              {class, task, decide(task, tool, args, {class, reason}, allowed)}
 
             keys ->
-              {nil, nil, {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}}
+              {nil, %{}, {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}}
           end
       end
 
-    result = Redact.result(result)
+    assessment = judged[:assessment]
+    verification = judged[:verification]
+    {result, report} = take_report(result)
+    action = settle(task, tool, args, assessment, decision, result, report)
+    result = result |> note(action) |> Redact.result()
     ms = System.monotonic_time(:millisecond) - t0
     error = result["isError"] == true
-    traced = (assessment && assessment.decisions) || []
 
-    for record <- traced do
-      Tools.Journal.append_decision(
-        task.id,
-        Map.merge(record, %{
-          task: task.id,
-          tool: assessment.binding.tool,
-          result: %{decision: decision, error: error}
-        })
-      )
-    end
+    traced =
+      cond do
+        assessment ->
+          trace(task.id, assessment.decisions, assessment.binding.tool, decision, error)
+
+        verification ->
+          trace(task.id, verification.decisions, verification.action.tool, decision, error)
+
+        true ->
+          []
+      end
 
     Tools.Journal.append(task.id, %{
       tool: name,
@@ -203,7 +216,9 @@ defmodule TinyAxe.Tools.Gate do
       error: error,
       result: summary(result),
       assessment: Decisions.journal(assessment),
-      decisions: Enum.map(traced, & &1.id),
+      action: Outcomes.journal(action),
+      verification: Outcomes.journal_verification(verification),
+      decisions: traced,
       ms: ms
     })
 
@@ -229,14 +244,86 @@ defmodule TinyAxe.Tools.Gate do
     result
   end
 
+  # Each decision record goes to the task's trace with what happened next;
+  # returns their ids, for the call's journal entry.
+  defp trace(id, records, tool, decision, error) do
+    for record <- records do
+      Tools.Journal.append_decision(
+        id,
+        Map.merge(record, %{task: id, tool: tool, result: %{decision: decision, error: error}})
+      )
+
+      record.id
+    end
+  end
+
+  # The browser's report of what an action did, and the purchase gate's
+  # receipt, are tiny-axe's own: taken off the result before the agent sees it.
+  defp take_report(%{} = result) do
+    {ours, result} = Map.split(result, ["_tinyaxe", "_tinyaxe_receipt"])
+
+    {result,
+     %{execution: get_in(ours, ["_tinyaxe", "action"]), receipt: ours["_tinyaxe_receipt"]}}
+  end
+
+  defp take_report(result), do: {result, %{}}
+
+  # An action that can change something gets its record, settled from what
+  # the browser reported; the task hears if it couldn't be confirmed.
+  defp settle(_task, _tool, _args, nil, _decision, _result, _report), do: nil
+  defp settle(_task, _tool, _args, %{action_id: nil}, _decision, _result, _report), do: nil
+
+  defp settle(task, tool, args, assessment, decision, result, report) do
+    record =
+      Decisions.record(assessment, %{
+        decision: decision,
+        browser_tool: tool.tool,
+        args: args,
+        execution: report[:execution],
+        receipt: report[:receipt],
+        error_result: is_map(result) and result["isError"] == true
+      })
+
+    :ok = GenServer.call(__MODULE__, {:action, task.id, record})
+
+    if record.status == :unresolved or
+         (record.status == :failed and record.codes != ["not_executed"]),
+       do: task.notify.({:outcome, outcome_event(record, :gate)})
+
+    record
+  end
+
+  defp note(result, nil), do: result
+
+  defp note(%{"content" => content} = result, action) when is_list(content) do
+    case Decisions.note(action) do
+      nil -> result
+      text -> %{result | "content" => content ++ [%{"type" => "text", "text" => text}]}
+    end
+  end
+
+  defp note(result, _action), do: result
+
+  defp outcome_event(record, by),
+    do: %{
+      id: record.id,
+      action: record.description,
+      status: record.status,
+      codes: record.codes,
+      by: by
+    }
+
   # The gate's own tools first; then the task's servers'.
   defp find(task, name) do
     tools = MCP.tools(task.servers)
 
+    # Drivers may show the gate's own tools with their prefix.
+    own = Decisions.listed_name(name)
+
     cond do
-      Decisions.owns?(name) and Enum.any?(tools, &browser?/1) ->
-        [definition] = for d <- Decisions.definitions(), d["name"] == name, do: d
-        %{name: name, server: nil, tool: name, definition: definition, policy: %{"gate" => true}}
+      Decisions.owns?(own) and Enum.any?(tools, &browser?/1) ->
+        [definition] = for d <- Decisions.definitions(), d["name"] == own, do: d
+        %{name: own, server: nil, tool: own, definition: definition, policy: %{"gate" => true}}
 
       true ->
         Enum.find(tools, &(&1.name == name))
@@ -254,6 +341,18 @@ defmodule TinyAxe.Tools.Gate do
     cond do
       hidden?(tool) ->
         {:refused, "that tool is for tiny-axe only", task}
+
+      gate?(tool) and tool.name == "browser_verify" ->
+        case find_action(task.id, args["action_id"]) do
+          nil ->
+            {:refused,
+             "there's no browser action #{if is_binary(args["action_id"]), do: args["action_id"] <> " ", else: ""}in this task to verify",
+             task}
+
+          record ->
+            claim = if is_binary(args["claimed_outcome"]), do: args["claimed_outcome"]
+            {:read, nil, Map.put(task, :verification, verify(task, record, claim, :agent))}
+        end
 
       gate?(tool) ->
         name = Decisions.listed_name(args["tool"])
@@ -277,6 +376,15 @@ defmodule TinyAxe.Tools.Gate do
 
       browser?(tool) ->
         assessment = assess(task, tool, args, :execute, %{})
+
+        # Held because something like it may already have gone through: only
+        # the user can say to do it again, never the agent.
+        assessment =
+          if "outcome_unresolved" in assessment.reason_codes and
+               repeat_ok?(task, tool, args, assessment),
+             do: release(task, assessment) && assess(task, tool, args, :execute, %{}),
+             else: assessment
+
         {assessment.class, assessment.reason, Map.put(task, :assessment, assessment)}
 
       true ->
@@ -320,6 +428,7 @@ defmodule TinyAxe.Tools.Gate do
         },
         prior: record[:assessments],
         floors: record[:floors],
+        unresolved: MapSet.union(Decisions.unresolved_keys(record[:actions] || []), held_keys()),
         purchases: Purchases.enabled?()
       )
 
@@ -341,6 +450,197 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
+  ## Outcomes (TinyAxe.Browser.Outcomes)
+
+  # Unresolved submissions are held across tasks, per browser server and
+  # target (signature or form, which name the site), for `:hold_ttl`
+  # (30 minutes): the next task on the same tab can't send it again either.
+  @holds :tiny_axe_gate_holds
+
+  defp hold_ttl, do: Application.get_env(:tiny_axe, :tools, [])[:hold_ttl] || :timer.minutes(30)
+
+  defp hold_table do
+    if :ets.whereis(@holds) == :undefined,
+      do: :ets.new(@holds, [:named_table, :public, :set, read_concurrency: true])
+
+    @holds
+  end
+
+  # Called from the gate's process whenever a record changes.
+  defp sync_hold(task_id, record) do
+    table = hold_table()
+
+    if record.status == :unresolved and not record.released do
+      until = System.monotonic_time(:millisecond) + hold_ttl()
+
+      for key <- record.keys,
+          do:
+            :ets.insert(
+              table,
+              {key,
+               %{action: record.id, task: task_id, description: record.description, until: until}}
+            )
+    else
+      for key <- record.keys,
+          match?([{_, %{action: id}}] when id == record.id, :ets.lookup(table, key)),
+          do: :ets.delete(table, key)
+    end
+  end
+
+  @doc false
+  # The keys held by any task's unresolved submissions, not yet expired.
+  def held_keys do
+    now = System.monotonic_time(:millisecond)
+    table = hold_table()
+    for {key, %{until: until}} <- :ets.tab2list(table), until > now, into: MapSet.new(), do: key
+  end
+
+  @doc false
+  # For tests that share one browser server: forget every hold.
+  def clear_holds, do: :ets.delete_all_objects(hold_table())
+
+  defp held_by(keys) do
+    now = System.monotonic_time(:millisecond)
+
+    Enum.find_value(keys, fn key ->
+      case :ets.lookup(hold_table(), key) do
+        [{_, %{until: until} = h}] when until > now -> h
+        _ -> nil
+      end
+    end)
+  end
+
+  # Asks the user whether to do it again, through the usual approval.
+  defp repeat_ok?(task, tool, args, assessment) do
+    mine =
+      Enum.find(
+        GenServer.call(__MODULE__, {:actions, task.id}),
+        &(&1.status == :unresolved and Enum.any?(&1.keys, fn k -> k in assessment.effect.keys end))
+      )
+
+    earlier =
+      (mine && mine.description) || (held_by(assessment.effect.keys) || %{})[:description] ||
+        "action like this"
+
+    reason =
+      "would do again what may already have gone through: an earlier #{earlier} couldn't be " <>
+        "confirmed either way. Approve only if you've checked it didn't happen"
+
+    ask(task, tool, args, :outward, reason, %{repeat: true}) in [:once, :session]
+  end
+
+  # The user said to go ahead: the holds on this target are lifted, here and
+  # for every task.
+  defp release(task, assessment) do
+    GenServer.call(__MODULE__, {:release, task.id, assessment.effect.keys})
+  end
+
+  @doc """
+  The completion check, before an agent's answer reaches the user: one more
+  look at anything the task sent but hasn't verified, or that's unresolved,
+  then the answer compared with what the task's browser actions came to.
+  Returns the text to deliver: the answer; the answer under a note naming
+  what isn't confirmed; or, when a verified outcome contradicts it,
+  tiny-axe's own report instead. A task without browser actions gets its answer back untouched.
+  """
+  @spec complete(String.t(), String.t()) :: String.t()
+  def complete(id, reply) do
+    with %{} = task <- GenServer.call(__MODULE__, {:get, id}),
+         [_ | _] <- GenServer.call(__MODULE__, {:actions, id}) do
+      t0 = System.monotonic_time(:millisecond)
+      verified = Enum.map(Decisions.unverified(task.actions), &verify(task, &1, nil, :completion))
+
+      for v <- verified,
+          do: trace(id, v.decisions, v.action.tool, :verified, false)
+
+      records = GenServer.call(__MODULE__, {:actions, id})
+      checked = Decisions.completion(records, reply, context: %{objective: task[:objective]})
+      traced = trace(id, checked.records, "completion", checked.outcome, false)
+
+      Tools.Journal.append(id, %{
+        tool: "tiny-axe/completion",
+        args: %{},
+        decision: checked.outcome,
+        error: false,
+        result: "",
+        completion: %{
+          schema: "browser-completion/1",
+          outcome: checked.outcome,
+          contradicted: checked.contradicted,
+          unconfirmed: checked.unconfirmed,
+          problems: Enum.map(checked.problems, & &1.id),
+          confirmed: for(r <- records, r.status == :succeeded, r.submission, do: r.id)
+        },
+        verifications: Enum.map(verified, &Outcomes.journal_verification/1),
+        decisions: traced,
+        ms: System.monotonic_time(:millisecond) - t0
+      })
+
+      task.notify.(
+        {:completion,
+         %{
+           outcome: checked.outcome,
+           confirmed: for(r <- records, r.status == :succeeded, r.submission, do: r.description),
+           unresolved: for(r <- checked.problems, r.status == :unresolved, do: r.description),
+           failed: for(r <- checked.problems, r.status == :failed, do: r.description)
+         }}
+      )
+
+      checked.text
+    else
+      _ -> reply
+    end
+  end
+
+  # The task's action an agent named: by its own id, by the browser_assess
+  # decision it reused, or else its latest that sent something.
+  defp find_action(id, wanted) do
+    records = GenServer.call(__MODULE__, {:actions, id})
+
+    case wanted do
+      "act-" <> _ ->
+        Enum.find(records, &(&1.id == wanted))
+
+      "asm-" <> _ ->
+        Enum.find(records, &(&1.assessment_id == wanted or &1.reused_from == wanted))
+
+      _ ->
+        Enum.find(records, &(&1.submission and &1.status != :failed)) ||
+          Enum.find(records, &("not_executed" not in &1.codes))
+    end
+  end
+
+  # A fresh look at the page, with what the browser recorded for the action.
+  defp verify(task, record, claim, by) do
+    {v, updated} =
+      Decisions.verify(record,
+        observe: fn -> observe(task.id, record.server, record.id) end,
+        claim: claim,
+        by: by,
+        context: %{objective: Map.get(task, :objective)}
+      )
+
+    :ok = GenServer.call(__MODULE__, {:action, task.id, updated})
+    task.notify.({:outcome, outcome_event(updated, by)})
+    v
+  end
+
+  defp observe(task_id, server, action_id) do
+    with {:ok, %{"content" => [%{"text" => json} | _]} = result} <-
+           MCP.call(
+             server,
+             "browser_observe",
+             Browser.bind(%{"action" => action_id}, task_id),
+             30_000
+           ),
+         false <- result["isError"] == true,
+         {:ok, %{} = seen} <- JSON.decode(json) do
+      {:ok, seen}
+    else
+      other -> {:error, other}
+    end
+  end
+
   defp hidden?(tool), do: tool.tool in List.wrap(tool.policy["hidden"])
 
   defp missing(definition, args) do
@@ -351,7 +651,11 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
 
-  # browser_assess answers with the assessment; nothing runs.
+  # browser_assess answers with the assessment, browser_verify with the
+  # verification; nothing runs.
+  defp decide(%{verification: v}, %{policy: %{"gate" => true}}, _args, _class, _allowed),
+    do: {:ran, Decisions.verification_result(v)}
+
   defp decide(task, %{policy: %{"gate" => true}}, _args, _class, _allowed),
     do: {:ran, Decisions.result(task.assessment)}
 
@@ -685,7 +989,11 @@ defmodule TinyAxe.Tools.Gate do
               if(receipt.order, do: "; order #{receipt.order}.", else: ".")
         }
 
-        {:approved, Map.update(result, "content", [note], &[note | &1])}
+        # The receipt also settles the action's outcome record (Outcomes).
+        {:approved,
+         result
+         |> Map.update("content", [note], &[note | &1])
+         |> Map.put("_tinyaxe_receipt", %{order: receipt.order})}
 
       {:error, reason} ->
         Purchases.event(id, %{t: "click_failed", error: inspect(reason)})
@@ -760,10 +1068,18 @@ defmodule TinyAxe.Tools.Gate do
   defp forward(task, tool, args, decision) do
     args =
       if browser?(tool),
-        do: Browser.bind(args, task.id, Decisions.expect(task[:assessment])),
+        do:
+          Browser.bind(
+            args,
+            task.id,
+            Decisions.expect(task[:assessment]),
+            task[:assessment] && task.assessment[:action_id]
+          ),
         else: args
 
-    case MCP.call(tool.server, tool.tool, args) do
+    timeout = Application.get_env(:tiny_axe, :tools, [])[:action_timeout] || 120_000
+
+    case MCP.call(tool.server, tool.tool, args, timeout) do
       {:ok, result} ->
         if Decisions.stale_result?(result) do
           if task.assessment.reused_from,
@@ -784,7 +1100,7 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   # Waits for the user in the caller (the HTTP request), so other calls go on.
-  defp ask(task, tool, args, class, reason) do
+  defp ask(task, tool, args, class, reason, extra \\ %{}) do
     ref = make_ref()
     timeout = Application.get_env(:tiny_axe, :tools, [])[:approval_timeout] || :timer.minutes(10)
 
@@ -800,7 +1116,8 @@ defmodule TinyAxe.Tools.Gate do
        session_ok: tool.policy["browser"] != true and class == :outward,
        reply_to: self(),
        ref: ref
-     }})
+     }
+     |> Map.merge(extra)})
 
     receive do
       {:tool_answer, ^ref, answer} when answer in [:once, :session, :deny] -> answer
@@ -838,7 +1155,10 @@ defmodule TinyAxe.Tools.Gate do
   ## Server
 
   @impl true
-  def init(:ok), do: {:ok, %{}}
+  def init(:ok) do
+    hold_table()
+    {:ok, %{}}
+  end
 
   @impl true
   def handle_call({:open, task}, _from, tasks) do
@@ -860,7 +1180,44 @@ defmodule TinyAxe.Tools.Gate do
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
 
   def handle_call({:assessments, id}, _from, tasks),
-    do: {:reply, tasks[id] && Map.take(tasks[id], [:assessments, :floors]), tasks}
+    do: {:reply, tasks[id] && Map.take(tasks[id], [:assessments, :floors, :actions]), tasks}
+
+  def handle_call({:actions, id}, _from, tasks),
+    do: {:reply, (tasks[id] && tasks[id].actions) || [], tasks}
+
+  # A new record, or one verified since. Unresolved ones are always kept
+  # (they hold their target); of the rest, the newest 50.
+  def handle_call({:action, id, record}, _from, tasks) do
+    sync_hold(id, record)
+
+    {:reply, :ok,
+     update_task(tasks, id, fn t ->
+       all =
+         Enum.sort_by([record | Enum.reject(t.actions, &(&1.id == record.id))], & &1.seq, :desc)
+
+       {held, rest} = Enum.split_with(all, &(&1.status == :unresolved))
+       %{t | actions: Enum.sort_by(held ++ Enum.take(rest, 50), & &1.seq, :desc)}
+     end)}
+  end
+
+  # The user said to do it again: this task's records on those keys stop
+  # holding, and so does any task's hold on them.
+  def handle_call({:release, id, keys}, _from, tasks) do
+    for key <- keys, do: :ets.delete(hold_table(), key)
+
+    {:reply, true,
+     update_task(tasks, id, fn t ->
+       %{
+         t
+         | actions:
+             Enum.map(t.actions, fn r ->
+               if r.status == :unresolved and Enum.any?(r.keys, &(&1 in keys)),
+                 do: %{r | released: true},
+                 else: r
+             end)
+       }
+     end)}
+  end
 
   # The card tiny-axe filled in at a payment step, so the order later in the
   # same checkout still answers to that card's rules.

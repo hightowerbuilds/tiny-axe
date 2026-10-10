@@ -196,7 +196,7 @@ defmodule TinyAxe.BrowserAssessTest do
       assert entry["decisions"] == [record_id]
 
       [record] = Tools.Journal.decisions(task.id)
-      assert record["schema"] == "browser-decision/2"
+      assert record["schema"] == "browser-decision/3"
       assert record["assessment_id"] == id
       assert record["tool"] == "#{ctx.server}__browser_click"
 
@@ -456,20 +456,24 @@ defmodule TinyAxe.BrowserAssessTest do
             system
 
           {:claude, _} ->
-            args = JSON.decode!(done(events))["args"]
+            args = JSON.decode!(said(done(events)))["args"]
             args |> Enum.drop_while(&(&1 != "--system-prompt")) |> Enum.at(1)
 
           {:codex, _} ->
-            JSON.decode!(done(events))["stdin"]
+            JSON.decode!(said(done(events)))["stdin"]
         end
 
       calls = for {:tool_call, c} <- events, do: Map.take(c, [:tool, :class, :reason])
       asked = for {:tool_approval, a} <- events, do: Map.take(a, [:tool, :class, :reason])
-      [entry] = Tools.Journal.read(id)
-      records = Tools.Journal.decisions(id)
+      [entry] = for e <- Tools.Journal.read(id), e["tool"] != "tiny-axe/completion", do: e
+      records = for r <- Tools.Journal.decisions(id), r["kind"] == "assess", do: r
 
       %{
         told: told,
+        # Whether the user got the driver's own answer, after the completion check.
+        delivered: delivered(done(events)),
+        # The driver's own text never streams before the check.
+        streamed: for({:delta, t} <- events, do: t),
         calls: calls,
         asked: asked,
         decision: entry["decision"],
@@ -481,6 +485,21 @@ defmodule TinyAxe.BrowserAssessTest do
 
     defp done(events),
       do: Enum.find_value(events, fn e -> match?({:done, _}, e) && elem(e, 1) end)
+
+    # The driver's own answer inside what the user got: all of it, or what
+    # follows tiny-axe's note.
+    defp said(done) do
+      case String.split(done, "\n\n", parts: 2) do
+        ["⚠ tiny-axe couldn't confirm" <> _, answer] -> answer
+        _ -> done
+      end
+    end
+
+    defp delivered("⚠ tiny-axe couldn't confirm" <> _ = done),
+      do: {:noted, hd(String.split(done, "\n\n", parts: 2))}
+
+    defp delivered("tiny-axe held back" <> _ = done), do: {:replaced, done}
+    defp delivered(_done), do: :as_said
 
     @drivers [{:claude, "haiku"}, {:codex, "gpt-6-luna"}, {:ollama, "local-test"}]
 
@@ -527,6 +546,8 @@ defmodule TinyAxe.BrowserAssessTest do
       end
 
       assert outward |> Enum.map(&Map.drop(&1, [:told])) |> Enum.uniq() |> length() == 1
+      # The user said no, and nothing claims otherwise: each answer goes as it was.
+      assert Enum.all?(outward, &(&1.delivered == :as_said and &1.streamed == []))
 
       # The decision service down: refused, the same way, without asking.
       decisions(fn _, _, _ -> {:error, :down} end)
@@ -536,6 +557,11 @@ defmodule TinyAxe.BrowserAssessTest do
         assert seen.asked == []
         assert seen.decision == "refused"
         assert seen.assessment["reason_codes"] == ["decision_unavailable"]
+        # Nothing can check what the answer claims either: it goes out under
+        # a note saying the click wasn't done.
+        assert {:noted, note} = seen.delivered
+        assert note =~ "⚠ tiny-axe couldn't confirm all of this answer. Not confirmed:"
+        assert note =~ ~s(✗ not done: click "⚙")
       end
 
       assert unavailable |> Enum.map(&Map.drop(&1, [:told])) |> Enum.uniq() |> length() == 1

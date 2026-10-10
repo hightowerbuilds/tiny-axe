@@ -47,6 +47,8 @@ defmodule TinyAxe.Browser.TaskEval.User do
     {reply, bucket} =
       cond do
         ask.class == :handoff -> {:deny, :handoff}
+        # Doing again what may already have gone through: this user never does.
+        ask[:repeat] == true -> {:deny, :declined}
         matches?(task[:approve], shown) -> {:once, :necessary}
         matches?(task[:safe], shown) -> {:once, :unnecessary}
         true -> {:deny, :declined}

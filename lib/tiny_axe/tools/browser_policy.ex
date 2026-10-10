@@ -392,8 +392,10 @@ defmodule TinyAxe.Tools.BrowserPolicy do
       {class, reason} = d.disposition
 
       fun.(%{
-        schema: "browser-decision/2",
+        schema: "browser-decision/3",
         id: "dec-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower),
+        kind: "assess",
+        action_id: nil,
         assessment_id: nil,
         binding: nil,
         policy_version: @version,

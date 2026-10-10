@@ -307,7 +307,7 @@ defmodule TinyAxe.BrowserPolicyTest do
         })
 
       assert result == {:local, nil}
-      assert r.schema == "browser-decision/2"
+      assert r.schema == "browser-decision/3"
       assert r.id =~ ~r/\Adec-[0-9a-f]{12}\z/
       assert %{policy_version: "browser-policy/2", questions_version: "browser-effects/2"} = r
 

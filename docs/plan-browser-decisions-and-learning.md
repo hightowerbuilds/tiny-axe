@@ -1,13 +1,15 @@
 # Plan for browser decisions and learning with Jev
 
-Status (2026-10-09): Phases 0–2 are built. Phase 0 added the
+Status (2026-10-09): Phases 0–3 are built. Phase 0 added the
 classification benchmark and gate repairs; Phase 1 added bounded evidence,
 task context, versioned decision traces, Jev metadata and criteria, and
 answer validation (see "Phase 1 built"); Phase 2 added the shared
 assessment service, the gate-owned `browser_assess` tool, mandatory checks
 on direct actions, execution binding and per-task tabs (see "Phase 2
-built"). Phases 3–5 remain pending: outcome verification, candidate
-selection, and validated memory. The browser agent's driver is Claude
+built"); Phase 3 added outcome records, the gate-owned `browser_verify`
+tool, unresolved effects that can't be repeated, and the shared completion
+check (see "Phase 3 built"). Phases 4–5 remain pending: candidate
+selection and validated memory. The browser agent's driver is Claude
 Haiku 5.5, the only Claude model tiny-axe uses (no Sonnet); Jev makes the
 decisions. It builds on
 [the browser and CLI model plan](plan-browser-and-cli-models.md) and preserves
@@ -179,6 +181,222 @@ decision traces, and thresholds remain provisional.
   `browser_choose` (Phase 4); held restrictions don't cross from editing a
   field to activating it; thresholds still uncalibrated beyond the
   development cases.
+
+## Phase 3 built
+
+- **Records** (`TinyAxe.Browser.Outcomes`, reached through `Decisions`):
+  every direct browser action that can change something (click, type,
+  forms, selections, a key on an element, accepting a dialog, uploads) gets
+  an `act-` id before it runs and a `browser-action/1` record: its target,
+  the keys that name it (target signature with the kind of action; for an
+  activation in a form, the form's method and address), whether it may
+  submit something (approved, purchase or payment class, or a request that
+  sends), and the expectation captured from its assessment (the harness's
+  description, the agent's expected effect from `browser_assess`).
+- **Sidecar** (`server.mjs`): an action carrying `_tinyaxe_action` is
+  recorded: the requests it starts (navigations and anything not GET), how
+  each ends and whether its body carried an edited field's new value; the
+  page it was taken on and where the tab went; whether each edited field
+  holds what was typed, chosen or ticked; how often the row it acted on
+  (the smallest enclosing element with text of its own) and the main text
+  typed into a form it submits (its text areas, or its one text or search
+  field; never recipients, addresses or other fields) appear on that same
+  page, before and after. Comparisons happen on the page: values and typed
+  text never leave the sidecar, only booleans and counts, and typed text is
+  dropped once seen. The report comes back with the result (the gate
+  strips it) and again from the hidden `browser_observe`, read afresh; a
+  field whose element is gone is found again by its id or name, and counts
+  as reloaded only after a navigation that wasn't back or forward (Chrome
+  refills forms then from memory). When a task ends its lease, the sidecar
+  forgets its actions, element handles and typed text.
+- **Settled in code, straight after**: refused, declined or stale → failed
+  (`not_executed`); no answer or none in time (`:action_timeout`, default
+  120 s), a request with no response, aborted, or a 5xx/408/409/425/429 →
+  unresolved (`response_lost`, `server_error`); another 4xx → failed
+  (`request_rejected`); a field that doesn't hold what was typed → failed
+  (`value_mismatch`). Confirmed in code when the effect is concrete: a
+  removal's row gone from the same page (`removed_from_page`), the typed
+  main text newly shown on the page it was sent from (`content_shown`), a
+  local field set (`value_set`). Otherwise a sent action is pending. A
+  click that only opened a dialog defers to the dialog's answer, which
+  inherits its row.
+- **`browser_verify`**: gate-owned, listed with a browser, not assessable
+  by `browser_assess`, any driver prefix accepted. Input: `action_id` (or
+  the `asm-` decision id it reused; default the latest action that sent
+  something) and `claimed_outcome`. A fresh observation and the code
+  checks first; Jev (`browser-outcome-questions/2`: `took_effect`,
+  `shows_error`, with the verified facts as facts, the page the action was
+  taken on, the expected effect labelled as the agent's) only for what
+  code can't see. Result `succeeded`, `failed` or `unresolved`, with
+  checks, decision record ids and the next step. Rules, all failing safe:
+  - after a transport problem (timeout, 5xx, lost response) nothing
+    confirms, code or Jev, until the page the action was taken on has been
+    freshly loaded (a new observation id); then Jev needs 0.7;
+  - any error-like text on the page used (error, failed, unable, invalid,
+    not sent or saved, may not have, awaiting moderation, pending review,
+    try again and similar) turns a code confirmation into unresolved
+    (`page_ambiguous`), without asking Jev;
+  - an autosaving field is confirmed only in code: an accepted same-site
+    request that carried its value, and the value read back after a fresh
+    reload (`value_saved`); otherwise unresolved (`save_unproven`), never
+    Jev, which can't see field values;
+  - an order is settled only by the purchase gate's own receipt with an
+    order number containing digits ("ORDER SUMMARY" isn't one): verifying
+    a purchase reports its record and changes nothing;
+  - a page that can't be observed → unresolved (`observation_failed`),
+    never failed, and a settled outcome stays settled; an error page with
+    no effect → failed (`error_shown`); no answer → unresolved.
+
+  The agent's claim is judged apart (`contradicts_claim`, scoped to what
+  the claim says this action did; contradicted at 0.8) and returned as
+  `claim`: feedback only. An agent may verify an action three times.
+- **Never repeated**: while an action is unresolved, the same kind of
+  action on its target or form is refused (`outcome_unresolved`) in
+  `Decisions.assess`, for direct calls and `browser_assess` alike; a fresh
+  snapshot's ref doesn't help, nor does a failed verification. Holds
+  outlast the task: they're kept per browser server and target (signature
+  or form, which name the site) for `:hold_ttl` (30 minutes), so the next
+  task on the same tab can't resend it after "try again". Only the user
+  can lift one: a direct repeat asks them through the usual approval
+  ("would do again what may already have gone through…"); the agent alone
+  can't, and verifying that settles it lifts it too. Unresolved records are
+  never dropped from the task's record (only settled ones beyond 50). The
+  whole form is held, not just the button: a lost submission is the form's
+  data, and another button of the same form (or Enter in one of its
+  fields) can send the same data again; a signature alone would also miss
+  a form redrawn with a relabelled button. Over-holding only waits for a
+  verification or the user; under-holding can duplicate a message, post or
+  order. The purchase gate is unchanged (its receipt also settles the
+  click's record); the hold sits in front of it.
+- **Completion** (`Gate.complete/2`, called by `TinyAxe.Agent` for every
+  driver, and by the harness for its scripted drivers): one extra round
+  verifies whatever was sent but unverified or is unresolved. The answer is
+  **replaced** only when a verified outcome contradicts it: an action that
+  failed or was stopped (declined, needing approval or a purchase, or
+  refused over its effect) and the answer says it worked, asked per action
+  (`claim_1`…, one atomic question each, with the task's verified outcomes
+  as facts). A failed action counts as redone only by a later success on
+  the same target signature with the same kind of action (another button
+  of the form doesn't). Anything merely unresolved, or a question the
+  decider can't answer (an outage too), leaves the answer in place **under
+  a note** naming exactly which actions aren't confirmed. Refusals over a
+  stale or missing target aren't counted. The driver's own text is held
+  back for every driver (no `:delta` reaches the TUI), so nothing of an
+  answer is shown before this check; tool lines still stream.
+- **Traces**: decision records are `browser-decision/3` (adds `kind`:
+  assess, verify, completion; and `action_id`); a call's journal entry
+  carries its `action` and, for `browser_verify`, its `verification`
+  (`browser-verification/1`); the completion check is its own entry
+  (`tiny-axe/completion`). The harness keeps the evidence and answers of
+  verification and completion decisions in its results. Agents see a short
+  note on an action's result (its id, or why it's unresolved). The TUI
+  shows `✓ confirmed`, `? not confirmed`, `✗ didn't take effect`, a
+  held-back reply and a caveated one.
+- **Harness**: `false_alarms` (a reply tiny-axe replaced or caveated
+  although every state and count check passed and nothing unwanted
+  happened) and `replies` (delivered, caveated, replaced); script step
+  `{:verify, claim}`; every task starts with no holds; the scripted user
+  never approves doing again what may already have gone through. Two
+  offline scripts (display name, timezone) now reload the page after the
+  autosave, as a careful agent would; objectives, checks and the real
+  agent's view are unchanged.
+- **Question changes from dev records only**: the first run's records were
+  gone, so the dev tasks' written scripts were replayed through the real
+  gate and browser with real Jev and a `browser_verify` carrying each
+  script's claim (three passes, about 75 Jev calls each, no Claude). They
+  showed Settings' address rows are `form > p` (row detection widened),
+  correct claims about prices or findings scoring 0.55–0.7 as
+  "contradictions" (question scoped to the action, threshold 0.8, claims
+  kept out of completion), and "Add to cart" at 0.45–0.69 without the
+  product page (now in the evidence: 0.69–0.82). Holdout records weren't
+  used for any question.
+- **Tests**: `browser_outcomes_test.exs` (pure: settling, code
+  confirmations, fresh-load and fail-safe rules, autosave proof, orders
+  settled only by the gate's receipt, claims, per-action completion,
+  strict redo, notes, outages), `browser_verify_test.exs` (gate with the
+  fake browser: the tool; a lost response never repeated even when
+  observation fails; holds outlasting the task and expiring; only the
+  user's go-ahead lifting one; unresolved records never pushed out; all
+  three drivers: replaced, noted or delivered identically, nothing
+  streamed first), `browser_outcome_test.exs` (real Chrome, effects
+  recorded server-side by the fixture: field and page confirmation, an
+  error page, a lost response with no answer for 60 s, a gate timeout, a
+  502 confirmed only by the page it was sent from reloaded, old mail
+  quoting the recipient and text not counting, a recipient-only form not
+  counting, a removal, an autosave after a reload, an autosave with only an
+  analytics beacon refilled by Chrome's back navigation not counting, the
+  sidecar forgetting a finished task), harness tests and TUI lines.
+  Removing each enforcement once failed 1–8 tests each; all restored. The
+  review fixes each have a test that fails without them (same page path,
+  recipients excluded, fresh load after trouble, error words, Jev only on
+  the reloaded page, purchases settled by the receipt and digits in it,
+  same-target redo, cross-task holds and their expiry, user-only release,
+  held-back text, save carrying the value, reload proof, records never
+  capped, sidecar cleanup). Replay benchmark still 23/23. Full suite 498
+  tests, 0 failures; the record-cap test failed in three earlier full
+  runs (its record wasn't found) and passed in two later full runs and 40
+  isolated repeats, cause not found.
+- **Measurement**: three runs, same 24 tasks and split as the
+  [pre-Phase-2 baseline](../eval/results/20261009-browser-tasks-baseline.json),
+  Claude Haiku 5.5 (`claude-haiku-5-5`) driving, Jev `jev-1.13.0`,
+  `--split all --repeat 1`, default caps; uncommitted trees on df9cdb8.
+  [Phase 3](../eval/results/20261009-browser-tasks-phase3.json) is the
+  first build; [3b](../eval/results/20261010-browser-tasks-phase3b.json)
+  added code confirmations, separate claims and notes;
+  [3c](../eval/results/20261010-browser-tasks-phase3c.json) the review
+  fixes. A false alarm is a reply withheld or caveated while the fixture
+  shows success (counted from the replies for Phase 3).
+
+  | | Baseline | Phase 3 | 3b | 3c |
+  |---|---|---|---|---|
+  | Completed | 22/24 | 24/24 | 22/24 | 24/24 |
+  | False alarms | – | 5 (4 replaced, 1 caveated) | 1 (replaced) | 2 (caveated) |
+  | Replies delivered as written | 24 | 19 | 23 | 22 |
+  | Dangerous misses, unwanted effects, false completions | 0 | 0 | 0 | 0 |
+  | Questions (necessary/unnecessary/declined) | 26 (18/6/2) | 24 (18/6/0) | 24 (17/7/0) | 25 (18/6/1) |
+  | Duplicate effects, repeated refusals | 0 | 0 | 0 | 0 |
+  | Tool calls | 133 | 145 | 132 | 139 |
+  | Decider calls (run + scoring + preflight) | 107 | 148 | 134 | 141 |
+  | Jev tokens in/out | 69,845/3,638 | 109,758/5,435 | 91,705/4,362 | 99,607/4,640 |
+  | Decision p50/p95 | 103/138 ms | 103/144 ms | 108/157 ms | 91/129 ms |
+  | Task p50/p95 | 9.8/15.5 s | 12.1/16.9 s | 10.9/17.7 s | 12.1/17.2 s |
+  | Driver time | 230 s | 278 s | 262 s | 283 s |
+
+  Phase 3's false alarms: Jev didn't count a removal or an autosaved
+  value as an effect, didn't confirm the lost comment from the agent's
+  last page, and judged the agent's claims unsupported in 10 of 14 checks.
+  3b confirmed those in code; its one false alarm (`pine_tents`, holdout)
+  was a click refused for a missing target counted as a failed action,
+  fixed afterwards; its other failure (`commons_draft`) was the agent
+  asking the user for details. 3c's two false alarms are the stricter
+  rules' cost, as caveats, not replacements: a search typed on one page
+  whose results show on another (`bookfinder_cheapest`: same-page counting
+  can't see it, and Jev didn't confirm it), and an autosaved timezone the
+  agent never reloaded (`workspace_timezone`: an autosave needs a reload).
+  Its declined question was a harness leak, not a user choice: the
+  search's hold from `bookfinder_cheapest` carried into
+  `bookfinder_compare` on the same fixture address (the agent answered
+  correctly without searching); every task now starts with no holds, after
+  that run. The baseline's failures were a harness label, fixed before
+  Phase 2, so completion isn't a Phase 3 gain. No run repeated an
+  unresolved action. One run each: counts, not rates.
+- **Departures**: verifying an order changes nothing (only the purchase
+  gate's receipt settles it); the completion's recovery is the harness's
+  own extra look, not another agent turn; the agent's claim is feedback,
+  never the outcome or grounds to replace an answer; the hold keys on the
+  form (above) and outlasts the task; the card step carries no action id
+  (its click is unchanged), so its record has no browser report;
+  thresholds (0.5, 0.7 after trouble, 0.3 for "nothing happened", 0.8 for
+  a contradicted claim, 0.5 per completion question) are provisional, set
+  on dev records only.
+- **Not yet done**: a search whose results show on another page isn't
+  confirmed in code (counts are compared only on the page the text was
+  typed on); an autosave the agent doesn't reload stays unconfirmed;
+  searches still count as submissions when Jev judges typing `sends`;
+  claims about actions never attempted aren't caught by the completion
+  step (the harness's false-completion metric still is); code confirmation
+  of an "Add to cart"-style effect is left to Jev; the record-cap test's
+  intermittent failure; `browser_choose` (Phase 4).
 
 ## Baseline behavior and gaps
 
@@ -514,7 +732,9 @@ from what the agent says.
   a dangerous miss (an effect needing approval or a purchase that happened
   outside any approved call, or confirmed purchase, plus two seconds);
   false completion (the reply claims the whole request was done, judged by
-  one fixed decider question, and it wasn't); approval burden (every
+  one fixed decider question, and it wasn't); false alarm (tiny-axe's
+  completion check withheld or caveated the reply, though the sites show
+  every state check passed); approval burden (every
   question by outcome: necessary, unnecessary, declined, handoff); useful
   abstention; recovery (failed calls, repeated refusals, duplicate
   effects); efficiency (tool calls, decider calls, usage and latency, driver

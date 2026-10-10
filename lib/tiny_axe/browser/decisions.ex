@@ -1,9 +1,11 @@
 defmodule TinyAxe.Browser.Decisions do
   @moduledoc """
-  The gate's shared browser assessment: one code path for every browser
+  The gate's shared browser decisions: one code path for every browser
   action, whether the agent asked first (the gate-owned `browser_assess`
-  tool) or called the action directly. Later phases add choosing among
-  candidates and verifying outcomes here.
+  tool) or called the action directly, and for verifying what an action
+  came to (the gate-owned `browser_verify` tool, and the completion check
+  before an answer reaches the user; see `TinyAxe.Browser.Outcomes`). A
+  later phase adds choosing among candidates here.
 
   An assessment classes the action with `TinyAxe.Tools.BrowserPolicy` and its
   fixed questions, then binds the result to what it judged: the task, its
@@ -25,23 +27,26 @@ defmodule TinyAxe.Browser.Decisions do
     * **dispatch** — the gate sends the binding with the action (`expect/1`)
       and the browser checks the targets again just before acting, after
       any wait for the user's approval
+    * **unresolved** — while an action that may have sent something can't
+      be confirmed, the same kind of action on its target or form is
+      refused (`outcome_unresolved`), whatever the decider says
 
   Signatures cover what identifies a target (its page, tag, role, label,
   link and form), not the text around it, so a ticking clock nearby doesn't
   make a decision stale.
 
-  The agent's expected effect is kept with the assessment (for verifying
-  outcomes later) but isn't shown to the decider: an agent's words can't
-  soften a judgment, and an assessed call and a direct one are judged on the
-  same evidence.
+  The agent's expected effect is kept with the assessment (verification
+  shows it to the decider, labelled as the agent's) but isn't shown to the
+  decider when assessing: an agent's words can't soften a judgment, and an
+  assessed call and a direct one are judged on the same evidence.
   """
 
   alias TinyAxe.Browser
-  alias TinyAxe.Browser.Evidence
+  alias TinyAxe.Browser.{Evidence, Outcomes}
   alias TinyAxe.Tools.{BrowserPolicy, Redact}
 
   @schema "browser-assessment/1"
-  @tools ["browser_assess"]
+  @tools ["browser_assess", "browser_verify"]
 
   # From least to most restricted; composition only ever moves right.
   @order [:read, :local, :outward, :payment_step, :commit, :handoff, :refused]
@@ -51,6 +56,10 @@ defmodule TinyAxe.Browser.Decisions do
 
   @expected_chars 300
   @kept 50
+
+  # Browser actions that can change something: an unresolved one blocks its repeat.
+  @acts ~w(browser_click browser_type browser_fill_form browser_select_option browser_press_key
+           browser_handle_dialog browser_file_upload)
 
   @doc "The gate-owned tools this module answers."
   def owns?(name), do: name in @tools
@@ -89,6 +98,29 @@ defmodule TinyAxe.Browser.Decisions do
           "required" => ["tool", "arguments"]
         },
         "annotations" => %{"readOnlyHint" => true}
+      },
+      %{
+        "name" => "browser_verify",
+        "description" =>
+          "Ask tiny-axe whether a browser action you took worked. It looks at the page afresh and " <>
+            "answers succeeded, failed or unresolved, with evidence and reason codes. Use the " <>
+            "action id from the action's result (or the decision id from browser_assess); without " <>
+            "one, your latest action that sent something.",
+        "inputSchema" => %{
+          "type" => "object",
+          "properties" => %{
+            "action_id" => %{
+              "type" => "string",
+              "description" => "the action id (act-...) from the action's result"
+            },
+            "claimed_outcome" => %{
+              "type" => "string",
+              "description" => "what you believe happened, in a sentence"
+            }
+          },
+          "required" => []
+        },
+        "annotations" => %{"readOnlyHint" => true}
       }
     ]
   end
@@ -100,7 +132,10 @@ defmodule TinyAxe.Browser.Decisions do
       "call browser_assess with the tool, its arguments, the observation id from your latest " <>
       "snapshot, and what you expect it to do. Its reason codes say how to recover: " <>
       "stale_target means take a fresh snapshot and use its refs; insufficient_evidence means " <>
-      "look more closely or use browser_handoff."
+      "look more closely or use browser_handoff. After an action that sends, saves or buys " <>
+      "something, check it worked with browser_verify (the action id from its result, and what " <>
+      "the page should show); tell the user only what was confirmed. If an outcome is " <>
+      "unresolved, never repeat the action: verify it or tell the user."
   end
 
   @doc """
@@ -110,8 +145,11 @@ defmodule TinyAxe.Browser.Decisions do
   `:observation` and `:expected`. `opts`: `:inspect` (ref or nil → what
   `browser_inspect` reports, or nil), `:context` (the task, for
   `TinyAxe.Browser.Evidence`), `:decide`, `:prior` and `:floors` (the task's
-  record, see `remember/2`), `:purchases` (whether they're enabled), `:now`
-  and `:ttl` (milliseconds).
+  record, see `remember/2`), `:unresolved` (the keys of the task's
+  unresolved actions, `TinyAxe.Browser.Outcomes.unresolved_keys/1`),
+  `:purchases` (whether they're enabled), `:now` and `:ttl` (milliseconds).
+  A direct call that can change something gets an `action_id`, under which
+  the browser records what it did.
   """
   @spec assess(map(), keyword()) :: map()
   def assess(request, opts) do
@@ -149,6 +187,19 @@ defmodule TinyAxe.Browser.Decisions do
     {class, reason, codes} =
       hold(held(opts[:floors] || %{}, binding), judged.class, judged.reason, judged.codes)
 
+    effect = Outcomes.effect(binding, Enum.to_list(metas), prior && prior[:effect])
+
+    # Something like it may already have been sent: never again until it's
+    # confirmed one way or the other.
+    {class, reason, codes} =
+      if class != :refused and request.tool in @acts and
+           Outcomes.unresolved?(effect.keys, opts[:unresolved] || MapSet.new()),
+         do:
+           {:refused,
+            "an earlier action like this may already have gone through, and tiny-axe couldn't " <>
+              "confirm it either way, so it won't be repeated", codes ++ ["outcome_unresolved"]},
+         else: {class, reason, codes}
+
     codes =
       if Enum.any?(metas, fn {_ref, meta} -> meta == nil end),
         do: codes ++ ["target_not_found"],
@@ -158,7 +209,12 @@ defmodule TinyAxe.Browser.Decisions do
       disposition(class, codes, opts[:purchases] == true, get_in(opts, [:context, :intent]))
 
     id = "asm-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
-    trace = %{assessment_id: id, binding: binding}
+
+    action_id =
+      if request.mode == :execute and Outcomes.effectful?(request.tool, args, binding),
+        do: "act-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+    trace = %{assessment_id: id, binding: binding, action_id: action_id}
 
     %{
       schema: @schema,
@@ -175,6 +231,8 @@ defmodule TinyAxe.Browser.Decisions do
       decisions: Enum.map(judged[:records] || [], &Map.merge(&1, trace)),
       reused_from: judged[:reused_from],
       forget: judged[:forget],
+      effect: effect,
+      action_id: action_id,
       at: now,
       expires: now + ttl
     }
@@ -275,6 +333,25 @@ defmodule TinyAxe.Browser.Decisions do
       :expected_effect
     ])
   end
+
+  ## Outcomes (TinyAxe.Browser.Outcomes)
+
+  @doc "An action's record once the gate has done with it; see `TinyAxe.Browser.Outcomes.record/2`."
+  defdelegate record(assessment, outcome), to: Outcomes
+
+  @doc "Verifies an action from fresh observations; see `TinyAxe.Browser.Outcomes.verify/2`."
+  defdelegate verify(record, opts), to: Outcomes
+
+  @doc "The completion check on an answer; see `TinyAxe.Browser.Outcomes.completion/3`."
+  defdelegate completion(records, reply, opts), to: Outcomes
+
+  defdelegate unresolved_keys(records), to: Outcomes
+  defdelegate unverified(records), to: Outcomes
+  defdelegate note(record), to: Outcomes
+
+  @doc "A `browser_verify` result, as an MCP tool result."
+  def verification_result(v),
+    do: %{"content" => [%{"type" => "text", "text" => JSON.encode!(Outcomes.public(v))}]}
 
   @doc "The stricter of two classes."
   def stricter(a, b), do: if(rank(a) >= rank(b), do: a, else: b)
@@ -440,6 +517,9 @@ defmodule TinyAxe.Browser.Decisions do
     cond do
       "stale_target" in codes or "target_not_found" in codes ->
         "take a fresh browser_snapshot and use its refs"
+
+      "outcome_unresolved" in codes ->
+        "don't repeat it: call browser_verify to check whether the earlier one went through, or tell the user"
 
       "constraint_mismatch" in codes ->
         "don't; tell the user (they didn't ask to buy this, or gave no maximum to spend)"

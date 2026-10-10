@@ -12,6 +12,12 @@
 // every call), so concurrent tasks never move each other's page. An action
 // may carry `_tinyaxe_expect`, the target signatures the gate assessed: it is
 // checked again here, in the same queue as the action, just before acting.
+// An action may also carry `_tinyaxe_action`, an id the gate gave it: what
+// happened is recorded under that id (the requests it started and how they
+// ended, where the tab went, whether edited fields hold what was typed, and
+// the page right after), returned to the gate with the result, and read again
+// later with `browser_observe` to verify the outcome. Field values never leave
+// this process: only whether they match.
 //
 // Environment: PW_ROOT (a folder whose node_modules has playwright),
 // TINY_AXE_BROWSER_PROFILE, TINY_AXE_BROWSER_HEADLESS ("1" or "0"),
@@ -99,6 +105,9 @@ function track(page) {
   page.on("console", (m) => push(consoleLog.get(page), `${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => push(consoleLog.get(page), `error: ${e.message}`));
   page.on("response", (r) => push(network.get(page), `${r.request().method()} ${r.status()} ${r.url()}`));
+  page.on("request", (r) => noteRequest(page, r));
+  page.on("response", (r) => { const e = requestEntries.get(r.request()); if (e) e.status = r.status(); });
+  page.on("requestfailed", (r) => { const e = requestEntries.get(r); if (e) e.failed = r.failure()?.errorText || "failed"; });
   page.on("framenavigated", (f) => { if (f === page.mainFrame()) views.get(page).navigations++; });
   // A tab a page opens (a popup) belongs to the task that holds its opener.
   // Until that's known the tab is pending, so no task can claim it meanwhile;
@@ -409,6 +418,271 @@ async function validate(lease, expect) {
   }
 }
 
+// ---------- outcomes ----------
+
+// What each action did, by the gate's id for it (the newest 50), and each
+// task's latest action: requests a page makes until the task's next action
+// or navigation (and at most 5 s after the action ends) count as its own,
+// so a field that saves a moment after typing is still seen.
+const actions = new Map();
+const latest = new Map();
+const requestEntries = new WeakMap();
+const ATTRIBUTE_MS = 5000;
+
+function startAction(id, tool, lease, p) {
+  const record = {
+    id, tool, lease, started: Date.now(), ended: null, error: null,
+    url_before: p ? p.url() : null, observation_before: p ? observation(p) : null,
+    url_after: null, observation_after: null, requests: [], fields: [], after: null,
+    row: null, content: [],
+  };
+  actions.set(id, record);
+  while (actions.size > 50) actions.delete(actions.keys().next().value);
+  latest.set(lease, record);
+  return record;
+}
+
+function noteRequest(page, r) {
+  const record = latest.get(owners.get(page) ?? null);
+  if (!record || (record.ended && Date.now() - record.ended > ATTRIBUTE_MS)) return;
+  const type = r.resourceType();
+  const method = r.method();
+  // Navigations, and anything that could send: not images, scripts or reads.
+  if (!(type === "document" || (method !== "GET" && method !== "HEAD" && method !== "OPTIONS"))) return;
+  if (record.requests.length >= 20) return;
+  let url = r.url();
+  try { const u = new URL(url); url = u.origin + u.pathname; } catch {}
+  const entry = { method, url, type, status: null, failed: null };
+  // Its body stays here, only to tell whether it carried a field's new value.
+  if (method !== "GET") entry.post = r.postData() || "";
+  record.requests.push(entry);
+  requestEntries.set(r, entry);
+}
+
+// Whether a request's body carries the value an edited field now holds
+// (raw, URL-encoded or inside JSON); worked out once, then the body is dropped.
+function carries(entry, record) {
+  if (entry.carries !== undefined) return entry.carries;
+  if (entry.post === undefined) return null;
+  const wanted = record.fields.flatMap((f) => f.expect ? ("value" in f.expect ? [f.expect.value] : (f.expect.selected || [])) : [])
+    .map(String).filter((v) => v.length > 0);
+  const forms = (v) => [v, encodeURIComponent(v), encodeURIComponent(v).replace(/%20/g, "+"), JSON.stringify(v).slice(1, -1)];
+  entry.carries = wanted.length > 0 && wanted.some((v) => forms(v).some((f) => entry.post.includes(f)));
+  delete entry.post;
+  return entry.carries;
+}
+
+// A navigation the agent asked for starts afresh: what pages do on load
+// isn't the last action's doing.
+function endAttribution(lease) { latest.delete(lease); }
+
+// Whether a field holds what the action put there, read on the page; the
+// value itself stays here.
+function holds(el, want) {
+  if (!el.isConnected) return null;
+  if ("checked" in want) return el.checked === want.checked;
+  if ("selected" in want) {
+    const chosen = el.tagName === "SELECT" ? [...el.selectedOptions].flatMap((o) => [o.value, o.label, o.textContent.trim()]) : [];
+    return want.selected.every((v) => chosen.includes(String(v)));
+  }
+  return String(el.value) === String(want.value);
+}
+
+async function fieldState(handle, expect) {
+  try { return await handle.evaluate(holds, expect); } catch { return null; }
+}
+
+// The same field read afresh: the element the action used, or, once the page
+// has been reloaded, the field with its id or name on the same page (what
+// the server sent back, as far as the page can show).
+//
+// `reload` is true only for a fresh page load that can be told: the element
+// the action used is gone (a page restored from the back-forward cache keeps
+// it), the tab has navigated since the action ended, and the navigation
+// wasn't back or forward (Chrome refills forms then from its own memory).
+async function fieldNow(f, p) {
+  if (f.reloaded) return { now: true, reread: true, reload: true };
+  const direct = f.handle ? await fieldState(f.handle, f.expect) : null;
+  const none = { now: direct, reread: false, reload: false };
+  if (direct !== null || !p || !f.locate || !f.expect) return none;
+  if (pathOf(p.url()) !== f.locate.path) return none;
+  const quote = (v) => String(v).replace(/["\\]/g, "\\$&");
+  const sel = f.locate.id ? `[id="${quote(f.locate.id)}"]` : f.locate.name ? `[name="${quote(f.locate.name)}"]` : null;
+  if (!sel) return none;
+  try {
+    const now = await p.locator(sel).first().evaluate(holds, f.expect, { timeout: 2000 });
+    const nav = await p.evaluate(() => performance.getEntriesByType("navigation")[0]?.type || null).catch(() => null);
+    const reload = now === true && observation(p) !== f.observation_after && nav !== null && nav !== "back_forward";
+    // Settled: the value itself is no longer needed.
+    if (reload) { f.reloaded = true; f.expect = null; f.handle = null; }
+    return { now, reread: now !== null, reload };
+  } catch { return none; }
+}
+
+function pathOf(url) { try { const u = new URL(url); return u.origin + u.pathname; } catch { return null; } }
+function originOf(url) { try { return new URL(url).origin; } catch { return null; } }
+
+// The text a person reads on the page, without form controls (what's typed
+// in a field isn't shown on the page), whitespace collapsed, lower case: for
+// counting how often a row or a typed text appears.
+async function shownText(p) {
+  if (!p || dialogs.get(p)) return null;
+  return Promise.race([
+    p.evaluate(() => {
+      if (!document.body) return "";
+      const clone = document.body.cloneNode(true);
+      clone.querySelectorAll("input, textarea, select, script, style, template, noscript").forEach((n) => n.remove());
+      return (clone.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    }).catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), 3000)),
+  ]);
+}
+
+function occurrences(text, part) {
+  if (text === null || !part) return null;
+  let n = 0;
+  for (let i = text.indexOf(part); i !== -1; i = text.indexOf(part, i + part.length)) n++;
+  return n;
+}
+
+// Before acting on a target: the row it sits in (removing it should take
+// the row off the page) and, when it submits a form, the text typed into
+// the form (a post, comment or search should then show it). Both stay here;
+// the gate is told only how often each appears, before and after.
+async function beforeActing(record, p, loc, mode) {
+  if (!record || !p) return;
+  const info = await loc.first().evaluate((el, mode) => {
+    const clean = (node) => {
+      const c = node.cloneNode(true);
+      c.querySelectorAll("input, textarea, select, script, style").forEach((n) => n.remove());
+      return (c.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    };
+    // The row: the smallest enclosing element with text of its own beyond
+    // the control's label (a table row, a list item, a paragraph), short of
+    // the page's main region.
+    const label = clean(el);
+    let row = null;
+    for (let n = el.parentElement; n && !n.matches("body, main, [role=main]"); n = n.parentElement) {
+      if (clean(n).replace(label, "").trim().length >= 8) { row = n; break; }
+    }
+    const form = el.form || el.closest("form");
+    const isSubmit = (el.tagName === "BUTTON" && (el.type || "submit") === "submit") ||
+      (el.tagName === "INPUT" && ["submit", "image"].includes(el.type));
+    const submits = form && (mode === "enter" || (mode === "click" && isSubmit));
+    // Only the main content: the message, comment or post (its text areas),
+    // or a form's one text or search field; never addresses or recipients,
+    // which old mail or lists show anyway.
+    const about = (f) => `${f.type || ""} ${f.name || ""} ${f.id || ""} ${f.autocomplete || ""} ${[...(f.labels || [])].map((l) => l.innerText).join(" ")}`;
+    const excluded = (f) => ["email", "tel", "url", "password", "hidden"].includes(f.type) ||
+      /\b(to|cc|bcc|from|recipients?|e-?mail|address|phone|tel|zip|postal|name)\b|cc-|card|cvc|cvv|passw/i.test(about(f));
+    const fields = submits ? [...form.elements].filter((f) => !excluded(f)) : [];
+    const areas = fields.filter((f) => f.tagName === "TEXTAREA");
+    const lines = fields.filter((f) => f.tagName === "INPUT" && ["text", "search", ""].includes(f.type));
+    const main = areas.length ? areas : (lines.length === 1 ? lines : lines.filter((f) => f.type === "search"));
+    const values = main.map((f) => String(f.value || "").replace(/\s+/g, " ").trim().toLowerCase()).filter((v) => v.length >= 8);
+    return { row: row ? clean(row) : null, values };
+  }, mode, { timeout: 2000 }).catch(() => null);
+  if (!info) return;
+  const text = await shownText(p);
+  const path = pathOf(p.url());
+  if (info.row && info.row.length >= 8) record.row = { text: info.row, path, before: occurrences(text, info.row), after: null };
+  record.content = info.values.map((v) => ({ v, path, before: occurrences(text, v), after: null }));
+}
+
+// How often a typed text shows on the page, counted only on the page it was
+// typed on (the same address): elsewhere the count means nothing. Once it is
+// seen, the text itself is dropped.
+function contentCount(c, p, text) {
+  if (c.shown) return c.shown;
+  if (!p || pathOf(p.url()) !== c.path || !c.v) return null;
+  const n = occurrences(text, c.v);
+  if (n !== null && c.before !== null && n > c.before) { c.shown = n; c.v = null; }
+  return n;
+}
+
+// A dialog's answer acts on the row whose button opened it.
+const dialogRows = new WeakMap();
+
+// A field's element, taken before acting (the action may move the page on),
+// and then what it should hold afterwards.
+async function grab(record, loc) {
+  if (!record) return null;
+  const handle = await loc.elementHandle({ timeout: 2000 }).catch(() => null);
+  if (handle) {
+    handle.__locate = await handle.evaluate((el) => ({ id: el.id || null, name: el.name || null, path: location.origin + location.pathname })).catch(() => null);
+  }
+  return handle;
+}
+
+function expectField(record, handle, expect) {
+  if (record && handle) record.fields.push({ handle, expect, after: null, locate: handle.__locate || null });
+}
+
+// The page as it is: address, title, observation and readable text (cut
+// short), or the open dialog, whose page can't be read.
+async function pageState(p) {
+  if (!p) return null;
+  const dialog = dialogs.get(p);
+  const base = { url: p.url(), title: await p.title().catch(() => ""), observation: observation(p) };
+  if (dialog) return { ...base, dialog: redact(dialog.message()), text: "" };
+  const read = await Promise.race([
+    readable(p).catch(() => null),
+    new Promise((r) => setTimeout(() => r(null), 3000)),
+  ]);
+  return read === null ? { ...base, text: null } : { ...base, text: clip(read, 2000) };
+}
+
+async function finishAction(record, lease, error) {
+  record.ended = Date.now();
+  record.error = error ? String(error).split("\n")[0] : null;
+  const p = peek(lease);
+  record.url_after = p ? p.url() : null;
+  record.observation_after = p ? observation(p) : null;
+  for (const f of record.fields) {
+    f.after = await fieldState(f.handle, f.expect);
+    f.observation_after = record.observation_after;
+  }
+  record.after = await pageState(p);
+  const text = await shownText(p);
+  if (record.row) record.row.after = pathOf(p?.url()) === record.row.path ? occurrences(text, record.row.text) : null;
+  for (const c of record.content) c.after = contentCount(c, p, text);
+  // Its button only opened a dialog: answering it acts on the same row.
+  if (p && dialogs.get(p) && record.row) dialogRows.set(p, record.row);
+}
+
+// What the gate is told about an action: never field values or handles.
+async function actionReport(record, fresh = false) {
+  const p = fresh ? peek(record.lease) : null;
+  // Matched against the requests first: a settled reload drops the value.
+  const requests = record.requests.map((e) => {
+    const { post, ...shown } = e;
+    return { ...shown, carries_value: carries(e, record), pending: e.status === null && e.failed === null };
+  });
+  const fields = [];
+  for (const f of record.fields) {
+    const seen = fresh ? await fieldNow(f, p) : { now: f.after, reread: false, reload: false };
+    fields.push({ after: f.after, now: seen.now, reread: seen.reread, reload: seen.reload });
+  }
+  const text = fresh ? await shownText(p) : null;
+  const row = record.row && {
+    before: record.row.before, after: record.row.after,
+    now: fresh && p && pathOf(p.url()) === record.row.path ? occurrences(text, record.row.text) : (fresh ? null : record.row.after),
+  };
+  const content = record.content.length ? {
+    values: record.content.length,
+    before: record.content.map((c) => c.before),
+    after: record.content.map((c) => c.after),
+    now: record.content.map((c) => (fresh ? contentCount(c, p, text) : c.after)),
+  } : null;
+  return {
+    id: record.id, tool: record.tool, started: record.started, ended: record.ended, error: record.error,
+    url_before: record.url_before, url_after: record.url_after, title_before: record.title_before || "",
+    observation_before: record.observation_before, observation_after: record.observation_after,
+    requests,
+    fields, after: record.after, row, content,
+  };
+}
+
 // ---------- checkout pages ----------
 
 const MONEY = /([$£€])\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)|(\d+(?:\.\d{2})?)\s?(USD|EUR|GBP)\b/g;
@@ -572,6 +846,7 @@ const TOOLS = {
     annotations: { readOnlyHint: true, openWorldHint: true },
     async run({ url }, lease) {
       const p = await page(lease);
+      endAttribution(lease);
       // Leaving a page answers its open dialog with Cancel.
       await dismissDialog(p);
       await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -585,6 +860,7 @@ const TOOLS = {
     annotations: ro,
     async run(_args, lease) {
       const p = await page(lease);
+      endAttribution(lease);
       await dismissDialog(p);
       await p.goBack({ waitUntil: "domcontentloaded", timeout: 30000 });
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
@@ -696,10 +972,15 @@ const TOOLS = {
     description: "Click an element, by its ref from the snapshot. Returns the page afterwards.",
     inputSchema: obj({ element: { type: "string", description: "what the element is, in words" }, ref: { type: "string" }, doubleClick: { type: "boolean" } }, ["ref"]),
     annotations: { readOnlyHint: false, openWorldHint: true },
-    async run({ ref, doubleClick }, lease) {
+    async run({ ref, doubleClick }, lease, record) {
       const p = await page(lease);
       const loc = target(p, ref);
+      // A checkbox or radio button: afterwards it should be toggled, or chosen.
+      const box = record ? await loc.evaluate((el) => ["checkbox", "radio"].includes(el.type) ? { type: el.type, checked: el.checked } : null, null, { timeout: 2000 }).catch(() => null) : null;
+      const handle = box ? await grab(record, loc) : null;
+      await beforeActing(record, p, loc, "click");
       await acting(p, () => doubleClick ? loc.dblclick({ timeout: 10000 }) : loc.click({ timeout: 10000 }));
+      if (box && !doubleClick) expectField(record, handle, { checked: box.type === "radio" ? true : !box.checked });
       return after(p);
     },
   },
@@ -707,11 +988,14 @@ const TOOLS = {
     description: "Type text into a field, by its ref (it replaces what's there). With submit, press Enter afterwards.",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" } }, ["ref", "text"]),
     annotations: { readOnlyHint: false },
-    async run({ ref, text: value, submit }, lease) {
+    async run({ ref, text: value, submit }, lease, record) {
       const p = await page(lease);
       const loc = target(p, ref);
       await refuseSensitive(loc);
+      const handle = await grab(record, loc);
       await loc.fill(String(value), { timeout: 10000 });
+      expectField(record, handle, { value: String(value) });
+      if (submit) await beforeActing(record, p, loc, "enter");
       if (submit) await acting(p, () => loc.press("Enter"));
       return after(p);
     },
@@ -720,15 +1004,17 @@ const TOOLS = {
     description: "Fill several fields at once: a list of {ref, value}. Text fields get the text, checkboxes true/false, selects an option.",
     inputSchema: obj({ fields: { type: "array", items: obj({ ref: { type: "string" }, value: {} }, ["ref", "value"]) } }, ["fields"]),
     annotations: { readOnlyHint: false },
-    async run({ fields }, lease) {
+    async run({ fields }, lease, record) {
       const p = await page(lease);
       for (const { ref, value } of fields || []) {
         const loc = target(p, ref);
         await refuseSensitive(loc);
         const kind = await loc.evaluate((el) => el.tagName === "SELECT" ? "select" : (["checkbox", "radio"].includes(el.type) ? "check" : "text"));
+        const handle = await grab(record, loc);
         if (kind === "select") await loc.selectOption(String(value), { timeout: 10000 });
         else if (kind === "check") await loc.setChecked(value === true || value === "true", { timeout: 10000 });
         else await loc.fill(String(value), { timeout: 10000 });
+        expectField(record, handle, kind === "select" ? { selected: [String(value)] } : kind === "check" ? { checked: value === true || value === "true" } : { value: String(value) });
       }
       return after(p);
     },
@@ -737,9 +1023,12 @@ const TOOLS = {
     description: "Choose option(s) in a select, by its ref.",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, values: { type: "array", items: { type: "string" } } }, ["ref", "values"]),
     annotations: { readOnlyHint: false },
-    async run({ ref, values }, lease) {
+    async run({ ref, values }, lease, record) {
       const p = await page(lease);
-      await target(p, ref).selectOption(values, { timeout: 10000 });
+      const loc = target(p, ref);
+      const handle = await grab(record, loc);
+      await loc.selectOption(values, { timeout: 10000 });
+      expectField(record, handle, { selected: (values || []).map(String) });
       return after(p);
     },
   },
@@ -747,8 +1036,9 @@ const TOOLS = {
     description: "Press a key (e.g. Enter, Escape, ArrowDown) in the page.",
     inputSchema: obj({ key: { type: "string" } }, ["key"]),
     annotations: { readOnlyHint: false },
-    async run({ key }, lease) {
+    async run({ key }, lease, record) {
       const p = await page(lease);
+      if (record) await beforeActing(record, p, p.locator(":focus"), /enter/i.test(String(key)) ? "enter" : "key");
       await acting(p, () => p.keyboard.press(String(key)));
       return after(p);
     },
@@ -787,6 +1077,7 @@ const TOOLS = {
         leases.set(lease, { current: p });
       }
       front = p;
+      endAttribution(lease);
       if (url) await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
       return after(p);
     },
@@ -806,11 +1097,13 @@ const TOOLS = {
     description: "Answer the open dialog: accept (OK) or not (Cancel), with text for a prompt.",
     inputSchema: obj({ accept: { type: "boolean" }, promptText: { type: "string" } }, ["accept"]),
     annotations: { readOnlyHint: false },
-    async run({ accept, promptText }, lease) {
+    async run({ accept, promptText }, lease, record) {
       const p = await page(lease);
       const d = dialogs.get(p);
       if (!d) throw new UserError("no dialog is open");
       dialogs.delete(p);
+      if (record && accept && dialogRows.get(p)) record.row = { ...dialogRows.get(p), after: null };
+      dialogRows.delete(p);
       if (accept) await d.accept(promptText); else await d.dismiss();
       return after(p, ` · dialog ${accept ? "accepted" : "dismissed"}`);
     },
@@ -873,6 +1166,19 @@ const TOOLS = {
       return text(JSON.stringify(await inspect(await page(lease), ref)));
     },
   },
+  browser_observe: {
+    description: "For tiny-axe's gate only: the page as it is now, and what an earlier action did.",
+    inputSchema: obj({ action: { type: "string" } }),
+    annotations: ro,
+    async run({ action }, lease) {
+      const p = peek(lease);
+      const record = action ? actions.get(action) : null;
+      return text(JSON.stringify({
+        now: await pageState(p),
+        action: record && record.lease === lease ? await actionReport(record, true) : null,
+      }));
+    },
+  },
   browser_release: {
     description: "For tiny-axe's gate only: a task is over; its tabs stay open, free for the next task.",
     inputSchema: obj(),
@@ -881,6 +1187,10 @@ const TOOLS = {
       if (lease) {
         for (const p of pages) if (owners.get(p) === lease) owners.delete(p);
         leases.delete(lease);
+        // The task is over: forget what its actions did, with their element
+        // handles and any typed text.
+        latest.delete(lease);
+        for (const [id, record] of actions) if (record.lease === lease) actions.delete(id);
       }
       return text("released");
     },
@@ -908,7 +1218,7 @@ function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
 let queue = Promise.resolve();
 
 // What can still be done while a dialog has the page frozen.
-const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read", "browser_release"]);
+const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read", "browser_release", "browser_observe"]);
 function serial(fn) {
   const run = queue.then(fn, fn);
   queue = run.catch(() => {});
@@ -930,19 +1240,44 @@ async function handle(msg) {
       const tool = TOOLS[params?.name];
       if (!tool) return send({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: `no tool ${params?.name}` }] } });
       try {
-        const { _tinyaxe_tab: lease = null, _tinyaxe_expect: expect, ...args } = params.arguments || {};
-        return send({ jsonrpc: "2.0", id, result: await serial(async () => {
-          const shown = peek(lease);
-          const dialog = shown && dialogs.get(shown);
-          if (dialog && !DIALOG_SAFE.has(params.name)) {
-            throw new UserError(`a ${dialog.type()} dialog is open ("${redact(dialog.message())}"): answer it with browser_handle_dialog first`);
-          }
-          await validate(lease, expect);
-          return tool.run(args, lease);
-        }) });
+        const { _tinyaxe_tab: lease = null, _tinyaxe_expect: expect, _tinyaxe_action: actionId, ...args } = params.arguments || {};
+        let record = null;
+        try {
+          return send({ jsonrpc: "2.0", id, result: await serial(async () => {
+            const shown = peek(lease);
+            const dialog = shown && dialogs.get(shown);
+            if (dialog && !DIALOG_SAFE.has(params.name)) {
+              throw new UserError(`a ${dialog.type()} dialog is open ("${redact(dialog.message())}"): answer it with browser_handle_dialog first`);
+            }
+            await validate(lease, expect);
+            // Recorded from here: the checks above refused before anything was done.
+            if (typeof actionId === "string") {
+              record = startAction(actionId, params.name, lease, peek(lease));
+              record.title_before = peek(lease) ? await peek(lease).title().catch(() => "") : "";
+            }
+            let result;
+            try {
+              result = await tool.run(args, lease, record);
+            } catch (e) {
+              if (record) await finishAction(record, lease, e.message);
+              throw e;
+            }
+            if (record) {
+              await finishAction(record, lease, null);
+              result = { ...result, _tinyaxe: { action: await actionReport(record) } };
+            }
+            return result;
+          }) });
+        } catch (e) {
+          // A failed action still says what it got done before failing.
+          if (record) e.report = await actionReport(record).catch(() => null);
+          throw e;
+        }
       } catch (e) {
         const why = e instanceof UserError ? e.message : `the browser couldn't do that: ${e.message.split("\n")[0]}`;
-        return send({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: redact(why) }] } });
+        const result = { isError: true, content: [{ type: "text", text: redact(why) }] };
+        if (e.report) result._tinyaxe = { action: e.report };
+        return send({ jsonrpc: "2.0", id, result });
       }
     }
     if (method === "ping") return send({ jsonrpc: "2.0", id, result: {} });

@@ -15,6 +15,7 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDriver do
       {:dialog, accept?}
       {:wait, ms}
       {:post, site, path, params}          # straight to the site, past the gate (tests only)
+      {:verify, claim}                     # browser_verify on the latest action that sent something
       {:say, text}                         # the final reply
 
   Returns `{:ok, reply}`, or `{:error, why}` when a step can't be done (an
@@ -71,6 +72,13 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDriver do
     :ok
   end
 
+  defp step({:verify, claim}, ctx) do
+    case gate(ctx, "browser_verify", %{claimed_outcome: claim}, "") do
+      {:ok, _result} -> :ok
+      {:error, why} -> {:error, why}
+    end
+  end
+
   defp step({:say, text}, _ctx), do: {:say, text}
 
   # One call through the gate; whatever it returns (refusals too) is its result.
@@ -81,14 +89,14 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDriver do
     end
   end
 
-  defp gate(ctx, tool, args) do
+  defp gate(ctx, tool, args, prefix \\ nil) do
     response =
       Req.post(ctx.gate.url,
         json: %{
           jsonrpc: "2.0",
           id: System.unique_integer([:positive]),
           method: "tools/call",
-          params: %{name: "#{ctx.server}__#{tool}", arguments: args}
+          params: %{name: (prefix || "#{ctx.server}__") <> tool, arguments: args}
         },
         headers: %{"authorization" => "Bearer #{ctx.gate.token}"},
         receive_timeout: 120_000,
