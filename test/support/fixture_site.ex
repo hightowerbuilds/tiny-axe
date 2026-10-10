@@ -25,9 +25,15 @@ defmodule TinyAxe.FixtureSite do
       POST carries them (so a test can see they arrived); a line reports
       whether the number field shows dots
     * `/pay-step` — a two-step checkout: card details and "Continue", then a
-      review page ("Paying with Visa ending in 1111") and "Place order"
+      review page ("Paying with Visa ending in 1111") and "Place order";
+      with `?relabel=1`, "Continue" becomes "Continue to review" once a card
+      number is typed
     * `/order-insecure` — card fields in a form that would send them over
       plain http
+    * `/popup` — a link that opens `/article` in a new tab
+    * `/bind` — a clock ticking every 100 ms beside a button whose label
+      follows `set_label/1` (checked every 700 ms, so the network still goes
+      quiet); a click POSTs `/bind-effect` with the label it had
 
   Everything sent to the site is recorded: `submissions/0`.
   """
@@ -41,6 +47,7 @@ defmodule TinyAxe.FixtureSite do
   def start do
     Agent.start_link(fn -> [] end, name: __MODULE__.Log)
     Agent.start_link(fn -> 12.0 end, name: __MODULE__.Price)
+    Agent.start_link(fn -> "Send note" end, name: __MODULE__.Label)
 
     {:ok, pid} =
       Bandit.start_link(plug: __MODULE__, ip: {127, 0, 0, 1}, port: 0, startup_log: false)
@@ -171,6 +178,41 @@ defmodule TinyAxe.FixtureSite do
     """)
   end
 
+  get "/popup" do
+    html(
+      conn,
+      ~s(<title>Popup</title><main><a href="/article" target="_blank">Open article</a></main>)
+    )
+  end
+
+  @doc "The button's label on `/bind`."
+  def set_label(label), do: Agent.update(__MODULE__.Label, fn _ -> label end)
+
+  get "/bind" do
+    html(conn, """
+    <title>Notes</title><main><section><h2>Notes</h2><p id="clock">Tick 0</p>
+    <button id="act" onclick="fetch('/bind-effect?label=' + encodeURIComponent(this.textContent), {method: 'POST'})">#{Agent.get(__MODULE__.Label, & &1)}</button>
+    </section></main>
+    <script>
+    let n = 0;
+    setInterval(() => { document.getElementById('clock').textContent = 'Tick ' + (++n); }, 100);
+    setInterval(() => fetch('/bind-label').then(r => r.text()).then(t => {
+      const b = document.getElementById('act');
+      if (b.textContent !== t) b.textContent = t;
+    }), 700);
+    </script>
+    """)
+  end
+
+  get "/bind-label" do
+    send_resp(conn, 200, Agent.get(__MODULE__.Label, & &1))
+  end
+
+  post "/bind-effect" do
+    record(conn)
+    send_resp(conn, 200, "ok")
+  end
+
   match "/policy-effect" do
     record(conn)
     html(conn, "<main>Action recorded</main>")
@@ -275,6 +317,7 @@ defmodule TinyAxe.FixtureSite do
     <label>Expiry <input name="ccexp" autocomplete="cc-exp"></label>
     <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
     <button>Continue</button></form></main>
+    #{if conn.params["relabel"], do: relabel_script(), else: ""}
     """)
   end
 
@@ -291,6 +334,14 @@ defmodule TinyAxe.FixtureSite do
     <p>Paying with Visa ending in #{last4}</p>
     <form method="post" action="/place-order"><button>Place order</button></form></main>
     """)
+  end
+
+  defp relabel_script do
+    """
+    <script>document.querySelector('[name=ccnumber]').addEventListener('input', (e) => {
+      if (e.target.value) document.querySelector('button').textContent = 'Continue to review';
+    });</script>
+    """
   end
 
   # Laid out like Amazon's checkout: the price on its own line under the

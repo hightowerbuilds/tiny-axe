@@ -13,6 +13,12 @@ defmodule TinyAxe.Browser do
   wait, console, network) are all in the `read` class. Redaction is done by
   the server, on the page, before anything leaves it.
 
+  Each gate task leases its own tabs: the gate adds the task's lease to every
+  call (`bind/3`), so concurrent tasks can't move each other's page, and an
+  action can carry the target signatures the gate assessed, which the server
+  checks again just before acting (`TinyAxe.Browser.Decisions`). Calls
+  without a lease (tiny-axe's own) use the tab in front.
+
   `config :tiny_axe, :browser`: `enabled`, `headless`, `profile`, and
   `playwright_root` (a folder whose `node_modules` holds `playwright`; found
   with `mise where npm:playwright` or `npm root -g` if not set).
@@ -23,6 +29,8 @@ defmodule TinyAxe.Browser do
   alias TinyAxe.MCP
 
   @name "browser"
+  @lease "_tinyaxe_tab"
+  @expect "_tinyaxe_expect"
 
   @read ~w(browser_navigate browser_navigate_back browser_snapshot browser_take_screenshot
            browser_extract browser_read browser_find browser_tabs browser_wait_for
@@ -74,7 +82,8 @@ defmodule TinyAxe.Browser do
           "browser_inspect",
           "browser_checkout_summary",
           "browser_fill_card",
-          "browser_show"
+          "browser_show",
+          "browser_release"
         ]
       }
     }
@@ -94,14 +103,36 @@ defmodule TinyAxe.Browser do
     end
   end
 
-  @doc "Makes the browser window visible (reopening it headed if it was headless)."
-  @spec show(String.t()) :: :ok | {:error, term()}
-  def show(server \\ @name) do
-    case MCP.call(server, "browser_show", %{}, 60_000) do
+  @doc """
+  Makes the browser window visible (reopening it headed if it was headless),
+  with a task's current tab in front when given its lease.
+  """
+  @spec show(String.t(), String.t() | nil) :: :ok | {:error, term()}
+  def show(server \\ @name, lease \\ nil) do
+    case MCP.call(server, "browser_show", bind(%{}, lease), 60_000) do
       {:ok, %{"isError" => true} = r} -> {:error, text(r)}
       {:ok, _} -> :ok
       error -> error
     end
+  end
+
+  @doc false
+  # A call's arguments for a task's tabs, with the signatures to check before
+  # acting, if any. The keys are the gate's own: agents' copies are dropped.
+  def bind(args, lease, expect \\ nil) do
+    args
+    |> then(&if(lease, do: Map.put(&1, @lease, lease), else: &1))
+    |> then(&if(expect, do: Map.put(&1, @expect, expect), else: &1))
+  end
+
+  @doc false
+  def reserved?(key), do: is_binary(key) and String.starts_with?(key, "_tinyaxe")
+
+  @doc false
+  # A task is over: its tabs stay open, free for the next task to carry on in.
+  def release(server, lease) do
+    MCP.call(server, "browser_release", bind(%{}, lease), 5_000)
+    :ok
   end
 
   defp text(%{"content" => content}),

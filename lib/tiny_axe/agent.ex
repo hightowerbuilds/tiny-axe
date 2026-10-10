@@ -133,7 +133,15 @@ defmodule TinyAxe.Agent do
   end
 
   @doc false
+  # Every driver gets this same prompt, with the browser's decision tool
+  # explained the same way when the task has a browser; the gate enforces
+  # the checks whatever a driver makes of it.
   def system_prompt(servers) do
+    browser =
+      if Enum.any?(MCP.tools(servers), &(&1.policy["browser"] == true)),
+        do: "\n\n" <> TinyAxe.Browser.Decisions.instructions(),
+        else: ""
+
     """
     You are tiny-axe's agent, working for the user on their own computer. \
     Today is #{Date.utc_today()}. The current folder is #{Ops.show(Location.current())}.
@@ -153,7 +161,7 @@ defmodule TinyAxe.Agent do
 
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
-    """
+    """ <> browser
   end
 
   @doc false

@@ -227,11 +227,19 @@ defmodule TinyAxe.Purchases do
 
   ## The checkout summary and its checks
 
-  @doc "Reads the checkout page the browser is on."
-  @spec summary(String.t()) :: {:ok, map()} | {:error, String.t()}
-  def summary(server) do
+  @doc """
+  Reads the checkout page the browser is on (a task's own tab, with `lease`:
+  see `TinyAxe.Browser.bind/3`).
+  """
+  @spec summary(String.t(), String.t() | nil) :: {:ok, map()} | {:error, String.t()}
+  def summary(server, lease \\ nil) do
     with {:ok, %{"content" => [%{"text" => json} | _]} = result} <-
-           MCP.call(server, "browser_checkout_summary", %{}, 20_000),
+           MCP.call(
+             server,
+             "browser_checkout_summary",
+             TinyAxe.Browser.bind(%{}, lease),
+             20_000
+           ),
          false <- result["isError"] == true,
          {:ok, summary} <- JSON.decode(json) do
       {:ok, summary}

@@ -1,10 +1,12 @@
 # Plan for browser decisions and learning with Jev
 
-Status (2026-10-09): Phases 0 and 1 are built. Phase 0 added the
+Status (2026-10-09): Phases 0–2 are built. Phase 0 added the
 classification benchmark and gate repairs; Phase 1 added bounded evidence,
 task context, versioned decision traces, Jev metadata and criteria, and
-answer validation (see "Phase 1 built"). Phases 2–5 remain pending: shared
-decision tools, execution binding, outcome verification, candidate
+answer validation (see "Phase 1 built"); Phase 2 added the shared
+assessment service, the gate-owned `browser_assess` tool, mandatory checks
+on direct actions, execution binding and per-task tabs (see "Phase 2
+built"). Phases 3–5 remain pending: outcome verification, candidate
 selection, and validated memory. The browser agent's driver is Claude
 Haiku 5.5, the only Claude model tiny-axe uses (no Sonnet); Jev makes the
 decisions. It builds on
@@ -94,6 +96,89 @@ decision traces, and thresholds remain provisional.
   and one unsaved-setting case, so this is not a held-out result.
 - **Not yet traced**: the purchase gate's own Decider checks (buying intent,
   item match, card purpose) still log only their outcome.
+
+## Phase 2 built
+
+- **Service** (`TinyAxe.Browser.Decisions`): one `assess/2` for every
+  browser call, whether the agent asked first or acted directly. It classes
+  with BrowserPolicy (questions unchanged, `browser-effects/2`), then binds
+  the result to the task, its tab lease, server, tool, normalized arguments
+  (the agent's `element` description excluded), each target's signature and
+  the tab's observation id. `remember/2`, `expect/1` and `public/1` keep the
+  task's record, build the browser's final check and the agent's answer.
+- **`browser_assess`**: gate-owned, listed only for tasks with a browser.
+  Input: tool, arguments, observation id, expected effect; it can assess
+  only this task's visible browser actions, never itself, and accepts the
+  names drivers show (`mcp__tinyaxe__…`, `tinyaxe.…`). Result:
+  `decision_id`, disposition (`allowed`, `needs_approval`,
+  `needs_purchase_confirmation`, `needs_handoff`, `refused`), reason codes,
+  evidence references (observation, targets, decision record ids), next
+  permitted step. Calling it isn't added to later decisions' recent
+  actions, so assessed and direct calls are judged on the same evidence.
+- **Reason codes added**: `stale_target`, `target_not_found`,
+  `constraint_mismatch` (no purchase request or no maximum),
+  `needs_purchase_confirmation`, `purchases_disabled`, `prior_restriction`,
+  `policy_rule` (decided by a rule, no Jev call).
+- **Binding**: a direct call reuses the task's own earlier assessment only
+  while tool, arguments, signatures and observation match and two minutes
+  (`:assessment_ttl`) haven't passed. A target changed in place is refused
+  once as `stale_target` and its record dropped; so is a reused record whose
+  target changes before dispatch. After navigation or expiry the call is
+  assessed again. Records live in the gate's task state, so
+  another task can never match one, and `Decisions` checks task, lease and
+  server again. Agent-supplied `_tinyaxe_*` keys are dropped.
+- **Sidecar** (`server.mjs`): `browser_inspect` reports a signature (page,
+  tag, type, role, label, link, submit, form; not nearby text) and the tab's
+  observation id (changes on navigation), which snapshots show on the Page
+  line. Actions carry the gate's expected signatures, compared in the call
+  queue just before acting, which is also the recheck after the user's
+  approval. Each task leases its own tabs (`_tinyaxe_tab`); dialogs are per
+  tab; a new tab stays pending (unclaimable) until its opener's owner is
+  known, so a popup belongs to its opener's task; closing a task frees its
+  tabs, and the next task adopts the free tab used last, so follow-ups
+  carry on.
+- **Monotonic**: an approval or purchase class found earlier in the task
+  holds for that element (keyed on its signature, not its ref or the other
+  arguments) and kind of action (activate: click, double-click, a key on
+  it, type-and-submit; or edit) against later, weaker answers. Missing
+  answers still refuse. Advisory purchase dispositions predict the purchase
+  gate, which still decides.
+- **Keys** (BrowserPolicy, fail-closed): only plain navigation and editing
+  keys (arrows, Tab/Shift+Tab, Home, End, PageUp/Down, Escape, Backspace,
+  Delete) skip inspection. Any other key (NumpadEnter, `"\n"`, a combo
+  ending in Enter, an unknown key) is handled like Enter/Space on the
+  focused element; a single character typed into a field is an edit.
+  Before this, Tab to "Place order" plus NumpadEnter skipped the purchase
+  gate in real Chrome.
+- **Records**: `browser-decision/2` adds `assessment_id` and `binding`; each
+  call's journal entry carries its assessment (`browser-assessment/1`: mode,
+  disposition, codes, `reused_from`, binding, expected effect).
+- **Drivers**: all three get the same paragraph in the shared system prompt
+  and the same gate path.
+- **Tests**: `browser_decisions_test.exs` (pure), `browser_assess_test.exs`
+  (gate, a fake browser, all three drivers: identical approval, journal and
+  outage refusal), `browser_binding_test.exs` (real Chrome: stale
+  observation, in-place change, change during approval, the sidecar's own
+  check, a ticking clock that doesn't invalidate, tab isolation, a popup
+  claimed during a slow opener lookup), plus key and card-step cases in the
+  policy, interaction and purchase tests. Removing each enforcement once
+  (sidecar check, gate binding, task scope, held restriction and its
+  signature key, staleness check, direct-call assessment, dropping the
+  reused record, driver names, card step without signatures, pending
+  tabs, fail-closed keys) failed 1–7 tests each; all restored. Replay
+  benchmark still 23/23. Full suite 437 tests, 0 failures.
+- **Departures**: the expected effect is stored and returned but not shown
+  to Jev, so an agent's words can't soften a judgment and both paths see
+  identical evidence (Phase 3 will use it). The observation id is checked
+  only for actions with refs. Uncertain refusals don't become held
+  restrictions, so a Jev outage doesn't poison a target. The purchase
+  click and the card step keep their own checks and get the tab lease but
+  not the sidecar signatures (filling a card may relabel the button), to
+  leave purchase behavior and its journal unchanged.
+- **Not yet done**: outcome verification and completion checks (Phase 3);
+  `browser_choose` (Phase 4); held restrictions don't cross from editing a
+  field to activating it; thresholds still uncalibrated beyond the
+  development cases.
 
 ## Baseline behavior and gaps
 

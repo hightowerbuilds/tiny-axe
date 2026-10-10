@@ -309,7 +309,7 @@ defmodule TinyAxe.BrowserInteractionTest do
   end
 
   test "purchase links and keyboard activation cannot bypass the purchase gate", ctx do
-    for key <- ["Enter", "Space", "Control+Enter"] do
+    for key <- ["Enter", "Space", "Control+Enter", "NumpadEnter", "Shift+NumpadEnter", "\n"] do
       open(ctx, "/policy-actions")
       result = act(ctx, "browser_press_key", %{key: key}, :once)
       assert result["isError"] == true

@@ -25,7 +25,8 @@ defmodule TinyAxe.Tools.BrowserPolicy do
   `:objective`, `:intent`, `:recent`; see `TinyAxe.Browser.Evidence`), and
   `:on_decision`, given a record of each decision made: the evidence shown,
   the versions of this policy and its questions, what answered, the answers,
-  and the disposition with reason codes.
+  and the disposition with reason codes. The gate reaches this through
+  `TinyAxe.Browser.Decisions`, which binds each result to what it judged.
   """
 
   alias TinyAxe.Browser.Evidence
@@ -128,37 +129,45 @@ defmodule TinyAxe.Tools.BrowserPolicy do
   defp do_classify("browser_select_option", %{"ref" => ref}, inspect, opts),
     do: edit(inspect.(ref), opts)
 
-  defp do_classify("browser_press_key", %{"key" => key}, inspect, opts) do
-    key = key |> String.downcase() |> String.split("+") |> List.last()
+  # Fail closed: only plain navigation and editing keys skip inspection.
+  # Anything else (NumpadEnter, "\n", a combo ending in Enter, a key tiny-axe
+  # doesn't know) is handled like Enter or Space on the focused element.
+  defp do_classify("browser_press_key", %{"key" => key}, inspect, opts) when is_binary(key) do
+    case key_kind(key) do
+      :navigation ->
+        {:local, nil}
 
-    if key in ["enter", "return", "space", " "] do
-      case inspect.(nil) do
-        nil ->
-          click(nil, opts)
+      kind ->
+        case inspect.(nil) do
+          nil ->
+            click(nil, opts)
 
-        %{"sensitive" => true} ->
-          refused_sensitive()
+          %{"sensitive" => true} ->
+            refused_sensitive()
 
-        %{"tag" => "button"} = meta ->
-          click(meta, opts)
+          # A character typed into a field edits it; on anything else it may
+          # be a page's shortcut, so it's treated like activating it.
+          %{"tag" => tag} = meta when kind == :character and tag in ["input", "textarea"] ->
+            edit(meta, opts)
 
-        %{"role" => role} = meta when role in ["button", "link"] ->
-          click(meta, opts)
+          %{"tag" => "button"} = meta ->
+            click(meta, opts)
 
-        %{"tag" => "a"} = meta ->
-          click(meta, opts)
+          %{"role" => role} = meta when role in ["button", "link"] ->
+            click(meta, opts)
 
-        %{"type" => type} = meta when type in ["submit", "image", "checkbox", "radio"] ->
-          click(meta, opts)
+          %{"tag" => "a"} = meta ->
+            click(meta, opts)
 
-        %{"form" => %{} = form} = meta when key in ["enter", "return"] ->
-          submission(form, meta, opts)
+          %{"type" => type} = meta when type in ["submit", "image", "checkbox", "radio"] ->
+            click(meta, opts)
 
-        meta ->
-          edit(meta, opts)
-      end
-    else
-      {:local, nil}
+          %{"form" => %{} = form} = meta when kind != :character ->
+            submission(form, meta, opts)
+
+          meta ->
+            edit(meta, opts)
+        end
     end
   end
 
@@ -376,14 +385,17 @@ defmodule TinyAxe.Tools.BrowserPolicy do
   end
 
   # A record of the decision for the gate's trace: the input, the judgment
-  # and the disposition. The gate adds what happened next.
+  # and the disposition. The assessment it belongs to and what it was bound
+  # to come from `TinyAxe.Browser.Decisions`; the gate adds what happened next.
   defp report(opts, d) do
     with fun when is_function(fun, 1) <- opts[:on_decision] do
       {class, reason} = d.disposition
 
       fun.(%{
-        schema: "browser-decision/1",
+        schema: "browser-decision/2",
         id: "dec-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower),
+        assessment_id: nil,
+        binding: nil,
         policy_version: @version,
         questions_version: @questions_version,
         questions_hash: Evidence.hash(questions()),
@@ -427,6 +439,27 @@ defmodule TinyAxe.Tools.BrowserPolicy do
     if query > @long_query,
       do: {:outward, "opens #{host(url)} with #{query} characters of data in the address"},
       else: {:read, nil}
+  end
+
+  @navigation ~w(arrowup arrowdown arrowleft arrowright tab home end pageup pagedown escape
+                 backspace delete)
+
+  # A plain navigation or editing key (Shift allowed), one printable
+  # character, or anything else. Playwright's own key names, case-insensitive.
+  defp key_kind(key) do
+    {mods, last} =
+      case String.split(key, "+") do
+        [single] -> {[], single}
+        parts -> {Enum.drop(parts, -1), List.last(parts)}
+      end
+
+    mods = Enum.map(mods, &String.downcase/1)
+
+    cond do
+      String.downcase(last) in @navigation and Enum.all?(mods, &(&1 == "shift")) -> :navigation
+      mods == [] and String.length(last) == 1 and String.trim(last) != "" -> :character
+      true -> :other
+    end
   end
 
   defp refused_sensitive,

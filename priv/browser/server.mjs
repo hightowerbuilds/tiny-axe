@@ -8,12 +8,19 @@
 // text is removed. Playwright MCP's tool shapes are borrowed; running
 // arbitrary JavaScript is never offered.
 //
+// Each gate task leases its own tabs (the gate sends `_tinyaxe_tab` with
+// every call), so concurrent tasks never move each other's page. An action
+// may carry `_tinyaxe_expect`, the target signatures the gate assessed: it is
+// checked again here, in the same queue as the action, just before acting.
+//
 // Environment: PW_ROOT (a folder whose node_modules has playwright),
 // TINY_AXE_BROWSER_PROFILE, TINY_AXE_BROWSER_HEADLESS ("1" or "0"),
-// TINY_AXE_BROWSER_CHANNEL (default "chrome").
+// TINY_AXE_BROWSER_CHANNEL (default "chrome"); for tests,
+// TINY_AXE_BROWSER_OPENER_DELAY_MS (how long finding a new tab's opener takes).
 
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,8 +44,17 @@ const MAX_TEXT = 25000;
 // ---------- the browser ----------
 
 let context = null;
+// Every open tab; the one last used (what the user sees in front); which
+// task holds each tab; and each task's current tab.
 let pages = [];
-let current = 0;
+let front = null;
+const owners = new WeakMap();
+const leases = new Map();
+// A tab whose owner isn't known yet (a popup, until its opener is found).
+const PENDING = Symbol("pending");
+// When each tab was last used, so a task's first tab is the latest free one.
+const used = new WeakMap();
+let uses = 0;
 const consoleLog = new WeakMap();
 const network = new WeakMap();
 let profileNote = "";
@@ -70,7 +86,7 @@ async function browser() {
   }
   context.on("page", track);
   for (const p of context.pages()) track(p);
-  context.on("close", () => { context = null; pages = []; current = 0; });
+  context.on("close", () => { context = null; pages = []; front = null; leases.clear(); });
   return context;
 }
 
@@ -79,38 +95,59 @@ function track(page) {
   pages.push(page);
   consoleLog.set(page, []);
   network.set(page, []);
+  views.set(page, { id: randomBytes(3).toString("hex"), navigations: 0 });
   page.on("console", (m) => push(consoleLog.get(page), `${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => push(consoleLog.get(page), `error: ${e.message}`));
   page.on("response", (r) => push(network.get(page), `${r.request().method()} ${r.status()} ${r.url()}`));
+  page.on("framenavigated", (f) => { if (f === page.mainFrame()) views.get(page).navigations++; });
+  // A tab a page opens (a popup) belongs to the task that holds its opener.
+  // Until that's known the tab is pending, so no task can claim it meanwhile;
+  // a tab tiny-axe opened itself gets its owner set over this right away.
+  owners.set(page, PENDING);
+  const delay = Number(process.env.TINY_AXE_BROWSER_OPENER_DELAY_MS || 0);
+  new Promise((r) => setTimeout(r, delay)).then(() => page.opener()).catch(() => null).then((o) => {
+    if (owners.get(page) !== PENDING) return;
+    const owner = o && owners.get(o);
+    if (owner && owner !== PENDING) owners.set(page, owner);
+    else owners.delete(page);
+  });
   watchDialogs(page);
   page.on("close", () => {
     const i = pages.indexOf(page);
     if (i >= 0) pages.splice(i, 1);
-    if (current >= pages.length) current = Math.max(pages.length - 1, 0);
+    if (front === page) front = null;
   });
+}
+
+// What the agent saw: a tab's observation id changes whenever it navigates,
+// not when its content moves, so refs from a snapshot can be bound to it.
+const views = new WeakMap();
+function observation(p) {
+  const v = views.get(p);
+  return v ? `obs-${v.id}-${v.navigations}` : null;
 }
 
 function push(list, item) { list.push(item); if (list.length > 200) list.shift(); }
 
-// A dialog (alert, confirm, prompt) waits here until browser_handle_dialog.
-let dialog = null;
-let dialogPage = null;
+// A dialog (alert, confirm, prompt) waits here, per tab, until browser_handle_dialog.
+const dialogs = new WeakMap();
 function watchDialogs(page) {
-  page.on("dialog", (d) => { dialog = d; dialogPage = page; });
+  page.on("dialog", (d) => dialogs.set(page, d));
 }
 
-async function dismissDialog() {
-  if (dialog) { const d = dialog; dialog = null; dialogPage = null; await d.dismiss().catch(() => {}); }
+async function dismissDialog(p) {
+  const d = dialogs.get(p);
+  if (d) { dialogs.delete(p); await d.dismiss().catch(() => {}); }
 }
 
 // An action that may open a dialog: a dialog freezes the page's script, so
 // the action can't finish until it's answered; return as soon as one opens.
-async function acting(fn) {
+async function acting(p, fn) {
   const action = fn().then(() => "done");
   action.catch(() => {});
   let timer;
   const opened = new Promise((resolve) => {
-    timer = setInterval(() => { if (dialog) resolve("dialog"); }, 50);
+    timer = setInterval(() => { if (dialogs.get(p)) resolve("dialog"); }, 50);
   });
   try {
     if ((await Promise.race([action, opened])) === "done") await action;
@@ -124,20 +161,59 @@ async function acting(fn) {
 async function headed() {
   if (process.env.TINY_AXE_BROWSER_NO_WINDOW === "1") return;
   if (!context || process.env.TINY_AXE_BROWSER_HEADLESS === "0") return;
-  const urls = pages.map((p) => p.url()).filter((u) => u.startsWith("http"));
+  // Each tab reopens with the task that held it, and stays current or in front.
+  const tabs = pages.filter((p) => p.url().startsWith("http")).map((p) => ({
+    url: p.url(), owner: owners.get(p), front: p === front,
+    current: owners.has(p) && leases.get(owners.get(p))?.current === p,
+  }));
+  const held = [...leases.keys()];
   await context.close().catch(() => {});
   context = null;
   process.env.TINY_AXE_BROWSER_HEADLESS = "0";
   const ctx = await browser();
-  for (const u of urls) { const p = await ctx.newPage(); await p.goto(u).catch(() => {}); }
+  for (const lease of held) leases.set(lease, { current: null });
+  for (const t of tabs) {
+    const p = await ctx.newPage();
+    track(p);
+    if (t.owner !== undefined) owners.set(p, t.owner);
+    if (t.current && leases.has(t.owner)) leases.get(t.owner).current = p;
+    if (t.front) front = p;
+    await p.goto(t.url).catch(() => {});
+  }
   for (const p of [...pages]) if (p.url() === "about:blank" && pages.length > 1) await p.close().catch(() => {});
-  current = Math.max(pages.length - 1, 0);
 }
 
-async function page() {
+// The tabs a task holds (every tab, for tiny-axe's own calls without a lease).
+function tabsOf(lease) {
+  return lease ? pages.filter((p) => owners.get(p) === lease) : pages;
+}
+
+// A task's current tab, or the tab in front for tiny-axe's own calls, without
+// opening one.
+function peek(lease) {
+  if (!lease) return front && pages.includes(front) ? front : pages[pages.length - 1] || null;
+  const l = leases.get(lease);
+  if (l && l.current && pages.includes(l.current) && owners.get(l.current) === lease) return l.current;
+  return tabsOf(lease).slice(-1)[0] || null;
+}
+
+async function page(lease) {
   const ctx = await browser();
-  if (pages.length === 0) track(await ctx.newPage());
-  return pages[current];
+  let p = peek(lease);
+  if (!p && lease) {
+    // A task's first tab: the free one used last (no task holds it), so a
+    // follow-up request carries on where the last one left off; else a new one.
+    const free = pages.filter((t) => !owners.has(t));
+    p = free.sort((a, b) => (used.get(a) || 0) - (used.get(b) || 0)).pop();
+  }
+  if (!p) { p = await ctx.newPage(); track(p); }
+  if (lease) {
+    owners.set(p, lease);
+    leases.set(lease, { current: p });
+  }
+  front = p;
+  used.set(p, ++uses);
+  return p;
 }
 
 // ---------- redaction ----------
@@ -181,7 +257,7 @@ async function hidden(p, fn) {
 // ---------- reading ----------
 
 async function header(p) {
-  return `Page: ${p.url()} · ${await p.title().catch(() => "")}${profileNote}`;
+  return `Page: ${p.url()} · ${await p.title().catch(() => "")}${profileNote} · observation ${observation(p)}`;
 }
 
 async function snapshot(p) {
@@ -232,6 +308,7 @@ async function refuseSensitive(loc) {
 // After an action: give a navigation it started time to begin, let the page
 // settle, then show it.
 async function after(p, note = "") {
+  const dialog = dialogs.get(p);
   if (!dialog) {
     await p.waitForTimeout(250);
     await p.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
@@ -239,15 +316,20 @@ async function after(p, note = "") {
   }
   // While a dialog is open the page's script is frozen: nothing on it can be
   // read until the dialog is answered.
-  if (dialog && dialogPage === p) {
+  if (dialog) {
     return text(`Page: ${p.url()}${note}\nA ${dialog.type()} dialog is open: "${redact(dialog.message())}". Answer it with browser_handle_dialog before anything else on this page.`);
   }
   return text(`${await header(p)}${note}\n\n${untrusted(await snapshot(p))}`);
 }
 
 // What the gate needs to classify an action on an element (or the focused one).
+// It also reports the tab's observation id and the target's signature.
 async function inspect(p, ref) {
-  if (dialog) return { dialog: { type: dialog.type(), message: dialog.message() }, page: p.url() };
+  const dialog = dialogs.get(p);
+  if (dialog) {
+    const info = { dialog: { type: dialog.type(), message: dialog.message() }, page: p.url() };
+    return { ...info, observation: observation(p), signature: signature(info) };
+  }
   const loc = ref ? target(p, ref) : p.locator(":focus");
   const info = await loc.first().evaluate((el, sel) => {
     const abs = (u) => { try { return new URL(u, location.href).href; } catch { return null; } };
@@ -286,8 +368,45 @@ async function inspect(p, ref) {
       } : null,
       page: location.href,
     };
-  }, SENSITIVE);
-  return { ...info, text: redact(info.text), context: redact(info.context), dialog: null };
+  }, SENSITIVE, { timeout: 5000 });
+  return {
+    ...info, text: redact(info.text), context: redact(info.context), dialog: null,
+    observation: observation(p), signature: signature(info),
+  };
+}
+
+// What identifies a target: its page, what it is, its label, where it leads
+// and the form it sends. Not the text around it, so a ticking clock nearby
+// doesn't make a checked action stale.
+function signature(info) {
+  const page = String(info.page || "").split("#")[0];
+  const f = info.form;
+  const relevant = info.dialog ? { page, dialog: info.dialog } : {
+    page, tag: info.tag, type: info.type, role: info.role, text: info.text, href: info.href,
+    isSubmit: info.isSubmit, sensitive: info.sensitive,
+    form: f ? { action: f.action, method: f.method, submitText: f.submitText, hasPassword: f.hasPassword, hasPayment: f.hasPayment } : null,
+  };
+  return createHash("sha256").update(JSON.stringify(relevant)).digest("hex").slice(0, 16);
+}
+
+// The gate's final check, in the queue just before the action: the tab
+// hasn't navigated and every target is still the one it assessed. This
+// guards against stale refs, not against a page changing mid-action.
+const STALE = "stale_target: ";
+async function validate(lease, expect) {
+  if (!expect || typeof expect !== "object") return;
+  const p = await page(lease);
+  if (expect.observation && observation(p) !== expect.observation) {
+    throw new UserError(`${STALE}the page has moved on since tiny-axe checked this action, so nothing was done`);
+  }
+  for (const [ref, sig] of Object.entries(expect.targets || {})) {
+    let now = null;
+    try { now = (await inspect(p, ref === "@active" ? null : ref)).signature; } catch {}
+    if (now !== sig) {
+      const what = ref === "@active" ? "the focused element or open dialog" : ref;
+      throw new UserError(`${STALE}${what} isn't the element tiny-axe checked any more, so nothing was done`);
+    }
+  }
 }
 
 // ---------- checkout pages ----------
@@ -441,10 +560,10 @@ const TOOLS = {
     description: "Open a URL in the current tab. Returns the page's accessibility snapshot, with refs.",
     inputSchema: obj({ url: { type: "string" } }, ["url"]),
     annotations: { readOnlyHint: true, openWorldHint: true },
-    async run({ url }) {
-      const p = await page();
+    async run({ url }, lease) {
+      const p = await page(lease);
       // Leaving a page answers its open dialog with Cancel.
-      await dismissDialog();
+      await dismissDialog(p);
       await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
       await p.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
@@ -454,9 +573,9 @@ const TOOLS = {
     description: "Go back in the current tab.",
     inputSchema: obj(),
     annotations: ro,
-    async run() {
-      const p = await page();
-      await dismissDialog();
+    async run(_args, lease) {
+      const p = await page(lease);
+      await dismissDialog(p);
       await p.goBack({ waitUntil: "domcontentloaded", timeout: 30000 });
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
     },
@@ -465,8 +584,8 @@ const TOOLS = {
     description: "The current page's accessibility snapshot: its structure and text, each element with a ref.",
     inputSchema: obj(),
     annotations: ro,
-    async run() {
-      const p = await page();
+    async run(_args, lease) {
+      const p = await page(lease);
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
     },
   },
@@ -474,8 +593,8 @@ const TOOLS = {
     description: "A screenshot of the current page (password and card fields are masked).",
     inputSchema: obj({ fullPage: { type: "boolean" } }),
     annotations: ro,
-    async run({ fullPage }) {
-      const p = await page();
+    async run({ fullPage }, lease) {
+      const p = await page(lease);
       const mask = [p.locator(SENSITIVE), p.locator(PAYMENT_FRAMES)];
       const masked = (await p.locator(SENSITIVE).count()) + (await p.locator(PAYMENT_FRAMES).count());
       const png = await p.screenshot({ fullPage: !!fullPage, mask, maskColor: "#222222", animations: "disabled" });
@@ -491,8 +610,8 @@ const TOOLS = {
     description: "The current page's readable text (its article or main region if it has one).",
     inputSchema: obj(),
     annotations: ro,
-    async run() {
-      const p = await page();
+    async run(_args, lease) {
+      const p = await page(lease);
       return text(`${await header(p)}\n\n${untrusted(await readable(p))}`);
     },
   },
@@ -503,6 +622,8 @@ const TOOLS = {
     async run({ url }) {
       const ctx = await browser();
       const p = await ctx.newPage();
+      // Its own tab, which no task may take over meanwhile.
+      owners.set(p, "browser_read");
       try {
         await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
         await p.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => {});
@@ -516,8 +637,8 @@ const TOOLS = {
     description: "Find text on the current page; returns each match with the line around it.",
     inputSchema: obj({ text: { type: "string" } }, ["text"]),
     annotations: ro,
-    async run({ text: needle }) {
-      const p = await page();
+    async run({ text: needle }, lease) {
+      const p = await page(lease);
       const lines = (await readable(p)).split("\n").filter((l) => l.toLowerCase().includes(String(needle).toLowerCase()));
       const found = lines.length ? lines.slice(0, 30).map((l) => "- " + l.trim()).join("\n") : "(not found)";
       return text(`${await header(p)}\n\n${untrusted(found)}`);
@@ -527,13 +648,16 @@ const TOOLS = {
     description: 'List the open tabs ("list"), or switch to one ("select" with its index).',
     inputSchema: obj({ action: { type: "string", enum: ["list", "select"] }, index: { type: "integer" } }, ["action"]),
     annotations: ro,
-    async run({ action, index }) {
-      await page();
+    async run({ action, index }, lease) {
+      let p = await page(lease);
+      const tabs = tabsOf(lease);
       if (action === "select") {
-        if (!(index >= 0 && index < pages.length)) throw new UserError(`there's no tab ${index}`);
-        current = index;
+        if (!(index >= 0 && index < tabs.length)) throw new UserError(`there's no tab ${index}`);
+        p = tabs[index];
+        if (lease) leases.set(lease, { current: p });
+        front = p;
       }
-      const list = await Promise.all(pages.map(async (p, i) => `${i === current ? "*" : " "} ${i}: ${await p.title().catch(() => "")} — ${p.url()}`));
+      const list = await Promise.all(tabs.map(async (t, i) => `${t === p ? "*" : " "} ${i}: ${await t.title().catch(() => "")} — ${t.url()}`));
       return text(list.join("\n"));
     },
   },
@@ -541,8 +665,8 @@ const TOOLS = {
     description: "Wait for text to appear on the page, or for some seconds (at most 30).",
     inputSchema: obj({ text: { type: "string" }, seconds: { type: "number" } }),
     annotations: ro,
-    async run({ text: wanted, seconds }) {
-      const p = await page();
+    async run({ text: wanted, seconds }, lease) {
+      const p = await page(lease);
       if (wanted) await p.getByText(wanted).first().waitFor({ timeout: 30000 });
       else await p.waitForTimeout(Math.min(Number(seconds) || 1, 30) * 1000);
       return text(`${await header(p)}\n\n${untrusted(await snapshot(p))}`);
@@ -552,8 +676,8 @@ const TOOLS = {
     description: "The current page's recent console messages and errors (for debugging a web app).",
     inputSchema: obj(),
     annotations: ro,
-    async run() {
-      const p = await page();
+    async run(_args, lease) {
+      const p = await page(lease);
       const log = consoleLog.get(p) || [];
       return text(`${await header(p)}\n\n${untrusted(redact(log.slice(-50).join("\n") || "(no messages)"))}`);
     },
@@ -562,10 +686,10 @@ const TOOLS = {
     description: "Click an element, by its ref from the snapshot. Returns the page afterwards.",
     inputSchema: obj({ element: { type: "string", description: "what the element is, in words" }, ref: { type: "string" }, doubleClick: { type: "boolean" } }, ["ref"]),
     annotations: { readOnlyHint: false, openWorldHint: true },
-    async run({ ref, doubleClick }) {
-      const p = await page();
+    async run({ ref, doubleClick }, lease) {
+      const p = await page(lease);
       const loc = target(p, ref);
-      await acting(() => doubleClick ? loc.dblclick({ timeout: 10000 }) : loc.click({ timeout: 10000 }));
+      await acting(p, () => doubleClick ? loc.dblclick({ timeout: 10000 }) : loc.click({ timeout: 10000 }));
       return after(p);
     },
   },
@@ -573,12 +697,12 @@ const TOOLS = {
     description: "Type text into a field, by its ref (it replaces what's there). With submit, press Enter afterwards.",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, text: { type: "string" }, submit: { type: "boolean" } }, ["ref", "text"]),
     annotations: { readOnlyHint: false },
-    async run({ ref, text: value, submit }) {
-      const p = await page();
+    async run({ ref, text: value, submit }, lease) {
+      const p = await page(lease);
       const loc = target(p, ref);
       await refuseSensitive(loc);
       await loc.fill(String(value), { timeout: 10000 });
-      if (submit) await acting(() => loc.press("Enter"));
+      if (submit) await acting(p, () => loc.press("Enter"));
       return after(p);
     },
   },
@@ -586,8 +710,8 @@ const TOOLS = {
     description: "Fill several fields at once: a list of {ref, value}. Text fields get the text, checkboxes true/false, selects an option.",
     inputSchema: obj({ fields: { type: "array", items: obj({ ref: { type: "string" }, value: {} }, ["ref", "value"]) } }, ["fields"]),
     annotations: { readOnlyHint: false },
-    async run({ fields }) {
-      const p = await page();
+    async run({ fields }, lease) {
+      const p = await page(lease);
       for (const { ref, value } of fields || []) {
         const loc = target(p, ref);
         await refuseSensitive(loc);
@@ -603,8 +727,8 @@ const TOOLS = {
     description: "Choose option(s) in a select, by its ref.",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, values: { type: "array", items: { type: "string" } } }, ["ref", "values"]),
     annotations: { readOnlyHint: false },
-    async run({ ref, values }) {
-      const p = await page();
+    async run({ ref, values }, lease) {
+      const p = await page(lease);
       await target(p, ref).selectOption(values, { timeout: 10000 });
       return after(p);
     },
@@ -613,9 +737,9 @@ const TOOLS = {
     description: "Press a key (e.g. Enter, Escape, ArrowDown) in the page.",
     inputSchema: obj({ key: { type: "string" } }, ["key"]),
     annotations: { readOnlyHint: false },
-    async run({ key }) {
-      const p = await page();
-      await acting(() => p.keyboard.press(String(key)));
+    async run({ key }, lease) {
+      const p = await page(lease);
+      await acting(p, () => p.keyboard.press(String(key)));
       return after(p);
     },
   },
@@ -623,8 +747,8 @@ const TOOLS = {
     description: "Move the mouse over an element, by its ref (opens menus that open on hover).",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" } }, ["ref"]),
     annotations: { readOnlyHint: false },
-    async run({ ref }) {
-      const p = await page();
+    async run({ ref }, lease) {
+      const p = await page(lease);
       await target(p, ref).hover({ timeout: 10000 });
       return after(p);
     },
@@ -633,8 +757,8 @@ const TOOLS = {
     description: 'Scroll the page "down" or "up" (loads more on pages that load as you scroll).',
     inputSchema: obj({ direction: { type: "string", enum: ["down", "up"] } }, ["direction"]),
     annotations: { readOnlyHint: true },
-    async run({ direction }) {
-      const p = await page();
+    async run({ direction }, lease) {
+      const p = await page(lease);
       await p.mouse.wheel(0, direction === "up" ? -800 : 800);
       await p.waitForTimeout(400);
       return after(p);
@@ -644,10 +768,15 @@ const TOOLS = {
     description: "Open a new tab, optionally at a URL, and switch to it.",
     inputSchema: obj({ url: { type: "string" } }),
     annotations: { readOnlyHint: false, openWorldHint: true },
-    async run({ url }) {
+    async run({ url }, lease) {
       const ctx = await browser();
       const p = await ctx.newPage();
-      current = pages.indexOf(p);
+      track(p);
+      if (lease) {
+        owners.set(p, lease);
+        leases.set(lease, { current: p });
+      }
+      front = p;
       if (url) await p.goto(checkUrl(url), { waitUntil: "domcontentloaded", timeout: 30000 });
       return after(p);
     },
@@ -656,9 +785,10 @@ const TOOLS = {
     description: "Close a tab by its index (from browser_tabs).",
     inputSchema: obj({ index: { type: "integer" } }, ["index"]),
     annotations: { readOnlyHint: false },
-    async run({ index }) {
-      if (!(index >= 0 && index < pages.length)) throw new UserError(`there's no tab ${index}`);
-      await pages[index].close();
+    async run({ index }, lease) {
+      const tabs = tabsOf(lease);
+      if (!(index >= 0 && index < tabs.length)) throw new UserError(`there's no tab ${index}`);
+      await tabs[index].close();
       return text(`Closed tab ${index}.`);
     },
   },
@@ -666,19 +796,21 @@ const TOOLS = {
     description: "Answer the open dialog: accept (OK) or not (Cancel), with text for a prompt.",
     inputSchema: obj({ accept: { type: "boolean" }, promptText: { type: "string" } }, ["accept"]),
     annotations: { readOnlyHint: false },
-    async run({ accept, promptText }) {
-      if (!dialog) throw new UserError("no dialog is open");
-      const d = dialog; dialog = null; dialogPage = null;
+    async run({ accept, promptText }, lease) {
+      const p = await page(lease);
+      const d = dialogs.get(p);
+      if (!d) throw new UserError("no dialog is open");
+      dialogs.delete(p);
       if (accept) await d.accept(promptText); else await d.dismiss();
-      return after(await page(), ` · dialog ${accept ? "accepted" : "dismissed"}`);
+      return after(p, ` · dialog ${accept ? "accepted" : "dismissed"}`);
     },
   },
   browser_file_upload: {
     description: "Give a file input files from this computer (the user is asked first), by its ref.",
     inputSchema: obj({ element: { type: "string" }, ref: { type: "string" }, paths: { type: "array", items: { type: "string" } } }, ["ref", "paths"]),
     annotations: { readOnlyHint: false, openWorldHint: true },
-    async run({ ref, paths }) {
-      const p = await page();
+    async run({ ref, paths }, lease) {
+      const p = await page(lease);
       await target(p, ref).setInputFiles(paths, { timeout: 10000 });
       return after(p);
     },
@@ -687,9 +819,9 @@ const TOOLS = {
     description: "Ask the user to do something themselves in the browser window: log in, a 2FA code, a CAPTCHA, a bank check. Give the reason.",
     inputSchema: obj({ reason: { type: "string" } }, ["reason"]),
     annotations: { readOnlyHint: true },
-    async run() {
+    async run(_args, lease) {
       await headed();
-      const p = await page();
+      const p = await page(lease);
       await p.bringToFront().catch(() => {});
       return text(`${await header(p)}\nThe browser window is in front of the user.`);
     },
@@ -698,16 +830,16 @@ const TOOLS = {
     description: "For tiny-axe's purchase gate only: what the checkout page says (shop, items, total, shipping, card as shown).",
     inputSchema: obj(),
     annotations: { readOnlyHint: true },
-    async run() {
-      return text(JSON.stringify(await checkout(await page())));
+    async run(_args, lease) {
+      return text(JSON.stringify(await checkout(await page(lease))));
     },
   },
   browser_fill_card: {
     description: "For tiny-axe's purchase gate only: fill the card fields with a virtual card.",
     inputSchema: obj({ expect_host: { type: "string" }, card: { type: "object" } }, ["expect_host", "card"]),
     annotations: { readOnlyHint: false },
-    async run({ expect_host, card }) {
-      const filled = await fillCard(await page(), card || {}, expect_host);
+    async run({ expect_host, card }, lease) {
+      const filled = await fillCard(await page(lease), card || {}, expect_host);
       if (filled === 0) throw new UserError("there were no card fields to fill");
       return text(JSON.stringify({ filled }));
     },
@@ -716,9 +848,9 @@ const TOOLS = {
     description: "For tiny-axe only: make the browser window visible and bring it to the front.",
     inputSchema: obj(),
     annotations: { readOnlyHint: true },
-    async run() {
+    async run(_args, lease) {
       await headed();
-      const p = await page();
+      const p = await page(lease);
       await p.bringToFront().catch(() => {});
       return text("shown");
     },
@@ -727,16 +859,28 @@ const TOOLS = {
     description: "For tiny-axe's gate only: what an element is and what acting on it would do.",
     inputSchema: obj({ ref: { type: "string" } }),
     annotations: { readOnlyHint: true },
-    async run({ ref }) {
-      return text(JSON.stringify(await inspect(await page(), ref)));
+    async run({ ref }, lease) {
+      return text(JSON.stringify(await inspect(await page(lease), ref)));
+    },
+  },
+  browser_release: {
+    description: "For tiny-axe's gate only: a task is over; its tabs stay open, free for the next task.",
+    inputSchema: obj(),
+    annotations: ro,
+    async run(_args, lease) {
+      if (lease) {
+        for (const p of pages) if (owners.get(p) === lease) owners.delete(p);
+        leases.delete(lease);
+      }
+      return text("released");
     },
   },
   browser_network_requests: {
     description: "The current page's recent network requests: method, status and URL.",
     inputSchema: obj(),
     annotations: ro,
-    async run() {
-      const p = await page();
+    async run(_args, lease) {
+      const p = await page(lease);
       const log = network.get(p) || [];
       return text(`${await header(p)}\n\n${redact(log.slice(-50).join("\n") || "(no requests)")}`);
     },
@@ -754,7 +898,7 @@ function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
 let queue = Promise.resolve();
 
 // What can still be done while a dialog has the page frozen.
-const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read"]);
+const DIALOG_SAFE = new Set(["browser_handle_dialog", "browser_navigate", "browser_navigate_back", "browser_tabs", "browser_tab_new", "browser_tab_close", "browser_inspect", "browser_read", "browser_release"]);
 function serial(fn) {
   const run = queue.then(fn, fn);
   queue = run.catch(() => {});
@@ -776,11 +920,15 @@ async function handle(msg) {
       const tool = TOOLS[params?.name];
       if (!tool) return send({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: `no tool ${params?.name}` }] } });
       try {
-        return send({ jsonrpc: "2.0", id, result: await serial(() => {
+        const { _tinyaxe_tab: lease = null, _tinyaxe_expect: expect, ...args } = params.arguments || {};
+        return send({ jsonrpc: "2.0", id, result: await serial(async () => {
+          const shown = peek(lease);
+          const dialog = shown && dialogs.get(shown);
           if (dialog && !DIALOG_SAFE.has(params.name)) {
             throw new UserError(`a ${dialog.type()} dialog is open ("${redact(dialog.message())}"): answer it with browser_handle_dialog first`);
           }
-          return tool.run(params.arguments || {});
+          await validate(lease, expect);
+          return tool.run(args, lease);
         }) });
       } catch (e) {
         const why = e instanceof UserError ? e.message : `the browser couldn't do that: ${e.message.split("\n")[0]}`;

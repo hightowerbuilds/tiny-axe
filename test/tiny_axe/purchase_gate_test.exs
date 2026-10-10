@@ -568,6 +568,20 @@ defmodule TinyAxe.PurchaseGateTest do
       assert FixtureSite.submissions() == []
     end
 
+    test "a card step whose button changes once the card is filled still goes ahead", ctx do
+      Decider.Script.script(fn _, _, _ -> 0.9 end)
+      add_card(%{"per_purchase_max" => 50.0})
+      task = open_task(ctx, @intent)
+
+      result =
+        click_button(ctx, task, "/pay-step?relabel=1", "Continue", fn %{mode: :card_step} ->
+          :confirm
+        end)
+
+      assert text(result) =~ "Review your order"
+      assert [{"/pay-step", %{"ccnumber" => "4111111111111111"}}] = FixtureSite.submissions()
+    end
+
     test "a two-step checkout: the card step asks to fill it in, the order is bought once, under the card's rules",
          ctx do
       Decider.Script.script(fn _, _, _ -> 0.9 end)

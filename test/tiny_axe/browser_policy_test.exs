@@ -191,6 +191,51 @@ defmodule TinyAxe.BrowserPolicyTest do
     assert {:commit, _} = click(button("Continue", %{"isSubmit" => true, "form" => form(%{})}))
   end
 
+  test "only plain navigation keys skip inspection; every Enter-like key reaches the purchase gate" do
+    focused = fn nil -> button("Place your order") end
+
+    for key <- [
+          "Enter",
+          "NumpadEnter",
+          "\n",
+          "\r",
+          "Shift+NumpadEnter",
+          "Control+Enter",
+          "Space",
+          " ",
+          "Shift+Space",
+          "F5",
+          "Control+s",
+          "+"
+        ] do
+      assert {:commit, _} = BrowserPolicy.classify("browser_press_key", %{"key" => key}, focused),
+             inspect(key)
+    end
+
+    unseen = fn _ -> flunk("inspected for a navigation key") end
+
+    for key <- [
+          "ArrowDown",
+          "Tab",
+          "Shift+Tab",
+          "Home",
+          "PageDown",
+          "Escape",
+          "Backspace",
+          "Delete"
+        ] do
+      assert BrowserPolicy.classify("browser_press_key", %{"key" => key}, unseen) == {:local, nil},
+             key
+    end
+
+    # A character typed into a field edits it (judged as an edit, not a submission).
+    field = fn nil -> %{"tag" => "input", "text" => "Name", "form" => form(%{})} end
+    assert {:local, nil} = BrowserPolicy.classify("browser_press_key", %{"key" => "a"}, field)
+
+    assert {:outward, _} =
+             BrowserPolicy.classify("browser_press_key", %{"key" => "NumpadEnter"}, field)
+  end
+
   test "Enter in a GET field uses the default submit button's label" do
     target = %{
       "tag" => "input",
@@ -262,7 +307,7 @@ defmodule TinyAxe.BrowserPolicyTest do
         })
 
       assert result == {:local, nil}
-      assert r.schema == "browser-decision/1"
+      assert r.schema == "browser-decision/2"
       assert r.id =~ ~r/\Adec-[0-9a-f]{12}\z/
       assert %{policy_version: "browser-policy/2", questions_version: "browser-effects/2"} = r
 

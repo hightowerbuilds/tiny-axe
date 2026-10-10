@@ -1,0 +1,131 @@
+#!/usr/bin/env elixir
+# A stand-in for tiny-axe's browser server (stdio MCP), for gate and driver
+# tests that don't need Chrome. One page with one button (ref e1), whose
+# label and observation id a test can change (fake_page). Like the real
+# server, it acts in the tab the gate leases (`_tinyaxe_tab`) and checks the
+# gate's `_tinyaxe_expect` just before clicking.
+#
+# Tools:
+#   browser_snapshot   read-only: the page, with its observation id
+#   browser_click      clicks e1, unless the expected target changed
+#   browser_inspect    what e1 is, with its signature and the observation id
+#   browser_release    a task's tabs are freed
+#   fake_page          sets the button's label and the observation id
+#   fake_log           what was clicked, inspected and released, with the arguments
+
+defmodule FakeBrowser do
+  @page "http://shop.test/item"
+
+  def tools do
+    [
+      tool("browser_snapshot", %{}, %{readOnlyHint: true}),
+      tool("browser_click", %{element: %{type: "string"}, ref: %{type: "string"}}, %{readOnlyHint: false, openWorldHint: true}, ["ref"]),
+      tool("browser_inspect", %{ref: %{type: "string"}}, %{readOnlyHint: true}),
+      tool("browser_release", %{}, %{readOnlyHint: true}),
+      tool("fake_page", %{label: %{type: "string"}, observation: %{type: "string"}}, %{readOnlyHint: true}),
+      tool("fake_log", %{}, %{readOnlyHint: true})
+    ]
+  end
+
+  defp tool(name, props, ann, required \\ []),
+    do: %{name: name, description: "The #{name} tool.", inputSchema: %{type: "object", properties: props, required: required}, annotations: ann}
+
+  def emit(msg), do: IO.puts(JSON.encode!(msg))
+  def text(id, t), do: emit(%{jsonrpc: "2.0", id: id, result: %{content: [%{type: "text", text: t}]}})
+  def error(id, t), do: emit(%{jsonrpc: "2.0", id: id, result: %{isError: true, content: [%{type: "text", text: t}]}})
+
+  defp signature(state), do: "sig-" <> Base.encode16(:crypto.hash(:sha256, state.label), case: :lower) |> binary_part(0, 12)
+
+  def loop(state) do
+    case IO.gets("") do
+      :eof -> :ok
+      {:error, _} -> :ok
+      line -> line |> String.trim() |> handle(state) |> loop()
+    end
+  end
+
+  defp handle("", state), do: state
+
+  defp handle(line, state) do
+    case JSON.decode!(line) do
+      %{"method" => "initialize", "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, result: %{protocolVersion: "2025-06-18", capabilities: %{tools: %{}}, serverInfo: %{name: "fake-browser", version: "0"}}})
+        state
+
+      %{"method" => "tools/list", "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, result: %{tools: tools()}})
+        state
+
+      %{"method" => "tools/call", "id" => id, "params" => %{"name" => name} = p} ->
+        call(name, id, p["arguments"] || %{}, state)
+
+      %{"method" => _, "id" => id} ->
+        emit(%{jsonrpc: "2.0", id: id, error: %{code: -32601, message: "method not found"}})
+        state
+
+      _notification ->
+        state
+    end
+  end
+
+  defp call("browser_snapshot", id, args, state) do
+    text(id, "Page: #{@page} · Item · observation #{state.observation}\n\n- button \"#{state.label}\" [ref=e1]")
+    log(state, :snapshots, args)
+  end
+
+  defp call("browser_inspect", id, args, state) do
+    if args["ref"] == "e1" do
+      text(id, JSON.encode!(%{
+        tag: "button", type: "submit", role: "", text: state.label, isSubmit: false, href: nil,
+        page: @page, context: "Item page. #{state.label}", dialog: nil,
+        observation: state.observation, signature: signature(state)
+      }))
+    else
+      error(id, "no element #{args["ref"]}")
+    end
+
+    log(state, :inspects, args)
+  end
+
+  defp call("browser_click", id, args, state) do
+    expect = args["_tinyaxe_expect"]
+
+    stale =
+      is_map(expect) and
+        ((expect["observation"] && expect["observation"] != state.observation) or
+           Enum.any?(expect["targets"] || %{}, fn {_ref, sig} -> sig != signature(state) end))
+
+    if stale do
+      error(id, "stale_target: e1 isn't the element tiny-axe checked any more, so nothing was done")
+      log(state, :stale, args)
+    else
+      text(id, "clicked #{state.label}")
+      log(state, :clicks, args)
+    end
+  end
+
+  defp call("browser_release", id, args, state) do
+    text(id, "released")
+    log(state, :releases, args)
+  end
+
+  defp call("fake_page", id, args, state) do
+    text(id, "ok")
+    %{state | label: args["label"] || state.label, observation: args["observation"] || state.observation}
+  end
+
+  defp call("fake_log", id, _args, state) do
+    text(id, JSON.encode!(Map.take(state, [:clicks, :inspects, :releases, :stale, :snapshots])))
+    state
+  end
+
+  defp call(name, id, _args, state) do
+    error(id, "no tool #{name}")
+    state
+  end
+
+  defp log(state, key, args), do: Map.update!(state, key, &(&1 ++ [args]))
+end
+
+IO.puts(:stderr, "fake browser server starting")
+FakeBrowser.loop(%{label: "⚙", observation: "obs-fake-1", clicks: [], inspects: [], releases: [], stale: [], snapshots: []})

@@ -11,7 +11,10 @@ defmodule TinyAxe.Tools.Gate do
        never the same call three times in a row; a call missing a required
        argument goes back to the agent
     2. **class** — `TinyAxe.Tools.Policy` decides read, local, outward, commit
-       or refused; the model never does
+       or refused; the model never does. Every browser action is assessed by
+       `TinyAxe.Browser.Decisions` (the same checks as the gate-owned
+       `browser_assess` tool, which agents may call first), bound to its
+       target, and checked again by the browser just before it acts
     3. **approval** — an outward call waits for the user (`{:tool_approval, ...}`,
        answered with `{:tool_answer, ref, :once | :session | :deny}`), unless
        they allowed that tool for the session; commits are refused until the
@@ -19,7 +22,11 @@ defmodule TinyAxe.Tools.Gate do
     4. **forward** to the server, then **redact** the result
     5. **journal** the call, and report it to the task (`{:tool_call, ...}`);
        each browser decision behind it goes to the task's decision trace
-       (`TinyAxe.Tools.Journal.append_decision/2`) with what happened next
+       (`TinyAxe.Tools.Journal.append_decision/2`) with what happened next,
+       and the call's entry names its assessment
+
+  Each task leases its own browser tabs (`TinyAxe.Browser.bind/3`); closing
+  the task frees them for the next one.
 
   A refusal comes back to the agent as a tool error saying why, so it can
   carry on or tell the user.
@@ -29,12 +36,11 @@ defmodule TinyAxe.Tools.Gate do
 
   require Logger
 
-  alias TinyAxe.{MCP, Purchases, Tools}
-  alias TinyAxe.Tools.{BrowserPolicy, Policy, Redact}
+  alias TinyAxe.{Browser, MCP, Purchases, Tools}
+  alias TinyAxe.Browser.Decisions
+  alias TinyAxe.Tools.{Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
-  # Where this call's browser decisions collect (the caller's process).
-  @traced {__MODULE__, :decisions}
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
@@ -69,7 +75,12 @@ defmodule TinyAxe.Tools.Gate do
         intent: Keyword.get(opts, :intent),
         objective: opts |> Keyword.get(:objective) |> then(&(&1 && Redact.text(&1))),
         # The latest calls and what the gate did, newest last, for decisions.
-        outcomes: []
+        outcomes: [],
+        # Its browser assessments, for reuse and held restrictions
+        # (Decisions.remember/2), and the browser servers whose tabs it holds.
+        assessments: [],
+        floors: %{},
+        leased: MapSet.new()
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -78,8 +89,16 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
+  @doc "Closes a task; the browser tabs it held stay open, free for the next task."
   @spec close_task(String.t()) :: :ok
-  def close_task(id), do: GenServer.call(__MODULE__, {:close, id})
+  def close_task(id) do
+    case GenServer.call(__MODULE__, {:close, id}) do
+      %{leased: leased} -> Enum.each(leased, &Browser.release(&1, id))
+      _ -> :ok
+    end
+
+    :ok
+  end
 
   @doc "The MCP config that gives a driver this task's gate and nothing else."
   @spec mcp_config(map()) :: map()
@@ -107,61 +126,71 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  @doc "The tools a task may use, as MCP tool definitions."
+  @doc """
+  The tools a task may use, as MCP tool definitions: its servers' tools, and
+  with a browser, the gate's own `browser_assess`.
+  """
   @spec tools(map()) :: [map()]
   def tools(task) do
-    for t <- MCP.tools(task.servers),
-        not hidden?(t),
-        Policy.classify(t.definition, t.policy) != :refused do
-      Map.take(t.definition, ["description", "inputSchema", "annotations", "title"])
-      |> Map.put("name", t.name)
-    end
+    all = MCP.tools(task.servers)
+
+    listed =
+      for t <- all,
+          not hidden?(t),
+          Policy.classify(t.definition, t.policy) != :refused do
+        Map.take(t.definition, ["description", "inputSchema", "annotations", "title"])
+        |> Map.put("name", t.name)
+      end
+
+    if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
   end
 
   @doc "Runs one tool call through the gate. Returns an MCP result."
   @spec call(map(), String.t(), map()) :: map()
   def call(task, name, args) do
     t0 = System.monotonic_time(:millisecond)
-    tool = Enum.find(MCP.tools(task.servers), &(&1.name == name))
+    tool = find(task, name)
+    # The gate's own browser keys (tab lease, signatures) come from the gate.
+    args = if tool && (browser?(tool) or gate?(tool)), do: Decisions.clean(args), else: args
 
-    {class, {decision, result}} =
+    {class, assessment, {decision, result}} =
       case tool && GenServer.call(__MODULE__, {:begin, task.id, name, args}) do
         nil ->
-          {nil, {:refused, refusal("there's no tool called #{name}")}}
+          {nil, nil, {:refused, refusal("there's no tool called #{name}")}}
 
         {:limit, why} ->
           task.notify.({:tool_limit, %{task: task.id, reason: why}})
-          {nil, {:refused, refusal(why)}}
+          {nil, nil, {:refused, refusal(why)}}
 
         {:ok, allowed} ->
           # A call missing what the tool requires goes back to the agent to fix,
           # before anything is inspected or the user is asked.
           case missing(tool.definition, args) do
             [] ->
-              {class, reason} = classify(task, tool, args)
+              {class, reason, task} = classify(task, tool, args)
 
               task.notify.(
                 {:tool_call, %{tool: name, class: class, reason: reason, args: Redact.deep(args)}}
               )
 
-              {class, decide(task, tool, args, {class, reason}, allowed)}
+              {class, task[:assessment], decide(task, tool, args, {class, reason}, allowed)}
 
             keys ->
-              {nil, {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}}
+              {nil, nil, {:refused, refusal("#{name} needs #{Enum.join(keys, ", ")}")}}
           end
       end
 
     result = Redact.result(result)
     ms = System.monotonic_time(:millisecond) - t0
     error = result["isError"] == true
-    traced = take_decisions()
+    traced = (assessment && assessment.decisions) || []
 
     for record <- traced do
       Tools.Journal.append_decision(
         task.id,
         Map.merge(record, %{
           task: task.id,
-          tool: name,
+          tool: assessment.binding.tool,
           result: %{decision: decision, error: error}
         })
       )
@@ -173,11 +202,14 @@ defmodule TinyAxe.Tools.Gate do
       decision: decision,
       error: error,
       result: summary(result),
+      assessment: Decisions.journal(assessment),
       decisions: Enum.map(traced, & &1.id),
       ms: ms
     })
 
-    if tool do
+    # Asking first leaves no trace in later decisions' recent actions, so an
+    # assessed call and a direct one are judged on the same evidence.
+    if tool && not gate?(tool) do
       GenServer.cast(
         __MODULE__,
         {:outcome, task.id, %{tool: tool.tool, class: class, decision: decision, error: error}}
@@ -197,44 +229,107 @@ defmodule TinyAxe.Tools.Gate do
     result
   end
 
-  # Browser actions are classed by what they'd do on the page (the gate looks
-  # first, with browser_inspect); other tools by their server's policy.
-  defp classify(task, tool, args) do
+  # The gate's own tools first; then the task's servers'.
+  defp find(task, name) do
+    tools = MCP.tools(task.servers)
+
     cond do
-      hidden?(tool) ->
-        {:refused, "that tool is for tiny-axe only"}
-
-      tool.policy["browser"] == true ->
-        context = %{
-          objective: Map.get(task, :objective),
-          intent: Map.get(task, :intent),
-          recent: Map.get(task, :outcomes, [])
-        }
-
-        BrowserPolicy.classify(tool.tool, args, &look_at(tool.server, &1),
-          context: context,
-          on_decision: &Process.put(@traced, [&1 | Process.get(@traced, [])])
-        )
-        |> then(fn {class, reason} ->
-          {Policy.stricter(class_floor(tool), class) |> keep_special(class), reason}
-        end)
+      Decisions.owns?(name) and Enum.any?(tools, &browser?/1) ->
+        [definition] = for d <- Decisions.definitions(), d["name"] == name, do: d
+        %{name: name, server: nil, tool: name, definition: definition, policy: %{"gate" => true}}
 
       true ->
-        {Policy.classify(tool.definition, tool.policy), nil}
+        Enum.find(tools, &(&1.name == name))
     end
   end
 
-  # The decision records made while classing this call, oldest first.
-  defp take_decisions, do: (Process.delete(@traced) || []) |> Enum.reverse()
+  defp browser?(tool), do: tool.policy["browser"] == true
+  defp gate?(tool), do: tool.policy["gate"] == true
 
-  # A browser tool's own policy class is a floor (e.g. never below read); a
-  # handoff stays a handoff.
-  defp class_floor(_tool), do: :read
-  defp keep_special(_stricter, special) when special in [:handoff, :payment_step], do: special
-  defp keep_special(stricter, _class), do: stricter
+  # Browser actions are assessed by what they'd do on the page (the gate
+  # looks first, with browser_inspect); other tools are classed by their
+  # server's policy. `browser_assess` runs the same assessment as advice; it
+  # can only assess a browser action, never itself.
+  defp classify(task, tool, args) do
+    cond do
+      hidden?(tool) ->
+        {:refused, "that tool is for tiny-axe only", task}
 
-  defp look_at(server, ref) do
-    args = if ref, do: %{"ref" => ref}, else: %{}
+      gate?(tool) ->
+        name = Decisions.listed_name(args["tool"])
+        target = Enum.find(MCP.tools(task.servers), &(&1.name == name))
+        proposed = arguments(args["arguments"])
+
+        cond do
+          target == nil or not browser?(target) or hidden?(target) ->
+            {:refused, "browser_assess only assesses this task's browser actions", task}
+
+          proposed == nil ->
+            {:refused, "browser_assess needs the action's arguments as an object", task}
+
+          (keys = missing(target.definition, Decisions.clean(proposed))) != [] ->
+            {:refused, "#{target.name} needs #{Enum.join(keys, ", ")}", task}
+
+          true ->
+            assessment = assess(task, target, Decisions.clean(proposed), :advice, args)
+            {:read, nil, Map.put(task, :assessment, assessment)}
+        end
+
+      browser?(tool) ->
+        assessment = assess(task, tool, args, :execute, %{})
+        {assessment.class, assessment.reason, Map.put(task, :assessment, assessment)}
+
+      true ->
+        {Policy.classify(tool.definition, tool.policy), nil, task}
+    end
+  end
+
+  defp arguments(%{} = args), do: args
+
+  defp arguments(json) when is_binary(json) do
+    case JSON.decode(json) do
+      {:ok, %{} = args} -> args
+      _ -> nil
+    end
+  end
+
+  defp arguments(_), do: nil
+
+  # One assessment, bound to this task and its tabs, and remembered for it.
+  defp assess(task, tool, args, mode, asked) do
+    GenServer.cast(__MODULE__, {:leased, task.id, tool.server})
+    record = GenServer.call(__MODULE__, {:assessments, task.id})
+
+    assessment =
+      Decisions.assess(
+        %{
+          task: task.id,
+          server: tool.server,
+          name: tool.name,
+          tool: tool.tool,
+          args: args,
+          mode: mode,
+          observation: asked["observation_id"],
+          expected: asked["expected_effect"]
+        },
+        inspect: &look_at(task, tool.server, &1),
+        context: %{
+          objective: Map.get(task, :objective),
+          intent: Map.get(task, :intent),
+          recent: Map.get(task, :outcomes, [])
+        },
+        prior: record[:assessments],
+        floors: record[:floors],
+        purchases: Purchases.enabled?()
+      )
+
+    # Stored before the call returns, so the agent's next call sees it.
+    :ok = GenServer.call(__MODULE__, {:assessed, task.id, assessment})
+    assessment
+  end
+
+  defp look_at(task, server, ref) do
+    args = Browser.bind(if(ref, do: %{"ref" => ref}, else: %{}), task.id)
 
     with {:ok, %{"content" => [%{"text" => json} | _]} = result} <-
            MCP.call(server, "browser_inspect", args, 15_000),
@@ -255,6 +350,10 @@ defmodule TinyAxe.Tools.Gate do
 
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
+
+  # browser_assess answers with the assessment; nothing runs.
+  defp decide(task, %{policy: %{"gate" => true}}, _args, _class, _allowed),
+    do: {:ran, Decisions.result(task.assessment)}
 
   defp decide(task, tool, args, {:payment_step, reason}, _allowed) do
     if Purchases.enabled?() and tool.policy["browser"] == true,
@@ -278,7 +377,7 @@ defmodule TinyAxe.Tools.Gate do
 
   # The user does it in the browser window; the agent hears whether they did.
   defp decide(task, tool, args, {:handoff, reason}, _allowed) do
-    case MCP.call(tool.server, tool.tool, args) do
+    case MCP.call(tool.server, tool.tool, Browser.bind(args, task.id)) do
       {:ok, _shown} ->
         case ask(task, tool, args, :handoff, reason) do
           :deny ->
@@ -311,19 +410,19 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(task, %{policy: %{"browser" => true}} = tool, args, {:outward, reason}, _allowed),
     do: ask_and_forward(task, tool, args, reason)
 
-  defp decide(_task, tool, args, {class, _reason}, _allowed),
-    do: forward(tool, args, if(class == :outward, do: :allowed_for_session, else: :ran))
+  defp decide(task, tool, args, {class, _reason}, _allowed),
+    do: forward(task, tool, args, if(class == :outward, do: :allowed_for_session, else: :ran))
 
   defp ask_and_forward(task, tool, args, reason) do
     case ask(task, tool, args, :outward, reason) do
       :once ->
-        forward(tool, args, :approved)
+        forward(task, tool, args, :approved)
 
       :session ->
         if tool.policy["browser"] != true,
           do: GenServer.call(__MODULE__, {:allow, task.id, tool.name})
 
-        forward(tool, args, :approved)
+        forward(task, tool, args, :approved)
 
       :deny ->
         {:denied, refusal("the user said no to this call")}
@@ -335,10 +434,10 @@ defmodule TinyAxe.Tools.Gate do
   defp purchase(task, tool, args, reason) do
     id = Purchases.start(task.intent)
     # The user watches every purchase: the window is shown before they're asked.
-    TinyAxe.Browser.show(tool.server)
-    target = look_at(tool.server, args["ref"])
+    TinyAxe.Browser.show(tool.server, task.id)
+    target = look_at(task, tool.server, args["ref"])
 
-    case Purchases.summary(tool.server) do
+    case Purchases.summary(tool.server, task.id) do
       {:ok, summary} ->
         summary = Map.put(summary, "paying_with", Purchases.paying_with(summary))
         {card, needs} = paying_card(task, summary)
@@ -404,10 +503,10 @@ defmodule TinyAxe.Tools.Gate do
   # The page is read again: if the shop, the total or the button changed while
   # the user was deciding, nothing is clicked.
   defp place(task, tool, args, id, summary, target, ref) do
-    now = look_at(tool.server, args["ref"])
+    now = look_at(task, tool.server, args["ref"])
 
     changed =
-      case Purchases.summary(tool.server) do
+      case Purchases.summary(tool.server, task.id) do
         {:ok, again} ->
           cond do
             again["host"] != summary["host"] ->
@@ -462,7 +561,7 @@ defmodule TinyAxe.Tools.Gate do
                MCP.call(
                  server,
                  "browser_fill_card",
-                 %{"expect_host" => summary["host"], "card" => details},
+                 Browser.bind(%{"expect_host" => summary["host"], "card" => details}, task.id),
                  30_000
                ),
              false <- result["isError"] == true do
@@ -493,7 +592,7 @@ defmodule TinyAxe.Tools.Gate do
   # PIN or CVC), but spends nothing; the order is its own purchase later, with
   # the card's rules still applying.
   defp payment_step(task, tool, args, reason) do
-    case Purchases.summary(tool.server) do
+    case Purchases.summary(tool.server, task.id) do
       {:ok, summary} ->
         cond do
           task.intent == nil ->
@@ -519,7 +618,7 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   defp card_step(task, tool, args, summary, card) do
-    TinyAxe.Browser.show(tool.server)
+    TinyAxe.Browser.show(tool.server, task.id)
     id = Purchases.start(task.intent)
     Purchases.event(id, %{t: "card_step", summary: Map.put(summary, "paying_with", card.label)})
 
@@ -540,7 +639,9 @@ defmodule TinyAxe.Tools.Gate do
             case fill_card(task, tool.server, summary, id, ref) do
               :ok ->
                 Purchases.event(id, %{t: "card_step_done"})
-                forward(tool, args, :approved)
+                # Filling the card may change the page; the purchase gate
+                # has its own checks, so this click carries no signatures.
+                forward(Map.delete(task, :assessment), tool, args, :approved)
 
               why ->
                 {:refused, refusal("#{why}, so nothing was sent")}
@@ -563,10 +664,10 @@ defmodule TinyAxe.Tools.Gate do
     # may have gone through, and it is never clicked again.
     Purchases.event(id, %{t: "clicking"})
 
-    case MCP.call(tool.server, tool.tool, args) do
+    case MCP.call(tool.server, tool.tool, Browser.bind(args, task.id)) do
       {:ok, result} ->
         Purchases.event(id, %{t: "clicked"})
-        receipt = receipt(tool.server, id)
+        receipt = receipt(task, tool.server, id)
 
         task.notify.(
           {:purchased,
@@ -597,18 +698,23 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   # The confirmation page's text, order number and a screenshot.
-  defp receipt(server, id) do
+  defp receipt(task, server, id) do
     dir = Purchases.dir(id)
 
     text =
-      case MCP.call(server, "browser_extract", %{}, 30_000) do
+      case MCP.call(server, "browser_extract", Browser.bind(%{}, task.id), 30_000) do
         {:ok, %{"content" => content}} -> Enum.map_join(content, "\n", &(&1["text"] || ""))
         _ -> ""
       end
 
     File.write!(Path.join(dir, "receipt.txt"), text)
 
-    case MCP.call(server, "browser_take_screenshot", %{"fullPage" => true}, 30_000) do
+    case MCP.call(
+           server,
+           "browser_take_screenshot",
+           Browser.bind(%{"fullPage" => true}, task.id),
+           30_000
+         ) do
       {:ok, %{"content" => [%{"type" => "image", "data" => data} | _]}} ->
         File.write!(Path.join(dir, "receipt.png"), Base.decode64!(data))
 
@@ -647,10 +753,33 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  defp forward(tool, args, decision) do
+  # A browser action goes to the task's tab with what was assessed, which
+  # the browser checks again just before acting: after the user's approval
+  # too. A target that changed meanwhile isn't touched, and a browser_assess
+  # record it reused is dropped, so the next call is judged afresh.
+  defp forward(task, tool, args, decision) do
+    args =
+      if browser?(tool),
+        do: Browser.bind(args, task.id, Decisions.expect(task[:assessment])),
+        else: args
+
     case MCP.call(tool.server, tool.tool, args) do
-      {:ok, result} -> {decision, result}
-      {:error, reason} -> {:failed, refusal("the tool failed: #{inspect(reason)}")}
+      {:ok, result} ->
+        if Decisions.stale_result?(result) do
+          if task.assessment.reused_from,
+            do: GenServer.cast(__MODULE__, {:forget, task.id, task.assessment.reused_from})
+
+          {:refused,
+           refusal(
+             "the page changed after tiny-axe checked this action (stale_target), so nothing was done. " <>
+               "Take a fresh browser_snapshot and use its refs"
+           )}
+        else
+          {decision, result}
+        end
+
+      {:error, reason} ->
+        {:failed, refusal("the tool failed: #{inspect(reason)}")}
     end
   end
 
@@ -713,14 +842,25 @@ defmodule TinyAxe.Tools.Gate do
 
   @impl true
   def handle_call({:open, task}, _from, tasks) do
-    # A run that was killed never closed its task; forget it once well expired.
+    # A run that was killed never closed its task; forget it once well
+    # expired, and free its browser tabs.
     now = System.monotonic_time(:millisecond)
-    tasks = Map.reject(tasks, fn {_id, t} -> now > t.deadline + :timer.minutes(5) end)
+
+    {expired, tasks} =
+      Map.split_with(tasks, fn {_id, t} -> now > t.deadline + :timer.minutes(5) end)
+
+    for {id, t} <- expired,
+        server <- t.leased,
+        do: Task.start(fn -> Browser.release(server, id) end)
+
     {:reply, :ok, Map.put(tasks, task.id, task)}
   end
 
-  def handle_call({:close, id}, _from, tasks), do: {:reply, :ok, Map.delete(tasks, id)}
+  def handle_call({:close, id}, _from, tasks), do: {:reply, tasks[id], Map.delete(tasks, id)}
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
+
+  def handle_call({:assessments, id}, _from, tasks),
+    do: {:reply, tasks[id] && Map.take(tasks[id], [:assessments, :floors]), tasks}
 
   # The card tiny-axe filled in at a payment step, so the order later in the
   # same checkout still answers to that card's rules.
@@ -762,8 +902,21 @@ defmodule TinyAxe.Tools.Gate do
     end
   end
 
-  # What a call came to, for the next browser decisions' recent actions.
+  def handle_call({:assessed, id, assessment}, _from, tasks),
+    do: {:reply, :ok, update_task(tasks, id, &Map.merge(&1, Decisions.remember(&1, assessment)))}
+
   @impl true
+  def handle_cast({:forget, id, assessment_id}, tasks),
+    do:
+      {:noreply,
+       update_task(tasks, id, fn t ->
+         %{t | assessments: Enum.reject(t.assessments, &(&1.id == assessment_id))}
+       end)}
+
+  def handle_cast({:leased, id, server}, tasks),
+    do: {:noreply, update_task(tasks, id, &%{&1 | leased: MapSet.put(&1.leased, server)})}
+
+  # What a call came to, for the next browser decisions' recent actions.
   def handle_cast({:outcome, id, outcome}, tasks) do
     {:noreply,
      if(Map.has_key?(tasks, id),
@@ -771,4 +924,7 @@ defmodule TinyAxe.Tools.Gate do
        else: tasks
      )}
   end
+
+  defp update_task(tasks, id, fun),
+    do: if(Map.has_key?(tasks, id), do: Map.update!(tasks, id, fun), else: tasks)
 end
