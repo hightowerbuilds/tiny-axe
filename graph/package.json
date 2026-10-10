@@ -1,0 +1,23 @@
+{
+  "name": "tiny-axe-graph",
+  "private": true,
+  "description": "The know-how graph viewer for tiny-axe (see docs/plan-knowledge-graph.md)",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "node build.ts",
+    "start": "node build.ts && node dist/server.js",
+    "test": "node build.ts && node --test test/*.test.ts",
+    "check": "tsc -p ."
+  },
+  "dependencies": {
+    "marked": "18.0.14"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

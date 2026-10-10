@@ -1,0 +1,392 @@
+{
+  "schema": "tiny-axe-vault/1",
+  "nodes": [
+    {
+      "id": "20261001-100000-1",
+      "kind": "task",
+      "title": "20261001-100000-1",
+      "folder": "Tasks",
+      "trust": "observed",
+      "seen": null
+    },
+    {
+      "id": "20261002-110000-2",
+      "kind": "task",
+      "title": "20261002-110000-2",
+      "folder": "Tasks",
+      "trust": "observed",
+      "seen": null
+    },
+    {
+      "id": "Add-a-comment-textbox 4f1d042e",
+      "kind": "control",
+      "title": "Add a comment (textbox)",
+      "folder": "Controls",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "Add-to-Cart-button 0ec1c8ea",
+      "kind": "control",
+      "title": "Add to Cart (button)",
+      "folder": "Controls",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "Elixir-in-Action-Third-Edition-link 83e94e19",
+      "kind": "control",
+      "title": "Elixir in Action, Third Edition (link)",
+      "folder": "Controls",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "Proceed-to-checkout-button cf674575",
+      "kind": "control",
+      "title": "Proceed to checkout (button)",
+      "folder": "Controls",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "Search-searchbox 83200247",
+      "kind": "control",
+      "title": "Search (searchbox)",
+      "folder": "Controls",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "browser__browser_click",
+      "kind": "tool",
+      "title": "browser_click (browser)",
+      "folder": "Tools",
+      "trust": "observed",
+      "seen": 4
+    },
+    {
+      "id": "browser__browser_navigate",
+      "kind": "tool",
+      "title": "browser_navigate (browser)",
+      "folder": "Tools",
+      "trust": "observed",
+      "seen": 3
+    },
+    {
+      "id": "browser__browser_snapshot",
+      "kind": "tool",
+      "title": "browser_snapshot (browser)",
+      "folder": "Tools",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "browser__browser_type",
+      "kind": "tool",
+      "title": "browser_type (browser)",
+      "folder": "Tools",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "click-Add-to-Cart-ran 694659fe",
+      "kind": "path",
+      "title": "click \"Add to Cart\" → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "click-Elixir-in-Action-Third-Edition-ran 4604636b",
+      "kind": "path",
+      "title": "click \"Elixir in Action, Third Edition\" → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "click-Proceed-to-checkout-refused 16be154f",
+      "kind": "path",
+      "title": "click \"Proceed to checkout\" → refused",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "memory__search_nodes",
+      "kind": "tool",
+      "title": "search_nodes (memory)",
+      "folder": "Tools",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "navigate-news.example-id-id-id-city-council-votes-ran 78a0a975",
+      "kind": "path",
+      "title": "navigate news.example/:id/:id/:id/city-council-votes → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "navigate-shop.example-ran ff540828",
+      "kind": "path",
+      "title": "navigate shop.example/ → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "navigate-shop.example-slug-dp-id-ran f0a862dc",
+      "kind": "path",
+      "title": "navigate shop.example/:slug/dp/:id → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "news.example",
+      "kind": "site",
+      "title": "news.example",
+      "folder": "Sites",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "news.example-id-id-id-city-council-votes 820ba0a7",
+      "kind": "page",
+      "title": "news.example/:id/:id/:id/city-council-votes",
+      "folder": "Pages",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "search_nodes-memory-ran 2af6cff6",
+      "kind": "path",
+      "title": "search_nodes (memory) → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "shop.example",
+      "kind": "site",
+      "title": "shop.example",
+      "folder": "Sites",
+      "trust": "observed",
+      "seen": 7
+    },
+    {
+      "id": "shop.example d114f7ba",
+      "kind": "page",
+      "title": "shop.example/",
+      "folder": "Pages",
+      "trust": "observed",
+      "seen": 2
+    },
+    {
+      "id": "shop.example-cart-view.html ce5545df",
+      "kind": "page",
+      "title": "shop.example/cart/view.html",
+      "folder": "Pages",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "shop.example-s 3af4d7bb",
+      "kind": "page",
+      "title": "shop.example/s",
+      "folder": "Pages",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "shop.example-slug-dp-id 7323d50c",
+      "kind": "page",
+      "title": "shop.example/:slug/dp/:id",
+      "folder": "Pages",
+      "trust": "observed",
+      "seen": 3
+    },
+    {
+      "id": "type-Add-a-comment-denied 4b848441",
+      "kind": "path",
+      "title": "type \"Add a comment\" → denied",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    },
+    {
+      "id": "type-Search-ran 9b5f794a",
+      "kind": "path",
+      "title": "type \"Search\" → ran",
+      "folder": "Paths",
+      "trust": "observed",
+      "seen": 1
+    }
+  ],
+  "links": [
+    {
+      "source": "20261001-100000-1",
+      "target": "click-Add-to-Cart-ran 694659fe"
+    },
+    {
+      "source": "20261001-100000-1",
+      "target": "click-Elixir-in-Action-Third-Edition-ran 4604636b"
+    },
+    {
+      "source": "20261001-100000-1",
+      "target": "click-Proceed-to-checkout-refused 16be154f"
+    },
+    {
+      "source": "20261001-100000-1",
+      "target": "navigate-shop.example-ran ff540828"
+    },
+    {
+      "source": "20261001-100000-1",
+      "target": "type-Search-ran 9b5f794a"
+    },
+    {
+      "source": "20261002-110000-2",
+      "target": "click-Add-to-Cart-ran 694659fe"
+    },
+    {
+      "source": "20261002-110000-2",
+      "target": "navigate-news.example-id-id-id-city-council-votes-ran 78a0a975"
+    },
+    {
+      "source": "20261002-110000-2",
+      "target": "navigate-shop.example-slug-dp-id-ran f0a862dc"
+    },
+    {
+      "source": "20261002-110000-2",
+      "target": "search_nodes-memory-ran 2af6cff6"
+    },
+    {
+      "source": "20261002-110000-2",
+      "target": "type-Add-a-comment-denied 4b848441"
+    },
+    {
+      "source": "Add-a-comment-textbox 4f1d042e",
+      "target": "news.example-id-id-id-city-council-votes 820ba0a7"
+    },
+    {
+      "source": "Add-to-Cart-button 0ec1c8ea",
+      "target": "shop.example-slug-dp-id 7323d50c"
+    },
+    {
+      "source": "Elixir-in-Action-Third-Edition-link 83e94e19",
+      "target": "shop.example-s 3af4d7bb"
+    },
+    {
+      "source": "Proceed-to-checkout-button cf674575",
+      "target": "shop.example-cart-view.html ce5545df"
+    },
+    {
+      "source": "Search-searchbox 83200247",
+      "target": "shop.example d114f7ba"
+    },
+    {
+      "source": "click-Add-to-Cart-ran 694659fe",
+      "target": "Add-to-Cart-button 0ec1c8ea"
+    },
+    {
+      "source": "click-Add-to-Cart-ran 694659fe",
+      "target": "browser__browser_click"
+    },
+    {
+      "source": "click-Add-to-Cart-ran 694659fe",
+      "target": "shop.example-cart-view.html ce5545df"
+    },
+    {
+      "source": "click-Elixir-in-Action-Third-Edition-ran 4604636b",
+      "target": "Elixir-in-Action-Third-Edition-link 83e94e19"
+    },
+    {
+      "source": "click-Elixir-in-Action-Third-Edition-ran 4604636b",
+      "target": "browser__browser_click"
+    },
+    {
+      "source": "click-Elixir-in-Action-Third-Edition-ran 4604636b",
+      "target": "shop.example-slug-dp-id 7323d50c"
+    },
+    {
+      "source": "click-Proceed-to-checkout-refused 16be154f",
+      "target": "Proceed-to-checkout-button cf674575"
+    },
+    {
+      "source": "click-Proceed-to-checkout-refused 16be154f",
+      "target": "browser__browser_click"
+    },
+    {
+      "source": "navigate-news.example-id-id-id-city-council-votes-ran 78a0a975",
+      "target": "browser__browser_navigate"
+    },
+    {
+      "source": "navigate-news.example-id-id-id-city-council-votes-ran 78a0a975",
+      "target": "news.example-id-id-id-city-council-votes 820ba0a7"
+    },
+    {
+      "source": "navigate-shop.example-ran ff540828",
+      "target": "browser__browser_navigate"
+    },
+    {
+      "source": "navigate-shop.example-ran ff540828",
+      "target": "shop.example d114f7ba"
+    },
+    {
+      "source": "navigate-shop.example-slug-dp-id-ran f0a862dc",
+      "target": "browser__browser_navigate"
+    },
+    {
+      "source": "navigate-shop.example-slug-dp-id-ran f0a862dc",
+      "target": "shop.example-slug-dp-id 7323d50c"
+    },
+    {
+      "source": "news.example-id-id-id-city-council-votes 820ba0a7",
+      "target": "news.example"
+    },
+    {
+      "source": "search_nodes-memory-ran 2af6cff6",
+      "target": "memory__search_nodes"
+    },
+    {
+      "source": "shop.example d114f7ba",
+      "target": "shop.example"
+    },
+    {
+      "source": "shop.example-cart-view.html ce5545df",
+      "target": "shop.example"
+    },
+    {
+      "source": "shop.example-s 3af4d7bb",
+      "target": "shop.example"
+    },
+    {
+      "source": "shop.example-slug-dp-id 7323d50c",
+      "target": "shop.example"
+    },
+    {
+      "source": "type-Add-a-comment-denied 4b848441",
+      "target": "Add-a-comment-textbox 4f1d042e"
+    },
+    {
+      "source": "type-Add-a-comment-denied 4b848441",
+      "target": "browser__browser_type"
+    },
+    {
+      "source": "type-Search-ran 9b5f794a",
+      "target": "Search-searchbox 83200247"
+    },
+    {
+      "source": "type-Search-ran 9b5f794a",
+      "target": "browser__browser_type"
+    },
+    {
+      "source": "type-Search-ran 9b5f794a",
+      "target": "shop.example-s 3af4d7bb"
+    }
+  ],
+  "unresolved": []
+}
