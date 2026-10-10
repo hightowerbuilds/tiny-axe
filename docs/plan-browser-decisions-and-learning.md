@@ -791,7 +791,8 @@ decision traces, and thresholds remain provisional.
   from action records and the journal, not from fixture runs (the harness
   doesn't learn; the curated set stands in, as planned); "confirmed
   completion" and "agent-verified" were defined after the first dev
-  (headroom) run, before any holdout run; holdout and dev tasks were
+  ([headroom](../eval/results/20261010-browser-tasks-phase5-dev-headroom.json),
+  before examples existed: 8/8 completed) run, before any holdout run; holdout and dev tasks were
   written by the same person, with the same workflow families on different
   sites, so this tests transfer across layouts, not across workflows.
 - **Not yet done**: retrieval has not improved a held-out outcome, so
