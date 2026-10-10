@@ -190,6 +190,25 @@ defmodule TinyAxe.PurchaseGateTest do
     assert s["paying_with"] == "Mastercard ending in 2701"
   end
 
+  test "Amazon's 2026 checkout: offers and popularity lines aren't items", ctx do
+    task = open_task(ctx, @intent)
+
+    page =
+      text(
+        call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/order-amazon-2026"})
+      )
+
+    [_, ref] = Regex.run(~r/button "Place your order" \[ref=(\w+)\]/, page)
+    call(task, "#{ctx.server}__browser_click", %{ref: ref}, :deny)
+
+    assert_received {:asked, %{summary: s}}
+    assert s["total_text"] == "$9.81"
+
+    assert s["items"] == [
+             "VIOY Headphone Extension Cable 20 FT, 3.5mm Male to Female Braided Aux Cord — $8.99"
+           ]
+  end
+
   test "the user says no: nothing is bought", ctx do
     result = buy(ctx, open_task(ctx, @intent), :deny)
 
