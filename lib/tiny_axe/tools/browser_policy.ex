@@ -130,8 +130,12 @@ defmodule TinyAxe.Tools.BrowserPolicy do
 
   defp do_classify("browser_press_key", %{"key" => key}, inspect, opts) do
     key = key |> String.downcase() |> String.split("+") |> List.last()
+    # Anything but a plain navigation key or one typed character is treated
+    # as Enter: Playwright also takes "NumpadEnter", "\n" and "\r" as Enter,
+    # so a list of Enter's names can't be complete.
+    key = if key in [" ", "space"] or not plain_key?(key), do: enter_or_space(key), else: key
 
-    if key in ["enter", "return", "space", " "] do
+    if key in ["enter", "space"] do
       case inspect.(nil) do
         nil ->
           click(nil, opts)
@@ -151,7 +155,7 @@ defmodule TinyAxe.Tools.BrowserPolicy do
         %{"type" => type} = meta when type in ["submit", "image", "checkbox", "radio"] ->
           click(meta, opts)
 
-        %{"form" => %{} = form} = meta when key in ["enter", "return"] ->
+        %{"form" => %{} = form} = meta when key == "enter" ->
           submission(form, meta, opts)
 
         meta ->
@@ -161,6 +165,15 @@ defmodule TinyAxe.Tools.BrowserPolicy do
       {:local, nil}
     end
   end
+
+  @plain_keys ~w(arrowup arrowdown arrowleft arrowright tab home end pageup pagedown
+                 escape backspace delete shift control alt meta capslock)
+
+  defp plain_key?(key),
+    do: key in @plain_keys or (String.length(key) == 1 and key not in [" ", "\n", "\r"])
+
+  defp enter_or_space(key) when key in [" ", "space"], do: "space"
+  defp enter_or_space(_key), do: "enter"
 
   defp do_classify("browser_handle_dialog", %{"accept" => false}, _inspect, _opts),
     do: {:local, nil}

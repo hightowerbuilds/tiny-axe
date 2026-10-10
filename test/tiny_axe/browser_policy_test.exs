@@ -191,6 +191,19 @@ defmodule TinyAxe.BrowserPolicyTest do
     assert {:commit, _} = click(button("Continue", %{"isSubmit" => true, "form" => form(%{})}))
   end
 
+  test "only plain navigation keys and typed characters skip inspecting the focused element" do
+    buy = fn _ -> %{"tag" => "button", "text" => "Place your order", "isSubmit" => true} end
+
+    for key <- ["NumpadEnter", "Shift+NumpadEnter", "\n", "\r", "Space", "F13", "Execute"] do
+      refute BrowserPolicy.classify("browser_press_key", %{"key" => key}, buy) == {:local, nil},
+             "#{inspect(key)} skipped the check"
+    end
+
+    for key <- ["ArrowDown", "Tab", "Shift+Tab", "Escape", "a", "Control+a"] do
+      assert BrowserPolicy.classify("browser_press_key", %{"key" => key}, buy) == {:local, nil}
+    end
+  end
+
   test "Enter in a GET field uses the default submit button's label" do
     target = %{
       "tag" => "input",
