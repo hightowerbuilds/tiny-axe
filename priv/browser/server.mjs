@@ -101,13 +101,19 @@ function track(page) {
   pages.push(page);
   consoleLog.set(page, []);
   network.set(page, []);
-  views.set(page, { id: randomBytes(3).toString("hex"), navigations: 0 });
+  views.set(page, { id: randomBytes(3).toString("hex"), navigations: 0, loads: 0 });
+  // Whole documents loaded in the tab: not same-document navigations
+  // (history.pushState, a #fragment) or pages restored from the
+  // back-forward cache, which don't fire "load".
+  page.on("load", () => { views.get(page).loads++; });
   page.on("console", (m) => push(consoleLog.get(page), `${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => push(consoleLog.get(page), `error: ${e.message}`));
   page.on("response", (r) => push(network.get(page), `${r.request().method()} ${r.status()} ${r.url()}`));
   page.on("request", (r) => noteRequest(page, r));
   page.on("response", (r) => { const e = requestEntries.get(r.request()); if (e) e.status = r.status(); });
-  page.on("requestfailed", (r) => { const e = requestEntries.get(r); if (e) e.failed = r.failure()?.errorText || "failed"; });
+  // A request that already has its response was answered: its body being cut
+  // off later (the page moving on) isn't a lost response.
+  page.on("requestfailed", (r) => { const e = requestEntries.get(r); if (e && e.status === null) e.failed = r.failure()?.errorText || "failed"; });
   page.on("framenavigated", (f) => { if (f === page.mainFrame()) views.get(page).navigations++; });
   // A tab a page opens (a popup) belongs to the task that holds its opener.
   // Until that's known the tab is pending, so no task can claim it meanwhile;
@@ -480,6 +486,19 @@ function noteRequest(page, r) {
   requestEntries.set(r, entry);
 }
 
+// A field's value as a whole value in a body: the body itself, a
+// form-encoded field (`name=value`, up to `&`), or a JSON value (a string,
+// or a number equal to it); never a mere substring ("5" in "seq":15).
+function wholeValue(post, v) {
+  if (post === v) return true;
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const encoded = [encodeURIComponent(v), encodeURIComponent(v).replace(/%20/g, "+")];
+  if (encoded.some((e) => new RegExp(`(^|&)[^=&]*=${esc(e)}(&|$)`).test(post))) return true;
+  const json = [JSON.stringify(v)];
+  if (/^-?\d+(\.\d+)?$/.test(v)) json.push(v);
+  return json.some((j) => new RegExp(`:\\s*${esc(j)}\\s*[,}\\]]`).test(post));
+}
+
 // Whether a request's body carries the value an edited field now holds
 // (raw, URL-encoded or inside JSON); worked out once, then the body is dropped.
 function carries(entry, record) {
@@ -487,8 +506,7 @@ function carries(entry, record) {
   if (entry.post === undefined) return null;
   const wanted = record.fields.flatMap((f) => f.expect ? ("value" in f.expect ? [f.expect.value] : (f.expect.selected || [])) : [])
     .map(String).filter((v) => v.length > 0);
-  const forms = (v) => [v, encodeURIComponent(v), encodeURIComponent(v).replace(/%20/g, "+"), JSON.stringify(v).slice(1, -1)];
-  entry.carries = wanted.length > 0 && wanted.some((v) => forms(v).some((f) => entry.post.includes(f)));
+  entry.carries = wanted.length > 0 && wanted.some((v) => wholeValue(entry.post, v));
   delete entry.post;
   return entry.carries;
 }
@@ -521,7 +539,7 @@ async function fieldState(handle, expect) {
 // the action used is gone (a page restored from the back-forward cache keeps
 // it), the tab has navigated since the action ended, and the navigation
 // wasn't back or forward (Chrome refills forms then from its own memory).
-async function fieldNow(f, p) {
+async function fieldNow(f, p, fresh) {
   if (f.reloaded) return { now: true, reread: true, reload: true };
   const direct = f.handle ? await fieldState(f.handle, f.expect) : null;
   const none = { now: direct, reread: false, reload: false };
@@ -532,8 +550,7 @@ async function fieldNow(f, p) {
   if (!sel) return none;
   try {
     const now = await p.locator(sel).first().evaluate(holds, f.expect, { timeout: 2000 });
-    const nav = await p.evaluate(() => performance.getEntriesByType("navigation")[0]?.type || null).catch(() => null);
-    const reload = now === true && observation(p) !== f.observation_after && nav !== null && nav !== "back_forward";
+    const reload = now === true && fresh;
     // Settled: the value itself is no longer needed.
     if (reload) { f.reloaded = true; f.expect = null; f.handle = null; }
     return { now, reread: now !== null, reload };
@@ -614,11 +631,20 @@ async function beforeActing(record, p, loc, mode) {
 // typed on (the same address): elsewhere the count means nothing. Once it is
 // seen, the text itself is dropped.
 function contentCount(c, p, text) {
-  if (c.shown) return c.shown;
   if (!p || pathOf(p.url()) !== c.path || !c.v) return null;
-  const n = occurrences(text, c.v);
-  if (n !== null && c.before !== null && n > c.before) { c.shown = n; c.v = null; }
-  return n;
+  return occurrences(text, c.v);
+}
+
+function loads(p) { return p ? (views.get(p)?.loads ?? 0) : 0; }
+
+// Whether the tab has loaded a whole new document since the action ended,
+// by a navigation that wasn't back or forward (Chrome refills forms and may
+// restore a page from memory then): only such a page shows what the site
+// now has.
+async function freshLoad(p, since) {
+  if (!p || loads(p) <= since) return false;
+  const nav = await p.evaluate(() => performance.getEntriesByType("navigation")[0]?.type || null).catch(() => null);
+  return nav === "navigate" || nav === "reload";
 }
 
 // A dialog's answer acts on the row whose button opened it.
@@ -650,7 +676,11 @@ async function pageState(p) {
     readable(p).catch(() => null),
     new Promise((r) => setTimeout(() => r(null), 3000)),
   ]);
-  return read === null ? { ...base, text: null } : { ...base, text: clip(read, 2000) };
+  // The whole page's text too (bounded), for spotting an error: a toast or
+  // alert often sits outside the main region the readable text comes from.
+  const body = await shownText(p);
+  const whole = body === null ? null : redact(body).slice(0, 20000);
+  return read === null ? { ...base, text: null, body: whole } : { ...base, text: clip(read, 2000), body: whole };
 }
 
 async function finishAction(record, lease, error) {
@@ -659,6 +689,7 @@ async function finishAction(record, lease, error) {
   const p = peek(lease);
   record.url_after = p ? p.url() : null;
   record.observation_after = p ? observation(p) : null;
+  record.loads_after = loads(p);
   for (const f of record.fields) {
     f.after = await fieldState(f.handle, f.expect);
     f.observation_after = record.observation_after;
@@ -676,30 +707,34 @@ async function actionReport(record, fresh = false) {
   const p = fresh ? peek(record.lease) : null;
   // Matched against the requests first: a settled reload drops the value.
   const requests = record.requests.map((e) => {
-    const { post, ...shown } = e;
+    const { post, carries: _cached, ...shown } = e;
     return { ...shown, carries_value: carries(e, record), pending: e.status === null && e.failed === null };
   });
+  // Counts on the page as it is now mean something only once a whole new
+  // document has loaded since the action: otherwise it's the same page view,
+  // which script on it (an optimistic echo) can change without the site.
+  const loaded = fresh ? await freshLoad(p, record.loads_after ?? 0) : false;
   const fields = [];
   for (const f of record.fields) {
-    const seen = fresh ? await fieldNow(f, p) : { now: f.after, reread: false, reload: false };
+    const seen = fresh ? await fieldNow(f, p, loaded) : { now: f.after, reread: false, reload: false };
     fields.push({ after: f.after, now: seen.now, reread: seen.reread, reload: seen.reload });
   }
   const text = fresh ? await shownText(p) : null;
   const row = record.row && {
     before: record.row.before, after: record.row.after,
-    now: fresh && p && pathOf(p.url()) === record.row.path ? occurrences(text, record.row.text) : (fresh ? null : record.row.after),
+    now: fresh ? (loaded && pathOf(p.url()) === record.row.path ? occurrences(text, record.row.text) : null) : record.row.after,
   };
   const content = record.content.length ? {
     values: record.content.length,
     before: record.content.map((c) => c.before),
     after: record.content.map((c) => c.after),
-    now: record.content.map((c) => (fresh ? contentCount(c, p, text) : c.after)),
+    now: record.content.map((c) => (fresh ? (loaded ? contentCount(c, p, text) : null) : c.after)),
   } : null;
   return {
     id: record.id, tool: record.tool, started: record.started, ended: record.ended, error: record.error,
     url_before: record.url_before, url_after: record.url_after, title_before: record.title_before || "",
     observation_before: record.observation_before, observation_after: record.observation_after,
-    requests,
+    requests, fresh_load: loaded,
     fields, after: record.after, row, content,
   };
 }

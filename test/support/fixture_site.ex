@@ -42,6 +42,11 @@ defmodule TinyAxe.FixtureSite do
       a note's text, or for one sent to someone, only "Sent to <them>".
       `/notes` lists the notes; `/inbox` is old mail from alice@example.com
       quoting "hello there"
+    * `/echo` — a note form whose script shows the note at once
+      (optimistic) while its POST `/echo` is recorded and answered 502; the
+      page itself never lists notes
+    * `/toast` — a comment form; its POST is recorded and the page that comes
+      back lists the comment, with an error toast outside the main region
     * `/invite` — one "To" field and "Invite"; POST `/invite` records it,
       then answers 502; the page lists "Invited <them>"
     * `/rows` — saved addresses, each with its own "Remove" form (POST
@@ -250,6 +255,46 @@ defmodule TinyAxe.FixtureSite do
     """)
   end
 
+  get "/echo" do
+    html(conn, """
+    <title>Echo</title><main><h1>Echo</h1>
+    <form id="f" method="post" action="/echo" aria-label="Write a note">
+    <label>Note <textarea name="note"></textarea></label><button>Post</button></form>
+    <ul id="sent"></ul></main>
+    <script>
+    document.getElementById("f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const note = new FormData(e.target).get("note");
+      const li = document.createElement("li"); li.textContent = note;
+      document.getElementById("sent").appendChild(li);
+      fetch("/echo", {method: "POST", body: new URLSearchParams({note})});
+    });
+    </script>
+    """)
+  end
+
+  post "/echo" do
+    record(conn)
+    send_resp(conn, 502, "bad gateway")
+  end
+
+  get "/toast" do
+    html(conn, """
+    <title>Comments</title><main><h1>Comments</h1>
+    <form method="post" action="/toast" aria-label="Add a comment">
+    <label>Comment <textarea name="text"></textarea></label><button>Post comment</button></form></main>
+    """)
+  end
+
+  post "/toast" do
+    record(conn)
+
+    html(conn, """
+    <title>Comments</title><main><h1>Comments</h1><ul><li>#{Plug.HTML.html_escape(conn.params["text"])}</li></ul></main>
+    <div role="alert" class="toast">Couldn't save your comment. Try again.</div>
+    """)
+  end
+
   get "/invite" do
     invited =
       for {"/invite", %{"to" => to}} <- submissions(),
@@ -342,7 +387,8 @@ defmodule TinyAxe.FixtureSite do
     # ?broken=1: typing only sends an analytics beacon; nothing is saved.
     send_it =
       if conn.params["broken"] == "1",
-        do: ~s|fetch("/beacon", {method: "POST", body: JSON.stringify({event: "typing"})})|,
+        do:
+          ~s|fetch("/beacon", {method: "POST", body: JSON.stringify({event: "typing", seq: 15})})|,
         else:
           ~s|fetch("/autosave", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name: e.target.value})})|
 

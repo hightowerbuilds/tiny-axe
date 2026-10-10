@@ -82,7 +82,11 @@ defmodule TinyAxe.BrowserVerifyTest do
       {:gate, {:tool_approval, ask}} ->
         send(self(), {:asked, ask})
         # Doing again what may already have gone through: only if the test says.
-        answer = if ask[:repeat] && !Process.get(:approve_repeat), do: :deny, else: :once
+        answer =
+          if Process.get(:deny_all) || (ask[:repeat] && !Process.get(:approve_repeat)),
+            do: :deny,
+            else: :once
+
         send(ask.reply_to, {:tool_answer, ask.ref, answer})
         await(caller)
 
@@ -273,6 +277,32 @@ defmodule TinyAxe.BrowserVerifyTest do
            )
   end
 
+  test "a run killed on cancel still closes its task and frees its tabs", ctx do
+    me = self()
+
+    # A run that opens its task, acts, and is then killed (as Esc or quit
+    # does), so its own clean-up never runs.
+    run =
+      spawn(fn ->
+        {:ok, task} = Gate.open_task(fn _ -> :ok end, servers: [ctx.server])
+        send(me, {:task, task})
+        Process.sleep(:infinity)
+      end)
+
+    assert_receive {:task, task}, 5_000
+    rpc(task, "tools/call", %{name: "#{ctx.server}__browser_snapshot", arguments: %{}})
+    assert {:ok, _} = Gate.authorize(task.id, task.token)
+
+    Process.exit(run, :kill)
+
+    assert Enum.any?(1..50, fn _ ->
+             Process.sleep(50)
+
+             Gate.authorize(task.id, task.token) == :error and
+               Enum.any?(log(ctx)["releases"], &(&1["_tinyaxe_tab"] == task.id))
+           end)
+  end
+
   test "unresolved records are never pushed out by later ones", ctx do
     page(ctx, %{outcome: "lost"})
     task = open(ctx)
@@ -292,6 +322,55 @@ defmodule TinyAxe.BrowserVerifyTest do
     refute result["isError"], text(result)
     v = JSON.decode!(text(result))
     assert v["action_id"] == id and v["status"] == "unresolved"
+  end
+
+  test "a declined action is never pushed out before the completion check", ctx do
+    task = open(ctx)
+    Process.put(:deny_all, true)
+    declined = click(ctx, task)
+    assert text(declined) =~ "the user said no"
+    Process.delete(:deny_all)
+    [entry] = for e <- Tools.Journal.read(task.id), e["action"], do: e["action"]
+
+    page(ctx, %{outcome: "ok"})
+
+    for i <- 1..51 do
+      page(ctx, %{label: "Note #{i}"})
+      refute click(ctx, task, %{ref: "e1", element: "note #{i}"})["isError"]
+    end
+
+    v = verify(task, %{action_id: entry["id"]})
+    assert v["action_id"] == entry["id"] and v["status"] == "failed"
+  end
+
+  test "holds survive restarting tiny-axe, with what's left of their time", ctx do
+    page(ctx, %{outcome: "lost"})
+    click(ctx, open(ctx))
+
+    # Saved: the keys and when they end, never a value; add one already expired.
+    file = Path.join(TinyAxe.Ops.Journal.state_dir(), "holds.json")
+    entries = JSON.decode!(File.read!(file))
+    saved = Enum.find(entries, &(&1["key"] =~ ctx.server))
+    assert saved["description"] == ~s(click "Send note")
+    expired = %{saved | "key" => "#{ctx.server}|activate|sig:old", "expires_at" => 1}
+    File.write!(file, JSON.encode!([expired | entries]))
+
+    # The gate restarts (tiny-axe restarted): its memory is gone, the file isn't.
+    before = Process.whereis(Gate)
+    GenServer.stop(Gate)
+
+    assert Enum.any?(1..50, fn _ ->
+             Process.sleep(50)
+             pid = Process.whereis(Gate)
+             pid != nil and pid != before
+           end)
+
+    held = Gate.held_keys()
+    assert saved["key"] in held
+    refute expired["key"] in held
+
+    page(ctx, %{outcome: "ok"})
+    assert text(click(ctx, open(ctx))) =~ "may already have gone through"
   end
 
   describe "the completion check, for every driver" do

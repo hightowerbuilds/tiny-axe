@@ -363,6 +363,76 @@ defmodule TinyAxe.BrowserOutcomeTest do
     assert text(send_again(ctx, task)) =~ "may already have gone through"
   end
 
+  test "an optimistic echo of a lost post confirms nothing, wherever the agent looks next", ctx do
+    task = open(ctx)
+    page = text(act(ctx, task, "browser_navigate", %{url: ctx.site <> "/echo"}))
+    note = %{ref: ref(page, "textbox", "Note"), text: "hello there, echoed"}
+    refute act(ctx, task, "browser_type", note)["isError"]
+    sent = act(ctx, task, "browser_click", %{ref: ref(page, "button", "Post")})
+    assert text(sent) =~ "outcome_unresolved: server_error"
+    assert text(sent) =~ "hello there, echoed"
+
+    # Elsewhere, then back (from memory, not loaded afresh): nothing confirms.
+    for move <- [
+          fn -> act(ctx, task, "browser_navigate", %{url: ctx.site <> "/article"}) end,
+          fn -> act(ctx, task, "browser_navigate_back", %{}) end
+        ] do
+      move.()
+      v = JSON.decode!(text(act(ctx, task, "browser_verify", %{})))
+      assert v["status"] == "unresolved", inspect(v)
+    end
+
+    # Loaded afresh, the page doesn't list it: still unresolved, still held.
+    act(ctx, task, "browser_navigate", %{url: ctx.site <> "/echo"})
+    assert JSON.decode!(text(act(ctx, task, "browser_verify", %{})))["status"] == "unresolved"
+    page = text(act(ctx, task, "browser_snapshot", %{}))
+
+    assert text(act(ctx, task, "browser_click", %{ref: ref(page, "button", "Post")})) =~
+             "may already have gone through"
+
+    assert for({"/echo", _} <- FixtureSite.submissions(), do: :posted) == [:posted]
+  end
+
+  test "an error toast outside the main region keeps it unresolved", ctx do
+    task = open(ctx)
+    page = text(act(ctx, task, "browser_navigate", %{url: ctx.site <> "/toast"}))
+    comment = %{ref: ref(page, "textbox", "Comment"), text: "count me in please"}
+    refute act(ctx, task, "browser_type", comment)["isError"]
+    refute act(ctx, task, "browser_click", %{ref: ref(page, "button", "Post comment")})["isError"]
+
+    # The comment shows in the main region, but the page also says it failed.
+    v = JSON.decode!(text(act(ctx, task, "browser_verify", %{})))
+    assert v["status"] == "unresolved", inspect(v)
+  end
+
+  test "a save carries a field's value only as a whole value, not inside a beacon's number",
+       ctx do
+    carried = fn path ->
+      task = open(ctx)
+      page = text(act(ctx, task, "browser_navigate", %{url: ctx.site <> path}))
+      act(ctx, task, "browser_type", %{ref: ref(page, "textbox", "Display name"), text: "5"})
+      [typed] = actions(task)
+      Process.sleep(500)
+
+      {:ok, seen} =
+        MCP.call(
+          ctx.server,
+          "browser_observe",
+          Browser.bind(%{"action" => typed["id"]}, task.id),
+          30_000
+        )
+
+      for q <- JSON.decode!(text(seen))["action"]["requests"],
+          q["method"] == "POST",
+          do: q["carries_value"]
+    end
+
+    # A beacon saying {"event":"typing","seq":15}: "5" is only inside "15".
+    assert carried.("/autosave?broken=1") == [false]
+    # A save of {"name":"5"}: the whole value.
+    assert carried.("/autosave") == [true]
+  end
+
   test "a recipient showing up isn't the sent content: no confirmation from it", ctx do
     task = open(ctx)
     page = text(act(ctx, task, "browser_navigate", %{url: ctx.site <> "/invite"}))

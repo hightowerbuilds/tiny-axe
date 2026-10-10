@@ -78,6 +78,9 @@ defmodule TinyAxe.Tools.Gate do
         id: id,
         token: token,
         notify: notify,
+        # The process that opened it: if it dies (a cancelled run is killed),
+        # the task is closed all the same.
+        owner: self(),
         servers: Keyword.get(opts, :servers, :all),
         max_calls: Keyword.get(opts, :max_calls, limits[:max_calls] || 60),
         deadline:
@@ -103,7 +106,8 @@ defmodule TinyAxe.Tools.Gate do
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
-      Tools.Journal.start(id)
+      # Never prunes the folder of a task that's still open.
+      Tools.Journal.start(id, GenServer.call(__MODULE__, :open_ids))
       {:ok, %{id: id, token: token, url: "http://127.0.0.1:#{port}/mcp/#{id}"}}
     end
   end
@@ -593,6 +597,66 @@ defmodule TinyAxe.Tools.Gate do
           match?([{_, %{action: id}}] when id == record.id, :ets.lookup(table, key)),
           do: :ets.delete(table, key)
     end
+
+    save_holds()
+  end
+
+  # Holds outlive tiny-axe too: written to `<state>/holds.json` (the redacted
+  # keys, the action's id and description and when the hold ends, never a
+  # value), and read back when the gate starts, each with what's left of
+  # its time.
+  defp holds_file, do: Path.join(TinyAxe.Ops.Journal.state_dir(), "holds.json")
+
+  defp save_holds do
+    now = System.monotonic_time(:millisecond)
+    wall = System.os_time(:millisecond)
+
+    entries =
+      for {key, h} <- :ets.tab2list(hold_table()), h.until > now do
+        %{
+          key: Redact.text(key),
+          action: h.action,
+          task: h.task,
+          description: Redact.text(h.description || ""),
+          expires_at: wall + (h.until - now)
+        }
+      end
+
+    path = holds_file()
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(path <> ".tmp", JSON.encode!(entries)),
+         :ok <- File.rename(path <> ".tmp", path) do
+      :ok
+    else
+      error -> Logger.warning("tiny-axe couldn't save its holds: #{inspect(error)}")
+    end
+  end
+
+  @doc false
+  # Reads the saved holds back (as the gate does when it starts); expired
+  # ones are dropped.
+  def load_holds do
+    now = System.monotonic_time(:millisecond)
+    wall = System.os_time(:millisecond)
+
+    with {:ok, raw} <- File.read(holds_file()),
+         {:ok, entries} when is_list(entries) <- JSON.decode(raw) do
+      for %{"key" => key, "expires_at" => at} = e <- entries, is_integer(at), at > wall do
+        :ets.insert(
+          hold_table(),
+          {key,
+           %{
+             action: e["action"],
+             task: e["task"],
+             description: e["description"],
+             until: now + (at - wall)
+           }}
+        )
+      end
+    end
+
+    :ok
   end
 
   @doc false
@@ -605,7 +669,10 @@ defmodule TinyAxe.Tools.Gate do
 
   @doc false
   # For tests that share one browser server: forget every hold.
-  def clear_holds, do: :ets.delete_all_objects(hold_table())
+  def clear_holds do
+    :ets.delete_all_objects(hold_table())
+    save_holds()
+  end
 
   defp held_by(keys) do
     now = System.monotonic_time(:millisecond)
@@ -1272,6 +1339,7 @@ defmodule TinyAxe.Tools.Gate do
   @impl true
   def init(:ok) do
     hold_table()
+    load_holds()
     {:ok, %{}}
   end
 
@@ -1288,11 +1356,17 @@ defmodule TinyAxe.Tools.Gate do
         server <- t.leased,
         do: Task.start(fn -> Browser.release(server, id) end)
 
+    task = Map.put(task, :monitor, Process.monitor(task.owner))
     {:reply, :ok, Map.put(tasks, task.id, task)}
   end
 
-  def handle_call({:close, id}, _from, tasks), do: {:reply, tasks[id], Map.delete(tasks, id)}
+  def handle_call({:close, id}, _from, tasks) do
+    if tasks[id], do: Process.demonitor(tasks[id].monitor, [:flush])
+    {:reply, tasks[id], Map.delete(tasks, id)}
+  end
+
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
+  def handle_call(:open_ids, _from, tasks), do: {:reply, Map.keys(tasks), tasks}
 
   def handle_call({:assessments, id}, _from, tasks),
     do: {:reply, tasks[id] && Map.take(tasks[id], [:assessments, :floors, :actions]), tasks}
@@ -1300,8 +1374,9 @@ defmodule TinyAxe.Tools.Gate do
   def handle_call({:actions, id}, _from, tasks),
     do: {:reply, (tasks[id] && tasks[id].actions) || [], tasks}
 
-  # A new record, or one verified since. Unresolved ones are always kept
-  # (they hold their target); of the rest, the newest 50.
+  # A new record, or one verified since. Unresolved ones (they hold their
+  # target) and failed or declined ones (the completion check needs them)
+  # are always kept; of the rest, the newest 50.
   def handle_call({:action, id, record}, _from, tasks) do
     sync_hold(id, record)
 
@@ -1310,7 +1385,7 @@ defmodule TinyAxe.Tools.Gate do
        all =
          Enum.sort_by([record | Enum.reject(t.actions, &(&1.id == record.id))], & &1.seq, :desc)
 
-       {held, rest} = Enum.split_with(all, &(&1.status == :unresolved))
+       {held, rest} = Enum.split_with(all, &(&1.status in [:unresolved, :failed]))
        %{t | actions: Enum.sort_by(held ++ Enum.take(rest, 50), & &1.seq, :desc)}
      end)}
   end
@@ -1319,6 +1394,7 @@ defmodule TinyAxe.Tools.Gate do
   # holding, and so does any task's hold on them.
   def handle_call({:release, id, keys}, _from, tasks) do
     for key <- keys, do: :ets.delete(hold_table(), key)
+    save_holds()
 
     {:reply, true,
      update_task(tasks, id, fn t ->
@@ -1388,6 +1464,23 @@ defmodule TinyAxe.Tools.Gate do
 
   def handle_call({:assessed, id, assessment}, _from, tasks),
     do: {:reply, :ok, update_task(tasks, id, &Map.merge(&1, Decisions.remember(&1, assessment)))}
+
+  # The process that opened a task died without closing it (a run killed on
+  # cancel, whose `after` never ran): close it now, and free its tabs, which
+  # makes the browser forget what its actions typed.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, tasks) do
+    case Enum.find(tasks, fn {_id, t} -> t[:monitor] == ref end) do
+      {id, t} ->
+        for server <- t.leased, do: Task.start(fn -> Browser.release(server, id) end)
+        {:noreply, Map.delete(tasks, id)}
+
+      nil ->
+        {:noreply, tasks}
+    end
+  end
+
+  def handle_info(_message, tasks), do: {:noreply, tasks}
 
   @impl true
   def handle_cast({:forget, id, assessment_id}, tasks),

@@ -122,8 +122,37 @@ defmodule TinyAxe.Browser.Outcomes do
 
         %{
           target: target(meta),
-          keys: sigs ++ form_key
+          keys: sigs ++ form_key ++ label_key(binding, meta)
         }
+    end
+  end
+
+  # Coarser than a signature, which names the full address: the page
+  # without its query or fragment, the kind of action and the label (or the
+  # form's submit text). "Send" at /compose?draft=b is held by a lost "Send"
+  # at /compose?draft=a; so is every "Send" on that page (over-holding, by
+  # choice: it only waits for a verification or the user).
+  defp label_key(_binding, nil), do: []
+
+  defp label_key(binding, meta) do
+    text =
+      meta["text"] || get_in(meta, ["form", "submitText"]) || get_in(meta, ["dialog", "message"])
+
+    page = Evidence.clean_url(meta["page"])
+    text = text && text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.downcase()
+
+    if page && text not in [nil, ""],
+      do: ["#{binding.server}|#{binding.family}|label:#{page} #{String.slice(text, 0, 80)}"],
+      else: []
+  end
+
+  # Where a sent action's requests went (method, origin and path), in the
+  # form-key shape: a later form sending to the same place is held too.
+  defp endpoint_keys(_server, nil), do: []
+
+  defp endpoint_keys(server, ex) do
+    for q <- ex["requests"] || [], sending?(q), is_binary(q["url"]), uniq: true do
+      "#{server}|activate|form:#{String.upcase(q["method"])} #{Evidence.clean_url(q["url"])}"
     end
   end
 
@@ -205,7 +234,8 @@ defmodule TinyAxe.Browser.Outcomes do
       disposition: assessment.disposition,
       assessment_codes: assessment.reason_codes,
       submission: submission,
-      keys: assessment.effect.keys,
+      keys:
+        Enum.uniq(assessment.effect.keys ++ endpoint_keys(assessment.binding.server, execution)),
       target: assessment.effect.target,
       description: describe(outcome.browser_tool, outcome.args, assessment.effect.target),
       expected_effect: assessment.expected_effect,
@@ -564,12 +594,15 @@ defmodule TinyAxe.Browser.Outcomes do
   defp in_code(_r, nil, _det, _now), do: nil
 
   defp in_code(r, ex, det, now) do
-    now_text = now && now["text"]
-    after_text = get_in(ex, ["after", "text"])
+    # Error words are looked for over the whole page (toasts and alerts
+    # included), the same scope the typed text is counted over.
+    now_text = now && (now["body"] || now["text"])
+    after_text = get_in(ex, ["after", "body"]) || get_in(ex, ["after", "text"])
 
-    fresh =
-      is_map(now) and is_binary(now["observation"]) and
-        now["observation"] != ex["observation_after"]
+    # A whole new document loaded since the action, by a navigation that
+    # wasn't back or forward (the browser tells); a new observation id alone
+    # isn't enough (same-document navigations change it too).
+    fresh = is_map(now) and ex["fresh_load"] == true
 
     row = ex["row"]
     content = ex["content"]
@@ -637,9 +670,7 @@ defmodule TinyAxe.Browser.Outcomes do
   defp reloaded_here?(ex, now) do
     path = fn url -> url && URI.to_string(%{URI.parse(url) | query: nil, fragment: nil}) end
 
-    is_map(now) and is_binary(now["observation"]) and
-      now["observation"] != ex["observation_after"] and
-      path.(now["url"]) == path.(ex["url_before"])
+    is_map(now) and ex["fresh_load"] == true and path.(now["url"]) == path.(ex["url_before"])
   end
 
   defp receipt_order?(order), do: is_binary(order) and order =~ ~r/\d/
@@ -917,7 +948,10 @@ defmodule TinyAxe.Browser.Outcomes do
     # What an answer could contradict: verified failures and contradicted claims.
     {checkable, unconfirmed} = Enum.split_with(problems, &(&1.status == :failed))
 
-    checkable = Enum.take(checkable, @per_answer)
+    # Past the questions one check asks, failures go in the note: they can't
+    # be ruled out, so they're never passed over.
+    {checkable, overflow} = Enum.split(checkable, @per_answer)
+    unconfirmed = unconfirmed ++ overflow
 
     {said, records_out} =
       if checkable == [], do: {%{}, []}, else: claims(reply, records, checkable, opts)
@@ -1237,13 +1271,18 @@ defmodule TinyAxe.Browser.Outcomes do
 
   defp trim(%{} = ex) do
     page = fn
-      %{} = p -> Map.update(p, "text", nil, &(&1 && String.slice(&1, 0, @text_chars * 2)))
-      other -> other
+      %{} = p ->
+        p
+        |> Map.update("text", nil, &(&1 && String.slice(&1, 0, @text_chars * 2)))
+        |> Map.update("body", nil, &(&1 && String.slice(&1, 0, 20_000)))
+
+      other ->
+        other
     end
 
     ex
     |> Map.take(
-      ~w(id tool error url_before url_after title_before observation_before observation_after requests fields after row content)
+      ~w(id tool error url_before url_after title_before observation_before observation_after requests fields after row content fresh_load)
     )
     |> Map.update("after", nil, page)
   end

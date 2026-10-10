@@ -342,6 +342,35 @@ decision traces, and thresholds remain provisional.
   tests, 0 failures; the record-cap test failed in three earlier full
   runs (its record wasn't found) and passed in two later full runs and 40
   isolated repeats, cause not found.
+- **Re-review fixes** (after 3c, not re-measured with real models):
+  - counts on the page as it is now mean something only after a whole new
+    document has loaded since the action (the browser's `load` events and
+    navigation type; not a same-document navigation, not back or forward)
+    on the page the text was typed on; nothing is cached, so an optimistic
+    echo of a lost post confirms nothing wherever the agent looks next.
+    The same fresh-load test gates a removal's row and Jev after trouble;
+  - holds also key on the page without its query plus the kind of action
+    and its label, and on where the lost request went (method, origin,
+    path, matching a later form sending there), so `Send` at
+    `/compose?draft=b` is held by a lost one at `?draft=a`. This
+    over-holds on purpose: every `Send` (or `Remove`) on that page waits
+    while one is unresolved, until verified or the user says go;
+  - failures past the six per-action questions go into the note;
+  - a run killed on cancel still closes its task: the gate monitors the
+    process that opened it, frees its tabs, and the browser forgets what
+    its actions typed;
+  - error words are looked for over the whole page body (toasts, alerts),
+    the scope the typed text is counted over;
+  - a save carries a field's value only as a whole form-encoded or JSON
+    value; a response already received isn't lost when the page moves on;
+  - failed and declined records are never dropped before the completion
+    check; holds are saved to `<state>/holds.json` (keys and end times,
+    never values) and reloaded when tiny-axe starts;
+  - the task journal never prunes an open task's folder or one written in
+    the last hour, and a journal write never raises; each test run has its
+    own state folder. Two tiny-axe instances (or test runs) pruning each
+    other's live folders was the likely cause of the record-cap flake.
+
 - **Measurement**: three runs, same 24 tasks and split as the
   [pre-Phase-2 baseline](../eval/results/20261009-browser-tasks-baseline.json),
   Claude Haiku 5.5 (`claude-haiku-5-5`) driving, Jev `jev-1.13.0`,
@@ -402,7 +431,8 @@ decision traces, and thresholds remain provisional.
   claims about actions never attempted aren't caught by the completion
   step (the harness's false-completion metric still is); code confirmation
   of an "Add to cart"-style effect is left to Jev; the record-cap test's
-  intermittent failure; `browser_choose` (Phase 4).
+  intermittent failure (see the journal fix above); `browser_choose`
+  (Phase 4).
 
 ## Phase 4 built
 

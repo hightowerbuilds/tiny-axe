@@ -161,7 +161,8 @@ defmodule FakeBrowser do
     else
       text(id, JSON.encode!(%{
         now: %{url: @page, title: "Item", observation: state.observation, text: state.text},
-        action: state.actions[args["action"]]
+        # A new observation id stands for a whole new document loaded.
+        action: state.actions[args["action"]] && Map.put(state.actions[args["action"]], :fresh_load, state.observation != state.actions[args["action"]].observation_after)
       }))
     end
 
