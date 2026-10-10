@@ -8,6 +8,12 @@ defmodule TinyAxe.Browser.TaskEval.Sites do
   Bookfinder (search and compare), Settings (an account). Holdout set: Pine
   & Co (a shop, list layout and a two-step checkout), Commons (a message
   board), Workspace (team admin).
+
+  Phase 4's harder tasks (`eval/browser_tasks_hard.exs`), where choosing
+  among similar candidates matters, have their own sites: Corner Market (a
+  marketplace) and Springfield council services (wizards) for development;
+  Tablehop (restaurant booking) and Bolt & Board (a hardware store, tables)
+  for holdout.
   """
 
   alias TinyAxe.Browser.TaskEval.Site
@@ -20,7 +26,11 @@ defmodule TinyAxe.Browser.TaskEval.Sites do
     Sites.Settings,
     Sites.Pine,
     Sites.Commons,
-    Sites.Workspace
+    Sites.Workspace,
+    Sites.Market,
+    Sites.Civic,
+    Sites.Tablehop,
+    Sites.Bolt
   ]
 
   def modules, do: @sites

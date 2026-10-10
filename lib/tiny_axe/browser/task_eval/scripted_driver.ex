@@ -10,7 +10,7 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDriver do
 
       {:go, site, path}
       {:click, role, name}                 # or {:click, role, name, nth}, counting from 1
-      {:type, role, name, text}            # or {:type, role, name, text, :submit}
+      {:type, role, name, text}            # or {:type, role, name, text, :submit}, or nth
       {:select, name, value}               # a combobox
       {:dialog, accept?}
       {:wait, ms}
@@ -47,6 +47,11 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDriver do
 
   defp step({:type, role, name, text}, ctx) do
     with {:ok, ref} <- ref(ctx, role, name),
+         do: call(ctx, "browser_type", %{ref: ref, text: text})
+  end
+
+  defp step({:type, role, name, text, nth}, ctx) when is_integer(nth) do
+    with {:ok, ref} <- ref(ctx, role, name, nth),
          do: call(ctx, "browser_type", %{ref: ref, text: text})
   end
 

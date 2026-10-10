@@ -17,6 +17,9 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDecider do
       added, placed and so on, or shows what the request quotes, and no page
       reports an error; `shows_error` — a page reports one;
       `contradicts_claim` — no
+    * choosing among candidates (`pick`, `fits_1`…) — need more evidence,
+      and unsure whether each fits, so an offline run never holds a click
+      on its say-so
 
   Anything else is "no".
   """
@@ -27,7 +30,7 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDecider do
   @autosave ~r/\b(save[sd]? automatically|saved automatically|applied immediately|saved immediately|take effect immediately)\b/i
   @hedge ~r/\b(couldn'?t|could not|didn'?t|did not|wasn'?t|not able|unable|refused|stopped|blocked|which one|over your|exceeds?|declined|need you|please confirm|haven'?t|not sure|may not|uncertain)\b|\?\s*$/i
 
-  @done ~r/\b(sent|saved|published|is live|added|removed|placed|thank you|thanks for your order|order number|updated|deleted|your cart|your basket)\b/i
+  @done ~r/\b(sent|saved|published|is live|added|removed|placed|thank you|thanks for your order|order number|updated|deleted|your cart|your basket|your trolley|booked|reserved|received|renewed)\b/i
   @failure ~r/\b(error|failed|could not|couldn'?t|may not have|bad gateway|rejected)\b/i
 
   @claims [:claim_1, :claim_2, :claim_3, :claim_4, :claim_5, :claim_6]
@@ -39,6 +42,14 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDecider do
   def decide(state, questions) do
     {:ok,
      Map.new(questions, fn
+       {:pick, %{type: :choice}} ->
+         {:pick,
+          %{
+            choice: :need_more_evidence,
+            probabilities: %{need_more_evidence: 1.0},
+            confidence: 1.0
+          }}
+
        {key, %{type: :choice, options: options}} ->
          first = options |> Map.keys() |> Enum.sort_by(&to_string/1) |> hd()
          {key, %{choice: first, probabilities: %{first => 1.0}, confidence: 1.0}}
@@ -81,7 +92,9 @@ defmodule TinyAxe.Browser.TaskEval.ScriptedDecider do
 
   defp p(:shows_error, state), do: if(pages(state) =~ @failure, do: 0.9, else: 0.0)
 
-  defp p(_key, _state), do: 0.0
+  defp p(key, _state) do
+    if String.starts_with?(Atom.to_string(key), "fits_"), do: 0.5, else: 0.0
+  end
 
   # The pages a verification was shown: as it is now, and right after the action.
   defp pages(state) do

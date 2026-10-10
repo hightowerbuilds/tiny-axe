@@ -757,6 +757,10 @@ defmodule TinyAxe.TUI do
        when d in [:refused, :denied, :failed],
        do: add_meta(state, "✗ #{tool}: #{why}")
 
+  defp apply_event({:tool_result, %{decision: :advised, tool: tool}}, state),
+    do:
+      add_meta(state, "↺ #{tool}: held once, tiny-axe's candidate check suggests another element")
+
   defp apply_event({:tool_result, _}, state), do: state
 
   defp apply_event({:tool_limit, %{reason: why}}, state),

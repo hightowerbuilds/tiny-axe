@@ -9,12 +9,16 @@ defmodule TinyAxe.Tools.Journal do
   policy, question and evidence versions, what answered, the answers, the
   disposition and its reason codes, and the call's result. Its `kind` says
   what it decided: `assess` (`TinyAxe.Tools.BrowserPolicy`), `verify` (an
-  outcome, with the action and verification it belongs to) or `completion`
+  outcome, with the action and verification it belongs to), `completion`
   (whether an answer claims what wasn't confirmed;
-  `TinyAxe.Browser.Outcomes`). A call's entry lists its decisions' ids, the
+  `TinyAxe.Browser.Outcomes`) or `choose` (which of several similar
+  elements fits, with its choice and how it was asked for;
+  `TinyAxe.Browser.Choices`). A call's entry lists its decisions' ids, the
   record of the action it took (`action`: its id, status and reason codes),
-  and for `browser_verify`, the verification; the completion check is an
-  entry of its own (`tiny-axe/completion`). The newest 50 tasks are kept.
+  for `browser_verify`, the verification, and for `browser_choose` or a
+  click the gate checked first, the choice (`choice`) and any hint it held
+  the click with (`hint`); the completion check is an entry of its own
+  (`tiny-axe/completion`). The newest 50 tasks are kept.
   """
 
   @keep 50

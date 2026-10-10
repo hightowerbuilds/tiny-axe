@@ -10,6 +10,9 @@ defmodule TinyAxe.Browser.TaskEval.User do
     * matches `approve` — approved; a step the user asked for
     * matches `safe` — approved, and counted as unnecessary: the action has
       no effect outside the browser, so asking was a burden
+    * matches `safe_nav` and is a click on a link or a GET form's button —
+      the same, for tasks whose sites only navigate on those (a "Continue"
+      that opens the next page, a "Report a problem" link)
     * anything else — refused
     * a handoff ("your turn in the browser") — refused: this user never
       takes over
@@ -44,6 +47,11 @@ defmodule TinyAxe.Browser.TaskEval.User do
       |> Enum.filter(&is_binary/1)
       |> Enum.join(" · ")
 
+    # A click that only opens another page: a link, or a GET form's button.
+    navigates =
+      ask.tool =~ "browser_click" and is_map(target) and
+        (is_binary(target["href"]) or get_in(target, ["form", "method"]) == "get")
+
     {reply, bucket} =
       cond do
         ask.class == :handoff -> {:deny, :handoff}
@@ -51,6 +59,7 @@ defmodule TinyAxe.Browser.TaskEval.User do
         ask[:repeat] == true -> {:deny, :declined}
         matches?(task[:approve], shown) -> {:once, :necessary}
         matches?(task[:safe], shown) -> {:once, :unnecessary}
+        navigates and matches?(task[:safe_nav], shown) -> {:once, :unnecessary}
         true -> {:deny, :declined}
       end
 

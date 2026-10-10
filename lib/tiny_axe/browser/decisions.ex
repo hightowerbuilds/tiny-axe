@@ -4,8 +4,10 @@ defmodule TinyAxe.Browser.Decisions do
   action, whether the agent asked first (the gate-owned `browser_assess`
   tool) or called the action directly, and for verifying what an action
   came to (the gate-owned `browser_verify` tool, and the completion check
-  before an answer reaches the user; see `TinyAxe.Browser.Outcomes`). A
-  later phase adds choosing among candidates here.
+  before an answer reaches the user; see `TinyAxe.Browser.Outcomes`), and
+  for choosing among similar candidates (the gate-owned `browser_choose`
+  tool, and the gate's own check before an ambiguous click; see
+  `TinyAxe.Browser.Choices`), which is advice only.
 
   An assessment classes the action with `TinyAxe.Tools.BrowserPolicy` and its
   fixed questions, then binds the result to what it judged: the task, its
@@ -42,7 +44,7 @@ defmodule TinyAxe.Browser.Decisions do
   """
 
   alias TinyAxe.Browser
-  alias TinyAxe.Browser.{Evidence, Outcomes}
+  alias TinyAxe.Browser.{Choices, Evidence, Outcomes}
   alias TinyAxe.Tools.{BrowserPolicy, Redact}
 
   @schema "browser-assessment/1"
@@ -61,7 +63,8 @@ defmodule TinyAxe.Browser.Decisions do
   @acts ~w(browser_click browser_type browser_fill_form browser_select_option browser_press_key
            browser_handle_dialog browser_file_upload)
 
-  @doc "The gate-owned tools this module answers."
+  @doc "The gate-owned tools this module answers (`browser_choose` only while choosing is on)."
+  def owns?("browser_choose"), do: Choices.mode() == :on
   def owns?(name), do: name in @tools
 
   @doc "Their MCP definitions, offered to tasks that have a browser."
@@ -122,7 +125,7 @@ defmodule TinyAxe.Browser.Decisions do
         },
         "annotations" => %{"readOnlyHint" => true}
       }
-    ]
+    ] ++ if(Choices.mode() == :on, do: [Choices.definition()], else: [])
   end
 
   @doc "The same short instructions for every driver whose task has a browser."
@@ -135,7 +138,27 @@ defmodule TinyAxe.Browser.Decisions do
       "look more closely or use browser_handoff. After an action that sends, saves or buys " <>
       "something, check it worked with browser_verify (the action id from its result, and what " <>
       "the page should show); tell the user only what was confirmed. If an outcome is " <>
-      "unresolved, never repeat the action: verify it or tell the user."
+      "unresolved, never repeat the action: verify it or tell the user." <>
+      if(Choices.mode() == :on, do: " " <> choose_instructions(), else: "")
+  end
+
+  # The same short workflow and examples for every driver, while choosing is on.
+  defp choose_instructions do
+    "When several elements could be the one you need (several \"Add to cart\", \"Book\", " <>
+      "\"Add\" or \"Continue\" buttons, near-identical listings, sponsored results, options " <>
+      "chosen by default), call browser_choose with their refs, the observation id and your " <>
+      "current step. It answers chosen (with a ref), none, need_more_evidence or handoff; it's " <>
+      "advice and approves nothing. " <>
+      if(Choices.hints?(),
+        do:
+          "tiny-axe may also hold a click with a choose_hint: nothing was done; act on the " <>
+            "suggested ref, or repeat the call only if you're sure. ",
+        else: ""
+      ) <>
+      "Examples: stale_target → take a fresh snapshot and use its refs (a repair, not a retry). " <>
+      "The user said no → don't try it another way; tell the user. browser_choose says none → " <>
+      "look elsewhere (next page, a search) or tell the user it isn't there. need_more_evidence → " <>
+      "open the item's page or use browser_extract, then choose again. chosen e45 → act on e45."
   end
 
   @doc """
@@ -344,6 +367,11 @@ defmodule TinyAxe.Browser.Decisions do
 
   @doc "The completion check on an answer; see `TinyAxe.Browser.Outcomes.completion/3`."
   defdelegate completion(records, reply, opts), to: Outcomes
+
+  ## Choosing (TinyAxe.Browser.Choices)
+
+  @doc "Chooses among candidate elements; see `TinyAxe.Browser.Choices.choose/2`."
+  defdelegate choose(request, opts), to: Choices
 
   defdelegate unresolved_keys(records), to: Outcomes
   defdelegate unverified(records), to: Outcomes

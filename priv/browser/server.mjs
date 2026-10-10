@@ -355,7 +355,28 @@ async function inspect(p, ref) {
     const contextText = (clone.textContent || "").replace(/\s+/g, " ").trim();
     const label = el.getAttribute("aria-label") || [...(el.labels || [])].map(l => l.innerText).join(" ") ||
       el.innerText || (el.type === "submit" ? el.value : "") || el.title || "";
+    // The row it sits in, for choosing among similar controls: the smallest
+    // enclosing element with text of its own beyond the control's (a list
+    // item, a table row, a card), short of the page's main region; no field
+    // values.
+    const words = (node) => {
+      const c = node.cloneNode(true);
+      c.querySelectorAll("input, textarea, select, script, style").forEach((n) => n.remove());
+      const walk = document.createTreeWalker(c, NodeFilter.SHOW_TEXT);
+      const parts = [];
+      while (walk.nextNode()) parts.push(walk.currentNode.nodeValue);
+      return parts.join(" ").replace(/\s+/g, " ").trim();
+    };
+    const own = words(el);
+    let row = null;
+    for (let n = el.parentElement; n && !n.matches("body, main, [role=main]"); n = n.parentElement) {
+      const t = words(n);
+      if (t.replace(own, "").trim().length >= 8) { row = t; break; }
+    }
+    const pressed = el.getAttribute("aria-pressed");
     return {
+      row: row ? row.slice(0, 300) : null,
+      checked: ["checkbox", "radio"].includes(el.type) ? el.checked : (pressed === null ? null : pressed === "true"),
       tag: el.tagName.toLowerCase(),
       type: el.type || "",
       role: el.getAttribute("role") || "",
@@ -379,7 +400,7 @@ async function inspect(p, ref) {
     };
   }, SENSITIVE, { timeout: 5000 });
   return {
-    ...info, text: redact(info.text), context: redact(info.context), dialog: null,
+    ...info, text: redact(info.text), context: redact(info.context), row: info.row && redact(info.row), dialog: null,
     observation: observation(p), signature: signature(info),
   };
 }

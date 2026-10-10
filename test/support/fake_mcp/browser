@@ -9,8 +9,13 @@
 # ("bad_gateway") or a 400 ("rejected"); with no outcome set it reports
 # nothing.
 #
+# A test can add candidates beside e1 (fake_page `candidates`: ref, label,
+# row, and optionally disabled or sensitive): similar buttons in rows of a
+# results list, each with its own signature, for choosing among them.
+#
 # Tools:
 #   browser_snapshot   read-only: the page, with its observation id
+#   browser_extract    read-only: the page's text, with the candidates' rows
 #   browser_click      clicks e1, unless the expected target changed
 #   browser_inspect    what e1 is, with its signature and the observation id
 #   browser_release    a task's tabs are freed
@@ -25,11 +30,12 @@ defmodule FakeBrowser do
   def tools do
     [
       tool("browser_snapshot", %{}, %{readOnlyHint: true}),
+      tool("browser_extract", %{}, %{readOnlyHint: true}),
       tool("browser_click", %{element: %{type: "string"}, ref: %{type: "string"}}, %{readOnlyHint: false, openWorldHint: true}, ["ref"]),
       tool("browser_inspect", %{ref: %{type: "string"}}, %{readOnlyHint: true}),
       tool("browser_release", %{}, %{readOnlyHint: true}),
       tool("browser_observe", %{action: %{type: "string"}}, %{readOnlyHint: true}),
-      tool("fake_page", %{label: %{type: "string"}, observation: %{type: "string"}, outcome: %{type: "string"}, text: %{type: "string"}, observe: %{type: "string"}}, %{readOnlyHint: true}),
+      tool("fake_page", %{label: %{type: "string"}, observation: %{type: "string"}, outcome: %{type: "string"}, text: %{type: "string"}, observe: %{type: "string"}, candidates: %{type: "array"}}, %{readOnlyHint: true}),
       tool("fake_log", %{}, %{readOnlyHint: true})
     ]
   end
@@ -42,6 +48,15 @@ defmodule FakeBrowser do
   def error(id, t), do: emit(%{jsonrpc: "2.0", id: id, result: %{isError: true, content: [%{type: "text", text: t}]}})
 
   defp signature(state), do: "sig-" <> Base.encode16(:crypto.hash(:sha256, state.label), case: :lower) |> binary_part(0, 12)
+
+  defp signature(state, "e1"), do: signature(state)
+
+  defp signature(state, ref) do
+    case state.cands[ref] do
+      nil -> nil
+      c -> "sig-" <> (Base.encode16(:crypto.hash(:sha256, ref <> c["label"] <> c["row"]), case: :lower) |> binary_part(0, 12))
+    end
+  end
 
   def loop(state) do
     case IO.gets("") do
@@ -76,19 +91,42 @@ defmodule FakeBrowser do
   end
 
   defp call("browser_snapshot", id, args, state) do
-    text(id, "Page: #{@page} · Item · observation #{state.observation}\n\n- button \"#{state.label}\" [ref=e1]")
+    rows =
+      for {ref, c} <- Enum.sort(state.cands), into: "" do
+        "\n- listitem [ref=r#{ref}]:\n  - text: #{c["row"]}\n  - button \"#{c["label"]}\"#{if c["disabled"], do: " [disabled]", else: ""} [ref=#{ref}]"
+      end
+
+    text(id, "Page: #{@page} · Item · observation #{state.observation}\n\n- button \"#{state.label}\" [ref=e1]" <> rows)
     log(state, :snapshots, args)
   end
 
+  defp call("browser_extract", id, args, state) do
+    rows = for {_ref, c} <- Enum.sort(state.cands), do: c["row"]
+    text(id, "Page: #{@page}\n\n#{state.text}\n" <> Enum.join(rows, "\n"))
+    log(state, :extracts, args)
+  end
+
   defp call("browser_inspect", id, args, state) do
-    if args["ref"] == "e1" do
+    cand = state.cands[args["ref"]]
+
+    cond do
+      cand ->
+        text(id, JSON.encode!(%{
+          tag: if(cand["sensitive"], do: "input", else: "button"), type: if(cand["sensitive"], do: "password", else: "submit"),
+          role: "", text: cand["label"], isSubmit: false, href: nil, sensitive: cand["sensitive"] == true,
+          page: @page, context: "Results. #{cand["row"]}", row: cand["row"], dialog: nil,
+          observation: state.observation, signature: signature(state, args["ref"])
+        }))
+
+      args["ref"] == "e1" ->
       text(id, JSON.encode!(%{
         tag: "button", type: "submit", role: "", text: state.label, isSubmit: false, href: nil,
         page: @page, context: "Item page. #{state.label}", dialog: nil,
         observation: state.observation, signature: signature(state)
       }))
-    else
-      error(id, "no element #{args["ref"]}")
+
+      true ->
+        error(id, "no element #{args["ref"]}")
     end
 
     log(state, :inspects, args)
@@ -100,7 +138,7 @@ defmodule FakeBrowser do
     stale =
       is_map(expect) and
         ((expect["observation"] && expect["observation"] != state.observation) or
-           Enum.any?(expect["targets"] || %{}, fn {_ref, sig} -> sig != signature(state) end))
+           Enum.any?(expect["targets"] || %{}, fn {ref, sig} -> sig != signature(state, ref) end))
 
     if stale do
       error(id, "stale_target: e1 isn't the element tiny-axe checked any more, so nothing was done")
@@ -108,7 +146,8 @@ defmodule FakeBrowser do
     else
       action = args["_tinyaxe_action"]
       report = action && state.outcome && report(action, state)
-      result = %{content: [%{type: "text", text: "clicked #{state.label}"}]}
+      label = if state.cands[args["ref"]], do: state.cands[args["ref"]]["label"], else: state.label
+      result = %{content: [%{type: "text", text: "clicked #{label}"}]}
       result = if report, do: Map.put(result, :_tinyaxe, %{action: report}), else: result
       emit(%{jsonrpc: "2.0", id: id, result: result})
       state = if report, do: put_in(state, [:actions, action], report), else: state
@@ -142,12 +181,17 @@ defmodule FakeBrowser do
         observation: args["observation"] || state.observation,
         outcome: Map.get(args, "outcome", state.outcome),
         text: args["text"] || state.text,
-        observe: Map.get(args, "observe", state.observe)
+        observe: Map.get(args, "observe", state.observe),
+        cands:
+          if(is_list(args["candidates"]),
+            do: Map.new(args["candidates"], &{&1["ref"], &1}),
+            else: state.cands
+          )
     }
   end
 
   defp call("fake_log", id, _args, state) do
-    text(id, JSON.encode!(Map.take(state, [:clicks, :inspects, :releases, :stale, :snapshots, :observes])))
+    text(id, JSON.encode!(Map.take(state, [:clicks, :inspects, :releases, :stale, :snapshots, :observes, :extracts])))
     state
   end
 
@@ -182,5 +226,5 @@ end
 IO.puts(:stderr, "fake browser server starting")
 FakeBrowser.loop(%{
   label: "⚙", observation: "obs-fake-1", outcome: nil, text: "Item page.", observe: nil, actions: %{},
-  clicks: [], inspects: [], releases: [], stale: [], snapshots: [], observes: []
+  cands: %{}, clicks: [], inspects: [], releases: [], stale: [], snapshots: [], observes: [], extracts: []
 })

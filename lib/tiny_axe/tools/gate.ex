@@ -31,6 +31,13 @@ defmodule TinyAxe.Tools.Gate do
        `browser_verify` tool checks an outcome against a fresh look at the
        page, and `complete/2` checks an agent's answer against the records
        before it reaches the user (`{:outcome, ...}`, `{:completion, ...}`)
+    7. **choice** — while choosing is on, the gate-owned `browser_choose`
+       tool says which of several similar elements fits the request
+       (`TinyAxe.Browser.Choices`). In shadow, or on with hints, a click on
+       a control whose label other controls on the page share is first
+       checked the same way: recorded, and with hints, held once with a
+       `choose_hint` when its target clearly doesn't fit. Advice only:
+       nothing it says runs or approves anything
 
   Each task leases its own browser tabs (`TinyAxe.Browser.bind/3`); closing
   the task frees them for the next one.
@@ -44,7 +51,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{Browser, MCP, Purchases, Tools}
-  alias TinyAxe.Browser.{Decisions, Outcomes}
+  alias TinyAxe.Browser.{Choices, Decisions, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
@@ -89,7 +96,10 @@ defmodule TinyAxe.Tools.Gate do
         floors: %{},
         leased: MapSet.new(),
         # What its browser actions came to (Outcomes), newest first.
-        actions: []
+        actions: [],
+        # The gate's own candidate checks before ambiguous clicks, by server,
+        # observation and target signature: :held (shown once) or :passed.
+        candidate_checks: %{}
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -137,7 +147,8 @@ defmodule TinyAxe.Tools.Gate do
 
   @doc """
   The tools a task may use, as MCP tool definitions: its servers' tools, and
-  with a browser, the gate's own `browser_assess` and `browser_verify`.
+  with a browser, the gate's own `browser_assess` and `browser_verify` (and
+  `browser_choose` while choosing is on).
   """
   @spec tools(map()) :: [map()]
   def tools(task) do
@@ -191,6 +202,7 @@ defmodule TinyAxe.Tools.Gate do
 
     assessment = judged[:assessment]
     verification = judged[:verification]
+    choice = judged[:choice]
     {result, report} = take_report(result)
     action = settle(task, tool, args, assessment, decision, result, report)
     result = result |> note(action) |> Redact.result()
@@ -209,6 +221,11 @@ defmodule TinyAxe.Tools.Gate do
           []
       end
 
+    traced =
+      if choice,
+        do: traced ++ trace(task.id, choice.decisions, "browser_choose", decision, error),
+        else: traced
+
     Tools.Journal.append(task.id, %{
       tool: name,
       args: Redact.deep(args),
@@ -218,6 +235,8 @@ defmodule TinyAxe.Tools.Gate do
       assessment: Decisions.journal(assessment),
       action: Outcomes.journal(action),
       verification: Outcomes.journal_verification(verification),
+      choice: Choices.journal(choice),
+      hint: judged[:hint],
       decisions: traced,
       ms: ms
     })
@@ -354,6 +373,17 @@ defmodule TinyAxe.Tools.Gate do
             {:read, nil, Map.put(task, :verification, verify(task, record, claim, :agent))}
         end
 
+      gate?(tool) and tool.name == "browser_choose" ->
+        case Choices.refs(args["candidates"]) do
+          {:error, why} ->
+            {:refused, why, task}
+
+          {:ok, refs} ->
+            server = Enum.find_value(MCP.tools(task.servers), &(browser?(&1) && &1.server))
+            choice = choose(task, server, refs, :agent, args)
+            {:read, nil, Map.put(task, :choice, choice)}
+        end
+
       gate?(tool) ->
         name = Decisions.listed_name(args["tool"])
         target = Enum.find(MCP.tools(task.servers), &(&1.name == name))
@@ -385,7 +415,15 @@ defmodule TinyAxe.Tools.Gate do
              do: release(task, assessment) && assess(task, tool, args, :execute, %{}),
              else: assessment
 
-        {assessment.class, assessment.reason, Map.put(task, :assessment, assessment)}
+        {assessment, choice, hint} = check_candidates(task, tool, args, assessment)
+
+        task =
+          task
+          |> Map.put(:assessment, assessment)
+          |> Map.put(:choice, choice)
+          |> Map.put(:hint, hint)
+
+        {assessment.class, assessment.reason, task}
 
       true ->
         {Policy.classify(tool.definition, tool.policy), nil, task}
@@ -446,6 +484,76 @@ defmodule TinyAxe.Tools.Gate do
          {:ok, meta} <- JSON.decode(json) do
       meta
     else
+      _ -> nil
+    end
+  end
+
+  ## Choosing (TinyAxe.Browser.Choices)
+
+  # One choice among elements on the task's tab, looked at afresh.
+  defp choose(task, server, refs, mode, args, target \\ nil) do
+    Decisions.choose(
+      %{
+        task: task.id,
+        server: server,
+        mode: mode,
+        refs: refs,
+        target: target,
+        observation: args["observation_id"],
+        subgoal: args["subgoal"]
+      },
+      inspect: &look_at(task, server, &1),
+      more: fn -> extract(task, server) end,
+      context: %{objective: Map.get(task, :objective), intent: Map.get(task, :intent)}
+    )
+  end
+
+  # Before a click on a control whose label others on the page share: the
+  # same choice, made by the gate, once per target and observation. In
+  # shadow it's only recorded; on with hints, a target that clearly doesn't
+  # fit is held once (nothing runs, no action record), and repeating the
+  # call goes ahead with the usual checks. Never for a refused, purchase or
+  # handoff class: those keep their own paths.
+  defp check_candidates(task, tool, args, assessment) do
+    ref = args["ref"]
+    key = {tool.server, assessment.binding.observation, assessment.binding.targets[ref]}
+
+    with true <- Choices.checks?(),
+         true <- tool.tool == "browser_click" and is_binary(ref),
+         true <- assessment.class in [:local, :outward],
+         false <- GenServer.call(__MODULE__, {:checked?, task.id, key}),
+         [_, _ | _] = refs <- similar(task, tool.server, ref) do
+      mode = if Choices.mode() == :on, do: :hint, else: :shadow
+      choice = choose(task, tool.server, refs, mode, %{}, ref)
+      hint = if mode == :hint, do: Choices.hint(choice, ref)
+
+      :ok =
+        GenServer.call(__MODULE__, {:checked, task.id, key, if(hint, do: :held, else: :passed)})
+
+      if hint,
+        do: {%{assessment | action_id: nil}, choice, hint},
+        else: {assessment, choice, nil}
+    else
+      _ -> {assessment, nil, nil}
+    end
+  end
+
+  # The controls on the task's tab that share the target's role and name.
+  defp similar(task, server, ref) do
+    with {:ok, %{"content" => content} = result} <-
+           MCP.call(server, "browser_snapshot", Browser.bind(%{}, task.id), 30_000),
+         false <- result["isError"] == true do
+      content |> Enum.map_join("\n", &(&1["text"] || "")) |> Choices.similar(ref)
+    else
+      _ -> []
+    end
+  end
+
+  # The page's readable text, for a choice that needs more evidence.
+  defp extract(task, server) do
+    case MCP.call(server, "browser_extract", Browser.bind(%{}, task.id), 30_000) do
+      {:ok, %{"isError" => true}} -> nil
+      {:ok, %{"content" => content}} -> Enum.map_join(content, "\n", &(&1["text"] || ""))
       _ -> nil
     end
   end
@@ -655,6 +763,13 @@ defmodule TinyAxe.Tools.Gate do
   # verification; nothing runs.
   defp decide(%{verification: v}, %{policy: %{"gate" => true}}, _args, _class, _allowed),
     do: {:ran, Decisions.verification_result(v)}
+
+  defp decide(%{choice: %{} = c}, %{policy: %{"gate" => true}}, _args, _class, _allowed),
+    do: {:ran, Choices.result(c)}
+
+  # Held once by the gate's own candidate check: nothing runs.
+  defp decide(%{hint: %{} = hint}, _tool, _args, _class, _allowed),
+    do: {:advised, Choices.hint_result(hint)}
 
   defp decide(task, %{policy: %{"gate" => true}}, _args, _class, _allowed),
     do: {:ran, Decisions.result(task.assessment)}
@@ -1258,6 +1373,18 @@ defmodule TinyAxe.Tools.Gate do
         end
     end
   end
+
+  def handle_call({:checked?, id, key}, _from, tasks),
+    do: {:reply, tasks[id] != nil and Map.has_key?(tasks[id].candidate_checks, key), tasks}
+
+  def handle_call({:checked, id, key, verdict}, _from, tasks),
+    do:
+      {:reply, :ok,
+       update_task(
+         tasks,
+         id,
+         &%{&1 | candidate_checks: Map.put(&1.candidate_checks, key, verdict)}
+       )}
 
   def handle_call({:assessed, id, assessment}, _from, tasks),
     do: {:reply, :ok, update_task(tasks, id, &Map.merge(&1, Decisions.remember(&1, assessment)))}

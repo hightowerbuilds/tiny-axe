@@ -88,6 +88,15 @@ config :tiny_axe, :browser,
   enabled: true,
   headless: true
 
+# Choosing among similar elements on a page (TinyAxe.Browser.Choices), advice
+# only: it never runs or approves anything. :off; :shadow (the gate checks
+# clicks on controls whose label others on the page share, and only records
+# what it would advise; browser_choose isn't offered); or :on (browser_choose
+# is offered, and with :browser_choose_hints the gate holds such a click once
+# when its target clearly doesn't fit, saying which one does). Phase 4's
+# measurements and why the default is what it is: docs/plan-browser-decisions-and-learning.md.
+config :tiny_axe, browser_choose: :shadow, browser_choose_hints: true
+
 # Purchases (TinyAxe.Purchases): off until the user turns them on. The agent
 # can only buy at a checkout tiny-axe reads itself, within these limits, after
 # the user types the exact total.

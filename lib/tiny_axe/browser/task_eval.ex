@@ -50,7 +50,10 @@ defmodule TinyAxe.Browser.TaskEval do
 
   `opts`: `:driver` (above; default `{:agent, configured agent}`),
   `:decider` (the module that answers; default the configured one),
-  `:repeat` (1), `:max_jev_calls` (300), `:max_tasks` (40), `:browser`
+  `:repeat` (1), `:max_jev_calls` (300), `:max_tasks` (40), `:choose`
+  (`:off`, `:shadow` or `:on`; default the configured
+  `TinyAxe.Browser.Choices.mode/0`) and `:choose_hints` (whether the
+  gate's own candidate check is shown, when on), `:browser`
   (start a browser per task; default true), `:preflight` (check the decider
   and the browser before the first task; default true), `:max_minutes` (per
   task, 10), and `:on_result` (called with each record as it's made).
@@ -117,6 +120,7 @@ defmodule TinyAxe.Browser.TaskEval do
         schema: "browser-task-eval/1",
         driver: driver_label(driver),
         decider: backend(inner),
+        choose: %{mode: TinyAxe.Browser.Choices.mode(), hints: TinyAxe.Browser.Choices.hints?()},
         repeat: repeat,
         planned: length(planned),
         ran: length(results),
@@ -242,6 +246,7 @@ defmodule TinyAxe.Browser.TaskEval do
         driver_failure: driver_failure(error, events),
         budget_exhausted: Budget.exhausted?() and Budget.used() >= Budget.max(),
         decisions: decisions(root),
+        choices: choices(root),
         efficiency: %{
           wall_ms: wall_ms,
           jev_calls: agent_calls,
@@ -349,11 +354,17 @@ defmodule TinyAxe.Browser.TaskEval do
     |> Enum.flat_map(&(File.read!(&1) |> String.split("\n", trim: true)))
     |> Enum.map(&JSON.decode!/1)
     |> Enum.map(fn d ->
-      # Verifications and completion checks keep what the decider was shown
-      # and answered, so their questions can be reviewed after a run.
+      # Verifications, completion checks and choices keep what the decider
+      # was shown and answered, so their questions can be reviewed after a run.
       kept =
-        if d["kind"] in ["verify", "completion"],
-          do: %{evidence: d["evidence"], answers: d["answers"], action_id: d["action_id"]},
+        if d["kind"] in ["verify", "completion", "choose"],
+          do: %{
+            evidence: d["evidence"],
+            answers: d["answers"],
+            action_id: d["action_id"],
+            choice_id: d["choice_id"],
+            choice_mode: d["choice_mode"]
+          },
           else: %{}
 
       Map.merge(kept, %{
@@ -368,6 +379,34 @@ defmodule TinyAxe.Browser.TaskEval do
         result: d["result"]
       })
     end)
+  end
+
+  # What the task's choices came to, from its call journal: those the agent
+  # asked for, the gate's own checks (shown as hints, or only recorded),
+  # and each one's result.
+  defp choices(root) do
+    entries =
+      Path.wildcard(Path.join([root, "state", "tasks", "*", "calls.jsonl"]))
+      |> Enum.flat_map(&(File.read!(&1) |> String.split("\n", trim: true)))
+      |> Enum.map(&JSON.decode!/1)
+      |> Enum.filter(&is_map(&1["choice"]))
+
+    %{
+      agent: Enum.count(entries, &(&1["choice"]["mode"] == "agent")),
+      checks: Enum.count(entries, &(&1["choice"]["mode"] in ["hint", "shadow"])),
+      held: Enum.count(entries, &is_map(&1["hint"])),
+      results:
+        Enum.map(entries, fn e ->
+          %{
+            mode: e["choice"]["mode"],
+            result: e["choice"]["result"],
+            target: e["choice"]["target"],
+            chosen: e["choice"]["chosen"],
+            held: is_map(e["hint"]),
+            codes: e["choice"]["reason_codes"]
+          }
+        end)
+    }
   end
 
   ## The run
@@ -426,7 +465,8 @@ defmodule TinyAxe.Browser.TaskEval do
   end
 
   # Settings for the run only, put back afterwards.
-  @env ~w(decider purchases purchases_config state_dir tools agent_timeout models)a
+  @env ~w(decider purchases purchases_config state_dir tools agent_timeout models
+           browser_choose browser_choose_hints)a
 
   defp save_env, do: Map.new(@env, &{&1, Application.fetch_env(:tiny_axe, &1)})
 
@@ -441,6 +481,11 @@ defmodule TinyAxe.Browser.TaskEval do
 
   defp configure(opts) do
     Application.put_env(:tiny_axe, :decider, Budget)
+
+    if opts[:choose], do: Application.put_env(:tiny_axe, :browser_choose, opts[:choose])
+
+    if is_boolean(opts[:choose_hints]),
+      do: Application.put_env(:tiny_axe, :browser_choose_hints, opts[:choose_hints])
 
     # Fixture orders only: no cards (the shops' "saved" cards are page text),
     # limits as shipped.
@@ -564,6 +609,11 @@ defmodule TinyAxe.Browser.TaskEval do
         recovered: Enum.count(failing, & &1.recovery.recovered),
         repeated_refusals: sum.(& &1.recovery.repeated_refusals),
         duplicate_effects: sum.(& &1.recovery.duplicate_effects)
+      },
+      choices: %{
+        agent: sum.(&(&1[:choices][:agent] || 0)),
+        checks: sum.(&(&1[:choices][:checks] || 0)),
+        held: sum.(&(&1[:choices][:held] || 0))
       },
       efficiency: %{
         tool_calls: sum.(& &1.tool_calls),
