@@ -1,6 +1,8 @@
 # Plan for the know-how graph
 
-Status (2026-10-09): planned, nothing built. This runs alongside
+Status (2026-10-09): G0 built: the format is in
+[vault-format.md](vault-format.md), with a fixture vault, `TinyAxe.Vault.Format`
+and the viewer's reader (`graph/`), each tested against it. G1 onward pending. This runs alongside
 [the browser decisions and learning plan](plan-browser-decisions-and-learning.md)
 (Phases 2–5 in progress there) and reads what that work records. It never
 changes the gate, the browser policy or the purchase controls.
@@ -221,8 +223,8 @@ button moves between them.
   graphs, and `three-spritetext` for labels. `marked` renders Markdown and
   `DOMPurify` cleans it, since labels come from web pages.
 - **Where it lives**: source in `graph/` at the repo root (its own
-  `package.json`, `tsconfig.json`, tests with Vitest). Built output and the
-  server go to `priv/graph/`, so the release carries them and works offline.
+  `package.json`, `tsconfig.json`, tests with Node's own test runner).
+  Built output and the server go to `priv/graph/`, so the release carries them and works offline.
   `mix tiny_axe.install` runs the build.
 
 ## Workflows

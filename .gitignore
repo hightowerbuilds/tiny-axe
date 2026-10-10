@@ -24,3 +24,6 @@ tiny_axe-*.tar
 
 /log/
 .env
+
+# The graph viewer's packages (graph/).
+/graph/node_modules/

@@ -1,0 +1,10 @@
+{
+  "name": "tiny-axe-graph",
+  "private": true,
+  "description": "The know-how graph viewer for tiny-axe (see docs/plan-knowledge-graph.md)",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  }
+}
