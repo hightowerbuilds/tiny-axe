@@ -21,6 +21,10 @@ defmodule TinyAxe.TUI do
   Chats (`TUI.Chats`): `/new` starts another chat while the one left keeps
   working, `/chats` lists them, `/chat N` switches, `/chat close` closes an
   idle one. Questions from any chat show up wherever you are.
+
+  History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
+  `/history` lists the recent ones, `/history N` reopens one, `/history words`
+  finds them. The website (`tiny-axe graph`) shows all of them under Chats.
   """
 
   use ExRatatui.App
@@ -31,6 +35,7 @@ defmodule TinyAxe.TUI do
   alias TinyAxe.{Context, Files}
 
   alias TinyAxe.TUI.{
+    ChatHistory,
     Chats,
     CommandWorkflow,
     CompactionWorkflow,
@@ -85,6 +90,10 @@ defmodule TinyAxe.TUI do
        history: saved.history,
        # What the transcript shows: {:user | :assistant | :meta, text}
        transcript: saved.transcript ++ restored ++ startup,
+       # This chat's id in the history (TinyAxe.History).
+       saved_as: saved[:saved_as] || TinyAxe.History.new_id(),
+       # The chats the last /history listed, by number (TinyAxe.TUI.ChatHistory).
+       history_shown: [],
        streaming: nil,
        pending_prompt: nil,
        # Transcript index where the current attempt's meta lines start.
@@ -374,6 +383,8 @@ defmodule TinyAxe.TUI do
        | history: [],
          transcript: [],
          summary: nil,
+         # A cleared chat starts afresh in the history too.
+         saved_as: TinyAxe.History.new_id(),
          pending_edits: [],
          scroll: :bottom,
          status: "cleared"
@@ -382,7 +393,7 @@ defmodule TinyAxe.TUI do
 
   # Chat commands work while this chat is busy too: that's when they're wanted.
   defp on_event(%Event.Key{code: "enter", modifiers: []}, state),
-    do: Chats.submit(state) || submit(state)
+    do: Chats.submit(state) || ChatHistory.submit(state) || submit(state)
 
   defp on_event(%Event.Key{code: "enter"}, state) do
     ExRatatui.textarea_handle_key(state.input, "enter", [])

@@ -83,7 +83,10 @@ test("graph_open hands back a working link, reused until graph_close", async () 
   assert.equal(mcp.stdout.length, 2);
   assert.deepEqual(tools.map((t: { name: string }) => t.name), ["graph_open", "graph_close"]);
   for (const t of tools) assert.deepEqual(t.annotations, { readOnlyHint: true, openWorldHint: false });
-  assert.deepEqual(tools[0].inputSchema.properties, { focus: { type: "string" } });
+  assert.deepEqual(tools[0].inputSchema.properties, {
+    focus: { type: "string" },
+    page: { type: "string", enum: ["graph", "chats"] },
+  });
   assert.match(tools[0].description, /never opens a browser/);
 
   const opened = await mcp.tool("graph_open", { focus: "shop.example" });
@@ -92,6 +95,12 @@ test("graph_open hands back a working link, reused until graph_close", async () 
   const [, port, token] = url.match(URL_LINE)!;
   assert.equal(url, `http://127.0.0.1:${port}/?focus=shop.example&t=${token}`);
   assert.match(human, /on this computer only/);
+
+  // The chats page, on the same server and key.
+  const chats = await mcp.tool("graph_open", { page: "chats" });
+  assert.equal(chats.text.split("\n")[0], `http://127.0.0.1:${port}/chats?t=${token}`);
+  const toChats = await fetch(chats.text.split("\n")[0], { redirect: "manual" });
+  assert.equal(toChats.headers.get("location"), "/chats");
 
   // The token becomes a cookie and the focus stays in the address.
   const swap = await fetch(url, { redirect: "manual" });

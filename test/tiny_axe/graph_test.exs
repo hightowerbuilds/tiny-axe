@@ -53,13 +53,24 @@ defmodule TinyAxe.GraphTest do
     test "config: node runs it in MCP mode, and both tools are local", %{vault: vault} do
       config = Graph.config()
       assert config["command"] == System.find_executable("node")
-      assert config["args"] == [@fake, "--mcp", "--vault", vault, "--port", "5151"]
+
+      assert config["args"] ==
+               [
+                 @fake,
+                 "--mcp",
+                 "--history",
+                 TinyAxe.History.dir(),
+                 "--vault",
+                 vault,
+                 "--port",
+                 "5151"
+               ]
 
       for tool <- ["graph_open", "graph_close"],
           do: assert(Policy.classify(%{"name" => tool}, config["policy"]) == :local)
 
       Application.put_env(:tiny_axe, :graph, server_js: @fake)
-      assert Graph.config()["args"] == [@fake, "--mcp"]
+      assert Graph.config()["args"] == [@fake, "--mcp", "--history", TinyAxe.History.dir()]
     end
 
     test "\"graph\" is tiny-axe's own: mcp.json can't use it", %{tmp_dir: dir} do

@@ -11,6 +11,7 @@ import { start, type Running } from "./server.ts";
 
 export interface McpOptions {
   vault: string;
+  history: string;
   web: string;
   /** Where to try first; 0 takes any free port. */
   port: number;
@@ -47,7 +48,7 @@ export function serveMcp(options: McpOptions) {
     const last = options.port === 0 ? 0 : Math.min(65535, options.port + MORE_PORTS);
     for (let port = options.port; port <= last; port++) {
       try {
-        return await start({ vault: options.vault, web: options.web, port });
+        return await start({ vault: options.vault, history: options.history, web: options.web, port });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
       }
@@ -58,18 +59,27 @@ export function serveMcp(options: McpOptions) {
   const TOOLS: Record<string, Tool> = {
     graph_open: {
       description:
-        "Get a link to tiny-axe's know-how graph (what it has learned about sites, pages, controls and tasks) " +
-        "to give the user. It never opens a browser: tell the user the link and they open it. " +
+        "Get a link to tiny-axe's know-how website to give the user: the graph of what it has learned about sites, " +
+        "pages, controls and tasks, or with `page: \"chats\"` the history of every chat the user has had with tiny-axe. " +
+        "It never opens a browser: tell the user the link and they open it. " +
         "The page is served on this computer only (127.0.0.1). Give `focus` (a note id) to center the graph on one note.",
-      inputSchema: { type: "object", properties: { focus: { type: "string" } }, required: [] },
+      inputSchema: {
+        type: "object",
+        properties: { focus: { type: "string" }, page: { type: "string", enum: ["graph", "chats"] } },
+        required: [],
+      },
       annotations: ANNOTATIONS,
-      async run({ focus }) {
+      async run({ focus, page }) {
         if (!existsSync(join(options.vault, ".tiny-axe", "vault.json"))) {
           throw new UserError(
             `there's no know-how vault at ${options.vault} yet. tiny-axe writes it as tasks finish; try again after one has.`,
           );
         }
         running ??= await listen();
+        if (page === "chats") {
+          const url = `http://127.0.0.1:${running.port}/chats?t=${running.token}`;
+          return text(`${url}\nEvery chat with tiny-axe is at that address on this computer only. Open it in your browser.`);
+        }
         const query = typeof focus === "string" && focus !== "" ? `focus=${encodeURIComponent(focus)}&` : "";
         const url = `http://127.0.0.1:${running.port}/?${query}t=${running.token}`;
         return text(`${url}\nThe know-how graph is at that address on this computer only. Open it in your browser.`);

@@ -1,6 +1,7 @@
-// `tiny-axe graph`: serves the know-how vault on 127.0.0.1 and prints the
-// address. It doesn't open a browser; the user does. With --mcp it's an MCP
-// server on stdio instead, serving the vault only when a tool asks (mcp.ts).
+// `tiny-axe graph`: serves the know-how vault and the chat history on
+// 127.0.0.1 and prints the address. It doesn't open a browser; the user
+// does. With --mcp it's an MCP server on stdio instead, serving them only
+// when a tool asks (mcp.ts).
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -9,11 +10,15 @@ import { parseArgs } from "node:util";
 import { start } from "./server.ts";
 import { serveMcp } from "./mcp.ts";
 
-const USAGE = `usage: tiny-axe graph [--port PORT] [--vault FOLDER]
-       tiny-axe graph --mcp [--port PORT] [--vault FOLDER]
+const USAGE = `usage: tiny-axe graph [--port PORT] [--vault FOLDER] [--history FOLDER]
+       tiny-axe graph --mcp [--port PORT] [--vault FOLDER] [--history FOLDER]
 
-Serves what tiny-axe knows about the web on http://127.0.0.1:PORT
-(default 4747) and prints the address to open. ctrl+c stops it.
+Serves what tiny-axe knows about the web, and the history of your chats
+with it, on http://127.0.0.1:PORT (default 4747) and prints the address
+to open. ctrl+c stops it.
+
+--vault defaults to \${XDG_DATA_HOME:-~/.local/share}/tiny-axe/vault and
+--history to \${XDG_STATE_HOME:-~/.local/state}/tiny-axe/history.
 
 With --mcp it's an MCP server on stdin/stdout instead (graph_open,
 graph_close): the address is served only once graph_open asks, on PORT
@@ -24,6 +29,12 @@ const DEFAULT_PORT = 4747;
 function defaultVault(): string {
   const data = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
   return join(data, "tiny-axe", "vault");
+}
+
+// Where tiny-axe keeps its chats (TinyAxe.History.dir/0).
+function defaultHistory(): string {
+  const state = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+  return join(state, "tiny-axe", "history");
 }
 
 // Built, the page sits beside this file (dist/web); from source, in dist/web.
@@ -43,6 +54,7 @@ try {
     options: {
       port: { type: "string" },
       vault: { type: "string" },
+      history: { type: "string" },
       mcp: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -63,10 +75,12 @@ if (!Number.isInteger(port) || port < lowest || port > 65535) {
 }
 
 const vault = args.vault ?? defaultVault();
+// The history may not exist yet either: then there are no chats to show.
+const history = args.history ?? defaultHistory();
 
 // The vault may not exist yet: graph_open checks on each call.
 if (args.mcp) {
-  serveMcp({ vault, web: webDir(), port });
+  serveMcp({ vault, history, web: webDir(), port });
 } else {
   await serve();
 }
@@ -81,9 +95,9 @@ async function serve() {
   }
 
   try {
-    const running = await start({ vault, web: webDir(), port });
+    const running = await start({ vault, history, web: webDir(), port });
     console.log(`tiny-axe graph: open ${running.url}`);
-    console.log(`Serving ${vault} on this computer only. ctrl+c stops it.`);
+    console.log(`Serving ${vault} and the chats in ${history} on this computer only. ctrl+c stops it.`);
 
     const stop = () => {
       running.close().then(() => process.exit(0));
