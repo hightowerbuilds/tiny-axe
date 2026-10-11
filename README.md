@@ -58,6 +58,8 @@ Type `/graph` to see what tiny-axe has learned: it serves the know-how graph on 
 
 Type `/new` to start another chat; the one you leave keeps working in the background, and its questions still pop up wherever you are ("asked by chat 1"). `/chats` lists them (what each is about, and whether it's working, waiting for you or idle), `/chat N` or `ctrl+o` switches, and `/chat close` closes the one on screen once it's idle. The status bar shows which chat you're in and what the others are doing; `esc` cancels only the chat on screen, `ctrl+c` quits them all.
 
+Every chat is kept on disk, in `~/.local/state/tiny-axe/history/` (one file per chat, with card numbers and keys removed), so it outlives tiny-axe. `/history` lists the recent ones, `/history words` finds chats that mention something, and `/history N` reopens one with its context, to carry on where it left off. The know-how website (`tiny-axe graph`) shows every chat, from every session, under **Chats**. See [docs/plan-history.md](docs/plan-history.md).
+
 Mention files or folders with `@path` (relative to the project, `~/…` or absolute) to give them to the model. Otherwise the decider picks the project files a request is about.
 
 ## How it works

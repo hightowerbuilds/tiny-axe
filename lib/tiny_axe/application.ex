@@ -21,6 +21,7 @@ defmodule TinyAxe.Application do
         {Task.Supervisor, name: TinyAxe.TaskSupervisor},
         # Holds the conversation, so the TUI can crash and restart without losing it.
         TinyAxe.Session,
+        TinyAxe.History,
         # The current folder, so it too survives a TUI crash.
         TinyAxe.Location,
         # Counts calls that leave the machine and keeps the subscriptions' usage.

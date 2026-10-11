@@ -1,6 +1,6 @@
 // What the page shows, kept up to date: the vault's overview and graph
-// (fetched again whenever tiny-axe writes notes), where the page is, and
-// the conveniences remembered in this browser. Solid signals and a store,
+// (fetched again whenever tiny-axe writes notes), which chats changed,
+// where the page is, and the conveniences remembered in this browser. Solid signals and a store,
 // so each part of the page updates on its own.
 
 import { batch, createSignal } from "solid-js";
@@ -35,6 +35,34 @@ export interface NoteDetail extends Entry {
 export interface Result extends Entry {
   folder: string;
   snippet: string;
+}
+
+export interface ChatRow {
+  id: string;
+  title: string;
+  started: string;
+  updated: string;
+  folder: string;
+  messages: number;
+  /** Only when searching: where the words are. */
+  snippet?: string;
+}
+
+export interface ChatList {
+  /** Every chat in the history, matching or not. */
+  total: number;
+  sessions: { id: string; started: string; chats: ChatRow[] }[];
+}
+
+export interface ChatDetail {
+  id: string;
+  session: string;
+  title: string;
+  started: string;
+  updated: string;
+  folder: string;
+  /** The user's and tiny-axe's messages come with the server's HTML. */
+  entries: { kind: "user" | "assistant" | "meta"; text: string; html?: string }[];
 }
 
 export async function get<T>(path: string): Promise<T> {
@@ -110,6 +138,13 @@ export async function refresh(changed: string[] = []) {
   }
 }
 
+// The chat history
+
+/** The chats tiny-axe last wrote, and a count of writes. */
+export const [chatChanges, setChatChanges] = createSignal<{ ids: string[]; version: number }>({ ids: [], version: 0 });
+
+export const chatsChanged = (ids: string[]) => setChatChanges((c) => ({ ids, version: c.version + 1 }));
+
 /** Whether `ids` changed note `id` or a note linked to it, either way. */
 export function touches(id: string, ids: string[]) {
   if (ids.includes(id)) return true;
@@ -122,7 +157,12 @@ export function touches(id: string, ids: string[]) {
 
 // Where the page is
 
-export type Route = { kind: "graph"; focus: string | null } | { kind: "overview" } | { kind: "note"; id: string };
+export type Route =
+  | { kind: "graph"; focus: string | null }
+  | { kind: "overview" }
+  | { kind: "note"; id: string }
+  | { kind: "chats" }
+  | { kind: "chat"; id: string };
 
 const here = () => location.pathname + location.search;
 // Not deduplicated: following a link to where the page is still counts.
@@ -133,11 +173,15 @@ export function route(): Route {
   const url = new URL(href(), location.origin);
   const note = url.pathname.match(/^\/note\/(.+)$/);
   if (note) return { kind: "note", id: decodeURIComponent(note[1]) };
+  const chat = url.pathname.match(/^\/chats\/(.+)$/);
+  if (chat) return { kind: "chat", id: decodeURIComponent(chat[1]) };
   if (url.pathname === "/overview") return { kind: "overview" };
+  if (url.pathname === "/chats") return { kind: "chats" };
   return { kind: "graph", focus: url.searchParams.get("focus") };
 }
 
-export const ROUTES = (path: string) => path === "/" || path === "/overview" || path.startsWith("/note/");
+export const ROUTES = (path: string) =>
+  path === "/" || path === "/overview" || path.startsWith("/note/") || path === "/chats" || path.startsWith("/chats/");
 
 export function go(to: string) {
   if (to !== here()) history.pushState(null, "", to);
@@ -152,6 +196,7 @@ window.addEventListener("popstate", () => setHref(here()));
 // Small shared pieces
 
 export const noteHref = (id: string) => `/note/${encodeURIComponent(id)}`;
+export const chatHref = (id: string) => `/chats/${encodeURIComponent(id)}`;
 export const graphHref = (id: string) => `/?focus=${encodeURIComponent(id)}`;
 export const blocked = (e: { kind: string; gate?: string | null }) =>
   e.kind === "path" && (e.gate === "refused" || e.gate === "denied");

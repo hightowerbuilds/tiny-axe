@@ -1,21 +1,24 @@
-// The viewer's web server: the page, the vault as JSON, and a stream that
-// says when the vault changed. It listens on 127.0.0.1 only, answers only
+// The viewer's web server: the page, the vault and the chat history as
+// JSON, and a stream that says when either changed. It listens on 127.0.0.1 only, answers only
 // requests addressed to it by that name (so another site can't reach it
 // through DNS tricks), and only for someone who opened the address with this
 // run's token.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { FOLDERS } from "./format.ts";
-import { loadVault, type Vault, type VaultNote } from "./vault.ts";
+import { compare, loadVault, type Vault, type VaultNote } from "./vault.ts";
 import { graphView } from "./graph.ts";
-import { renderer } from "./render.ts";
+import { renderChat, renderer } from "./render.ts";
+import { chatId, history, sessionStart, type Chat } from "./history.ts";
 
 export interface Options {
   vault: string;
+  /** tiny-axe's chat history; none if not given or not there. */
+  history?: string;
   /** Where the built page is (index.html, app.js, style.css). */
   web: string;
   port: number;
@@ -53,6 +56,7 @@ export async function start(options: Options): Promise<Running> {
   const token = options.token ?? randomBytes(24).toString("base64url");
   let vault = await loadVault(options.vault);
   let render = rendererFor(vault);
+  const chats = history(options.history);
   const streams = new Set<ServerResponse>();
   let port = options.port;
   const cookie = () => `tiny_axe_graph_${port}`;
@@ -97,8 +101,15 @@ export async function start(options: Options): Promise<Running> {
       return note ? json(res, detail(vault, note, render)) : json(res, { error: "no such note" }, 404);
     }
     if (path === "/api/search") return json(res, { results: search(vault, url.searchParams.get("q") ?? "") });
+    if (path === "/api/chats") return json(res, chatList(await chats.all(), url.searchParams.get("q") ?? ""));
+    if (path === "/api/chat") {
+      const chat = await chats.one(url.searchParams.get("id") ?? "");
+      return chat ? json(res, chatDetail(chat)) : json(res, { error: "There's no such chat in the history." }, 404);
+    }
     if (path === "/api/events") return events(req, res);
-    if (path === "/" || path === "/overview" || path.startsWith("/note/")) return file(res, options.web, "index.html");
+    if (path === "/" || path === "/overview" || path.startsWith("/note/") || path === "/chats" || path.startsWith("/chats/")) {
+      return file(res, options.web, "index.html");
+    }
     if (path.startsWith("/static/")) return file(res, options.web, path.slice("/static/".length));
     return send(res, 404, "text/plain; charset=utf-8", "Not found.\n");
   }
@@ -138,6 +149,47 @@ export async function start(options: Options): Promise<Running> {
     }, 150);
   });
 
+  // tiny-axe rewrites a chat (a temporary file, then renamed) whenever what
+  // it shows changes. The folder only appears with the first chat saved, and
+  // may go away: until it's there, look for it every few seconds, and when
+  // it turns up, say which chats it already has.
+  let historyWatcher: FSWatcher | undefined;
+  let historyTimer: NodeJS.Timeout | undefined;
+  let looking: NodeJS.Timeout | undefined;
+  let closed = false;
+  let written = new Set<string>();
+  const announce = (ids: string[]) => {
+    const data = JSON.stringify({ changed: ids });
+    for (const res of streams) res.write(`event: history\ndata: ${data}\n\n`);
+  };
+  function watchHistory(missed: boolean) {
+    if (!options.history || closed) return;
+    try {
+      historyWatcher = watch(options.history, (_event, file) => {
+        const id = file ? chatId(String(file)) : null;
+        if (id) written.add(id);
+        clearTimeout(historyTimer);
+        historyTimer = setTimeout(() => {
+          const changed = [...written];
+          written = new Set();
+          if (!existsSync(options.history!)) lookAgain();
+          if (changed.length > 0) announce(changed);
+        }, 150);
+      });
+      historyWatcher.on("error", lookAgain);
+      if (missed) chats.all().then((all) => all.length > 0 && announce(all.map((c) => c.id)));
+    } catch {
+      lookAgain();
+    }
+  }
+  function lookAgain() {
+    historyWatcher?.close();
+    historyWatcher = undefined;
+    clearTimeout(looking);
+    looking = setTimeout(() => watchHistory(true), 3_000);
+  }
+  watchHistory(false);
+
   const keepalive = setInterval(() => {
     for (const res of streams) res.write(": still here\n\n");
   }, 25_000);
@@ -149,8 +201,11 @@ export async function start(options: Options): Promise<Running> {
       server.listen(options.port, HOST, () => resolve());
     });
   } catch (error) {
+    closed = true;
     clearInterval(keepalive);
+    clearTimeout(looking);
     watcher.close();
+    historyWatcher?.close();
     throw error;
   }
   port = (server.address() as { port: number }).port;
@@ -160,9 +215,13 @@ export async function start(options: Options): Promise<Running> {
     port,
     token,
     close: async () => {
+      closed = true;
       clearTimeout(timer);
+      clearTimeout(historyTimer);
+      clearTimeout(looking);
       clearInterval(keepalive);
       watcher.close();
+      historyWatcher?.close();
       for (const res of streams) res.end();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -262,6 +321,68 @@ function search(vault: Vault, query: string) {
   }
 
   return results.sort((a, b) => Number(b.inTitle) - Number(a.inTitle)).slice(0, 50);
+}
+
+// Every chat, by the session it started in: the newest sessions first, and
+// the newest chats first within each. With a query, only the chats that have
+// every word, each with a snippet from the first message that has one.
+function chatList(all: Chat[], query: string) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const sessions = new Map<string, { id: string; started: string; chats: unknown[] }>();
+
+  for (const chat of [...all].sort((a, b) => compare(b.id, a.id))) {
+    let found: string | undefined;
+    if (words.length > 0) {
+      const texts = chat.entries.map((e) => (e.kind === "meta" ? e.text : unmark(e.text)).replace(/\s+/g, " "));
+      const lower = texts.map((t) => t.toLowerCase());
+      if (!words.every((w) => lower.some((t) => t.includes(w)))) continue;
+      found = snippet(texts[lower.findIndex((t) => words.some((w) => t.includes(w)))], words);
+    }
+
+    if (!sessions.has(chat.session)) {
+      sessions.set(chat.session, { id: chat.session, started: sessionStart(chat.session) ?? chat.started, chats: [] });
+    }
+    const session = sessions.get(chat.session)!;
+    if (chat.started < session.started) session.started = chat.started;
+    session.chats.push({
+      id: chat.id,
+      title: chat.title,
+      started: chat.started,
+      updated: chat.updated,
+      folder: chat.folder,
+      messages: chat.entries.filter((e) => e.kind !== "meta").length,
+      ...(found === undefined ? {} : { snippet: found }),
+    });
+  }
+
+  return {
+    total: all.length,
+    sessions: [...sessions.values()].sort((a, b) => compare(b.started, a.started) || compare(b.id, a.id)),
+  };
+}
+
+// One chat as the page shows it: the user's and tiny-axe's messages as
+// HTML, activity lines as text. Never what reopening it gives the model.
+function chatDetail(chat: Chat) {
+  return {
+    id: chat.id,
+    session: chat.session,
+    title: chat.title,
+    started: chat.started,
+    updated: chat.updated,
+    folder: chat.folder,
+    entries: chat.entries.map((e) => (e.kind === "meta" ? { ...e } : { ...e, html: renderChat(e.text) })),
+  };
+}
+
+// A chat message's Markdown as plain text, for search and snippets: the
+// marks that would show as stray characters dropped.
+function unmark(text: string): string {
+  return text
+    .replace(/^```.*$/gm, " ")
+    .replace(/!?\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/^\s*(#+|>|[-*]|\d+\.) /gm, "");
 }
 
 // Up to ~120 characters of the body around the first word it contains (or

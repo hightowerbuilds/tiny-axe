@@ -16,7 +16,8 @@ defmodule TinyAxe.Graph do
   build` in `graph/`).
 
   `config :tiny_axe, :graph`: `enabled`, `server_js`, `vault` (the viewer's
-  default is `~/.local/share/tiny-axe/vault`) and `port`.
+  default is `~/.local/share/tiny-axe/vault`) and `port`. The chat history
+  it shows under Chats is always tiny-axe's own (`TinyAxe.History.dir/0`).
   """
 
   alias TinyAxe.MCP
@@ -67,7 +68,7 @@ defmodule TinyAxe.Graph do
       "type" => "stdio",
       "command" => node_exe(),
       "args" =>
-        [server_js(), "--mcp"] ++
+        [server_js(), "--mcp", "--history", TinyAxe.History.dir()] ++
           if(settings[:vault], do: ["--vault", settings[:vault]], else: []) ++
           if(settings[:port], do: ["--port", to_string(settings[:port])], else: []),
       "policy" => %{"local" => ["graph_open", "graph_close"]}

@@ -1,6 +1,7 @@
-// A note's Markdown as HTML for the viewer. Labels in notes come from web
-// pages, so nothing in a note can become markup: raw HTML is shown as text,
-// links go only to web addresses or other notes, and images aren't loaded.
+// A note's or a chat's Markdown as HTML for the viewer. Labels in notes come
+// from web pages and chats quote them, so nothing in either can become
+// markup: raw HTML is shown as text, links go only to web addresses or other
+// notes, and images aren't loaded.
 
 import { Marked, type Tokens } from "marked";
 
@@ -21,6 +22,17 @@ export function escapeHtml(text: string): string {
 export function noteHref(id: string): string {
   return `/note/${encodeURIComponent(id)}`;
 }
+
+// What every Markdown renderer here does with raw HTML, images and links.
+const SAFE = {
+  html: ({ text }: Tokens.HTML | Tokens.Tag) => escapeHtml(text),
+  image: ({ text }: Tokens.Image) => escapeHtml(text),
+  link(this: { parser: { parseInline(tokens: Tokens.Generic[]): string } }, { href, tokens }: Tokens.Link) {
+    const text = this.parser.parseInline(tokens);
+    if (!/^(https?:|mailto:)/i.test(href)) return text;
+    return `<a class="external" href="${escapeHtml(href)}" rel="noopener noreferrer" target="_blank">${text}</a>`;
+  },
+};
 
 interface WikiLink {
   type: "wikilink";
@@ -50,16 +62,16 @@ export function renderer(resolve: (id: string) => LinkTarget | undefined): (mark
         },
       },
     ],
-    renderer: {
-      html: ({ text }: Tokens.HTML | Tokens.Tag) => escapeHtml(text),
-      image: ({ text }: Tokens.Image) => escapeHtml(text),
-      link(this: { parser: { parseInline(tokens: Tokens.Generic[]): string } }, { href, tokens }: Tokens.Link) {
-        const text = this.parser.parseInline(tokens);
-        if (!/^(https?:|mailto:)/i.test(href)) return text;
-        return `<a class="external" href="${escapeHtml(href)}" rel="noopener noreferrer" target="_blank">${text}</a>`;
-      },
-    },
+    renderer: SAFE,
   });
 
   return (markdown) => marked.parse(markdown, { async: false }) as string;
+}
+
+const chat = new Marked({ gfm: true, breaks: true, renderer: SAFE });
+
+/** A chat message: no notes to link to, and its line breaks kept as the
+ * chat showed them. */
+export function renderChat(markdown: string): string {
+  return chat.parse(markdown, { async: false }) as string;
 }

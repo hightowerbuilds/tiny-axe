@@ -26,6 +26,15 @@ defmodule TinyAxe.Tools.Redact do
   @token ~r/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{24,}(?![A-Za-z0-9_-])/
 
   @doc """
+  Card numbers and token-like strings (24+ letters and digits mixed: keys,
+  tokens), for what's kept but meant to be read again as it was (the chat
+  history, `TinyAxe.History`).
+  """
+  @spec secrets(String.t()) :: String.t()
+  def secrets(text) when is_binary(text),
+    do: text |> text() |> then(&Regex.replace(@token, &1, "[token removed]"))
+
+  @doc """
   Also removes personal details, for content kept long-term (reviewed
   browser examples, `TinyAxe.Browser.Examples`): card numbers, email
   addresses, phone numbers (seven digits or more; not dates), street

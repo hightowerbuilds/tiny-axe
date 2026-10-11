@@ -312,8 +312,9 @@ defmodule TinyAxe.Agent do
     if TinyAxe.Graph.name() in servers,
       do:
         "\nWhen the user wants to see what tiny-axe knows or has learned, or the graph, " <>
-          "call graph__graph_open and give them the link it returns; you can't open a " <>
-          "browser for them, so never say you did.\n",
+          "call graph__graph_open and give them the link it returns; for their chat history " <>
+          "(every chat they've had with tiny-axe), call it with page \"chats\". You can't open " <>
+          "a browser for them, so never say you did.\n",
       else: ""
   end
 

@@ -3,6 +3,9 @@ defmodule TinyAxe.TUI.Chats do
   Several chats in one TUI: `/new` starts another, `/chats` lists them,
   `/chat N` (or `ctrl+o`) switches, `/chat close` closes an idle one.
 
+  Each chat is also kept in the history (`TinyAxe.History`) under its own id,
+  `saved_as`, from which `/history` (`TinyAxe.TUI.ChatHistory`) can reopen it.
+
   The chat on screen keeps its fields in the TUI state, as with a single
   chat; the others are parked in `state.chats` (see `blank/0` for which fields
   belong to a chat). Everything else is shared: the prompt, the screen size,
@@ -23,8 +26,10 @@ defmodule TinyAxe.TUI.Chats do
   # One chat's own fields, as a new chat has them. The conversation (history,
   # transcript, summary, compacting), its run and what it's doing (streaming,
   # status, commands, file plans and edits waiting for y/n), and where it's
-  # scrolled to.
+  # scrolled to. And its id in the history (TinyAxe.History), given when
+  # it starts.
   @blank %{
+    saved_as: nil,
     history: [],
     transcript: [],
     summary: nil,
@@ -65,7 +70,8 @@ defmodule TinyAxe.TUI.Chats do
 
     parked =
       for {chat, id} <- Enum.zip(saved, ids), id != active, into: %{} do
-        {id, Map.merge(@blank, Map.take(chat, [:history, :transcript, :summary]))}
+        chat = Map.take(chat, [:history, :transcript, :summary, :saved_as])
+        {id, Map.merge(@blank, chat) |> Map.update!(:saved_as, &(&1 || TinyAxe.History.new_id()))}
       end
 
     %{order: ids, active: active, next: length(saved) + 1, parked: parked, caches: %{}}
@@ -229,12 +235,41 @@ defmodule TinyAxe.TUI.Chats do
   @doc "Starts an empty chat and shows it; the one left keeps running."
   def create(state) do
     working = for id <- state.chats.order, busy?(chat(state, id)), do: position(state, id)
+    state = open(state, %{})
+    add_meta(state, "new chat #{count(state)}#{still_working(working)}")
+  end
+
+  @doc """
+  Shows a chat from the history (`TinyAxe.History.load/1`): in the chat on
+  screen if nothing's been asked there yet, else as a new chat.
+  """
+  def reopen(state, kept) do
+    fields = Map.take(kept, [:saved_as, :history, :transcript, :summary])
+
+    if busy?(state) or Enum.any?(state.transcript, &match?({:user, _}, &1)) do
+      open(state, fields)
+    else
+      Transcript.clear_cache()
+      Map.merge(state, Map.merge(@blank, fields))
+    end
+  end
+
+  # A chat after the others, on screen, with `fields` (a new id if none).
+  defp open(state, fields) do
     id = state.chats.next
     %{chats: chats} = state = park(state)
     chats = %{chats | order: chats.order ++ [id], next: id + 1, active: id}
-    state = state |> Map.merge(@blank) |> Map.put(:chats, chats)
-    add_meta(state, "new chat #{count(state)}#{still_working(working)}")
+
+    state
+    |> Map.merge(@blank)
+    |> Map.put(:saved_as, TinyAxe.History.new_id())
+    |> Map.merge(fields)
+    |> Map.put(:chats, chats)
   end
+
+  @doc "The open chat kept in the history as `saved_as`, if any."
+  def kept_as(state, saved_as),
+    do: Enum.find(state.chats.order, &(chat(state, &1).saved_as == saved_as))
 
   defp still_working([]), do: ""
   defp still_working([n]), do: " — chat #{n} is still working"
@@ -396,17 +431,22 @@ defmodule TinyAxe.TUI.Chats do
     Enum.reduce(Map.keys(state.chats.parked), state, &within(&2, &1, fn s -> Run.cancel(s) end))
   end
 
-  @doc "Saves every chat to TinyAxe.Session if any conversation changed."
+  @doc """
+  Saves every chat to TinyAxe.Session, and those that changed to the
+  history (TinyAxe.History), if any conversation changed.
+  """
   def persist(now, before) do
     saved = conversations(now)
 
-    if saved != conversations(before),
-      do: TinyAxe.Session.save_chats(saved, position(now, now.chats.active) - 1)
+    if saved != conversations(before) do
+      TinyAxe.Session.save_chats(saved, position(now, now.chats.active) - 1)
+      TinyAxe.History.save(saved -- conversations(before))
+    end
   end
 
   defp conversations(state) do
     for id <- state.chats.order,
-        do: Map.take(chat(state, id), [:history, :transcript, :summary])
+        do: Map.take(chat(state, id), [:saved_as, :history, :transcript, :summary])
   end
 
   defp state_of(result) when is_tuple(result), do: elem(result, 1)
