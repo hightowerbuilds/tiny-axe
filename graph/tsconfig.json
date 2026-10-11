@@ -7,6 +7,8 @@
     "noEmit": true,
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
     "verbatimModuleSyntax": true,
     "types": [
       "node"

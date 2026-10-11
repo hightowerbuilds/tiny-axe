@@ -105,6 +105,23 @@ const NODE_FRAGMENT = /* glsl */ `
   }
 `;
 
+// How long a note tiny-axe just wrote glows.
+const GLOW_MS = 2500;
+
+// The same notes, in the same order, with the same links.
+function same(a: ViewNode[], b: ViewNode[], aLinks: [number, number][], bLinks: [number, number][]) {
+  if (a.length === 0 || a.length !== b.length || aLinks.length !== bLinks.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i].id !== b[i].id) return false;
+  for (let k = 0; k < aLinks.length; k++) {
+    if (aLinks[k][0] !== bLinks[k][0] || aLinks[k][1] !== bLinks[k][1]) return false;
+  }
+  return true;
+}
+
+function sameMask(a: Uint8Array, b: Uint8Array) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const smoothstep = (a: number, b: number, x: number) => {
@@ -149,6 +166,10 @@ export class GraphView {
   private height = 1;
   private dirty = true;
   private styleDirty = true;
+  // Notes tiny-axe just wrote, by id: when they started to glow.
+  private glows = new Map<string, number>();
+  // The filter mask the layout was last sent.
+  private sentMask: Uint8Array | null = null;
   private looping = false;
   private placed = false;
   private moving = false;
@@ -222,6 +243,15 @@ export class GraphView {
   /** The graph to draw. Notes already drawn keep their places. */
   setData(nodes: ViewNode[], links: [number, number][]) {
     const before = this.nodes;
+    // Only counts changed (a running task's notes, again and again): resize,
+    // and leave the layout be.
+    if (same(before, nodes, this.links, links)) {
+      this.nodes = nodes;
+      this.sizes();
+      this.restyle();
+      return;
+    }
+
     const keep = new Map<string, number>(before.map((n, i) => [n.id, i]));
     const hovered = this.hovered >= 0 ? before[this.hovered]?.id : undefined;
     const selected = this.selected >= 0 ? before[this.selected]?.id : undefined;
@@ -236,16 +266,14 @@ export class GraphView {
     this.links = links;
     this.positions = positions;
     this.visible = new Uint8Array(nodes.length).fill(1);
+    this.sentMask = null;
     this.screen = new Float32Array(nodes.length * 3);
     this.neighbours = nodes.map(() => []);
     for (const [a, b] of links) {
       this.neighbours[a].push(b);
       this.neighbours[b].push(a);
     }
-    // Size by use: how often a note was seen, or how many links it has.
-    this.radius = Float32Array.from(nodes, (n, i) =>
-      Math.min(18, 3 + 2.2 * Math.log1p(n.seen ?? this.neighbours[i].length)),
-    );
+    this.sizes();
     this.hovered = hovered ? this.indexOf(hovered) : -1;
     this.selected = selected ? this.indexOf(selected) : -1;
     this.following = -1;
@@ -260,6 +288,10 @@ export class GraphView {
 
   /** Which notes the filters leave showing (1 shown, 0 hidden). */
   setVisible(mask: Uint8Array) {
+    // The same mask again (the vault changed, the filters didn't): the
+    // layout already has it.
+    if (this.sentMask && sameMask(this.sentMask, mask)) return;
+    this.sentMask = mask.slice();
     this.visible = mask;
     if (this.hovered >= 0 && !mask[this.hovered]) this.hovered = -1;
     this.post({ type: "visible", mask: mask.slice() });
@@ -282,6 +314,13 @@ export class GraphView {
     if (this.placed) this.apply(this.fitted());
     this.post({ type: "dims", dims });
     this.element.dataset.dims = String(dims);
+  }
+
+  /** Make notes glow for a moment: what tiny-axe just wrote. */
+  glow(ids: string[]) {
+    const now = performance.now();
+    for (const id of ids) this.glows.set(id, now);
+    this.restyle();
   }
 
   /** Ring a note in the accent colour (the open note, in a local graph). */
@@ -343,6 +382,7 @@ export class GraphView {
       this.apply(lerp(this.current(), this.fitted(), 0.12));
     }
 
+    if (this.glows.size > 0) this.restyle();
     if (this.styleDirty) this.style();
     if (this.dirty) {
       this.renderer.render(this.scene, this.camera);
@@ -424,13 +464,21 @@ export class GraphView {
     const ringOn = g.getAttribute("aRingOn").array as Float32Array;
     const alpha = g.getAttribute("aAlpha").array as Float32Array;
     const lit = this.lit();
+    const now = performance.now();
+    const still = reducedMotion();
+    for (const [id, start] of this.glows) if (now - start > GLOW_MS) this.glows.delete(id);
 
     for (const [i, node] of this.nodes.entries()) {
       const shown = this.visible[i] === 1;
-      radius[i] = shown ? this.radius[i] * (i === this.hovered ? 1.25 : 1) : 0;
+      // A glow swells the note and rings it, then fades (no swelling when
+      // motion is reduced).
+      const since = this.glows.get(node.id);
+      const glow = since === undefined ? 0 : 1 - (now - since) / GLOW_MS;
+      const swell = still ? 1 : 1 + 0.6 * glow * glow;
+      radius[i] = shown ? this.radius[i] * (i === this.hovered ? 1.25 : 1) * swell : 0;
       const blocked = node.kind === "path" && (node.gate === "refused" || node.gate === "denied");
       fill.set(blocked ? p.blocked : (p.kinds[node.kind] ?? p.kinds.task), i * 3);
-      const trust = i === this.selected ? p.accent : p.trust[node.trust] ?? null;
+      const trust = i === this.selected || glow > 0 ? p.accent : p.trust[node.trust] ?? null;
       ring.set(trust ?? p.bg, i * 3);
       ringOn[i] = trust ? 1 : 0;
       alpha[i] = !shown ? 0 : lit && !lit.has(i) ? 0.18 : 1;
@@ -450,6 +498,13 @@ export class GraphView {
     (this.dots.material.uniforms.uBg.value as Vector3).set(...p.bg);
     // Colours here are the page's own sRGB values, drawn as they are.
     this.renderer.setClearColor(new Color().setRGB(...p.bg, LinearSRGBColorSpace), 1);
+  }
+
+  // Size by use: how often a note was seen, or how many links it has.
+  private sizes() {
+    this.radius = Float32Array.from(this.nodes, (n, i) =>
+      Math.min(18, 3 + 2.2 * Math.log1p(n.seen ?? this.neighbours[i].length)),
+    );
   }
 
   /** While hovering: the hovered note and its neighbours. */

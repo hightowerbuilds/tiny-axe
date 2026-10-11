@@ -116,15 +116,22 @@ export async function start(options: Options): Promise<Running> {
   }
 
   // The writer replaces notes by renaming, often several at once: reload
-  // once things settle, and keep the last good vault if a read fails.
+  // once things settle, and keep the last good vault if a read fails. Open
+  // pages are told which notes changed, so they can show where.
   let timer: NodeJS.Timeout | undefined;
-  const watcher: FSWatcher = watch(options.vault, { recursive: true }, () => {
+  let touched = new Set<string>();
+  const watcher: FSWatcher = watch(options.vault, { recursive: true }, (_event, file) => {
+    const id = file ? noteId(String(file)) : null;
+    if (id) touched.add(id);
     clearTimeout(timer);
     timer = setTimeout(async () => {
+      const changed = [...touched];
+      touched = new Set();
       try {
         vault = await loadVault(options.vault);
         render = rendererFor(vault);
-        for (const res of streams) res.write("event: vault\ndata: {}\n\n");
+        const data = JSON.stringify({ changed: changed.filter((id) => vault.notes.has(id)) });
+        for (const res of streams) res.write(`event: vault\ndata: ${data}\n\n`);
       } catch (error) {
         console.error(`tiny-axe graph: couldn't reload the vault: ${(error as Error).message}`);
       }
@@ -333,4 +340,12 @@ function same(a: string, b: string): boolean {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
+}
+
+// A note's id from a path the watcher reports (`Sites/shop.example.md`), or
+// null for anything else: temporary files, the writer's state.
+function noteId(file: string): string | null {
+  const [folder, name, ...rest] = file.split(/[\\/]/);
+  if (rest.length > 0 || !name?.endsWith(".md") || name.startsWith(".")) return null;
+  return (Object.values(FOLDERS) as string[]).includes(folder) ? name.slice(0, -3) : null;
 }

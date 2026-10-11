@@ -12,6 +12,10 @@ search, live updates). G4: the home page is the graph (flat 2D by default,
 3D a switch away), with filters, hover, drag, and a local graph beside each
 note; the G3 overview moved to `/overview`. It holds 60 frames a second
 with 4,928 notes on integrated graphics (`graph/scripts/sample-vault.ts`).
+A running task shows up as it acts: the writer folds in each journaled
+call (a few times a second at most), the server tells open pages which
+notes changed, and the page (Solid) updates just those parts, with the
+new or changed notes glowing in the graph.
 G2 and G5 onward pending. This runs alongside
 [the browser decisions and learning plan](plan-browser-decisions-and-learning.md)
 (Phases 2–5 in progress there) and reads what that work records. It never
@@ -228,10 +232,15 @@ button moves between them.
 
 - **Server**: TypeScript run directly by Node 26, using only `node:http`,
   `node:fs` and a frontmatter parser. It parses the vault into a link index
-  at start and keeps it current from file events. JSON endpoints: the graph,
-  one note with its backlinks, search. The page works out local graphs
+  at start and keeps it current from file events, pushing the ids of
+  changed notes to open pages. JSON endpoints: the graph, one note with its
+  backlinks, search. The page works out local graphs
   from the graph it already has.
-- **Page**: TypeScript bundled by esbuild. `three` draws both graphs: the
+- **Page**: TypeScript and Solid (`solid-js`, compiled by its Babel
+  preset, then bundled by esbuild). The sidebar, overview, notes and
+  filters are Solid components over a store the page refetches when notes
+  change, so an update redraws only what changed and never resets what the
+  user is reading, typing or filtering. `three` draws both graphs: the
   dots as one instanced mesh and the lines as one set of segments, so a
   large vault is two draw calls. `d3-force-3d` lays them out in a Web
   Worker, in 2D or 3D, so the page stays smooth while it settles. Labels are

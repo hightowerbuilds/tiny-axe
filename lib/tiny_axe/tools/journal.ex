@@ -47,7 +47,10 @@ defmodule TinyAxe.Tools.Journal do
   @spec append(String.t(), map()) :: :ok
   def append(id, entry) do
     line = entry |> Map.put(:at, DateTime.utc_now() |> DateTime.to_iso8601()) |> JSON.encode!()
-    write(id, "calls.jsonl", line <> "\n")
+    written = write(id, "calls.jsonl", line <> "\n")
+    # The know-how graph shows it while the task is still running.
+    TinyAxe.Vault.task_progress(id)
+    written
   end
 
   @spec append_decision(String.t(), map()) :: :ok

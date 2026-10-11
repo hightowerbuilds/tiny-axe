@@ -4,7 +4,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { cp, mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { start, type Running } from "../src/server.ts";
@@ -194,7 +194,7 @@ test("search finds titles first, then bodies", async () => {
   assert.deepEqual((await api("/api/search?q=zzzz-nothing")).results, []);
 });
 
-test("a note written to the vault is pushed to open pages", async () => {
+test("a note written to the vault is pushed to open pages, by id", async () => {
   const events = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
     request(
       {
@@ -210,14 +210,17 @@ test("a note written to the vault is pushed to open pages", async () => {
   });
   assert.equal(events.headers["content-type"], "text/event-stream");
 
-  const pushed = new Promise<void>((resolve) => {
+  const pushed = new Promise<string>((resolve) => {
     events.setEncoding("utf8");
-    events.on("data", (chunk: string) => chunk.includes("event: vault") && resolve());
+    events.on("data", (chunk: string) => chunk.includes("event: vault") && resolve(chunk));
   });
 
-  await writeFile(join(vault, "Sites/new.example.md"), HOSTILE.replaceAll("evil.example", "new.example"));
-  await pushed;
+  // Written the way the writer writes: a temporary name, then renamed.
+  await writeFile(join(vault, "Sites/.new.example.md.1.tmp"), HOSTILE.replaceAll("evil.example", "new.example"));
+  await rename(join(vault, "Sites/.new.example.md.1.tmp"), join(vault, "Sites/new.example.md"));
+  const event = await pushed;
   events.destroy();
+  assert.deepEqual(JSON.parse(event.split("data: ")[1]), { changed: ["new.example"] });
 
   assert.equal((await api("/api/vault")).summary.sites, 4);
   assert.ok((await api("/api/graph")).nodes.some((n: { id: string }) => n.id === "new.example"));

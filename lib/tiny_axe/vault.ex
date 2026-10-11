@@ -6,7 +6,9 @@ defmodule TinyAxe.Vault do
   One process, so writes are serial within tiny-axe; a lock file
   (`.tiny-axe/lock`) keeps two tiny-axe instances from interleaving. At
   start it backfills from the journals still on disk, and each task that
-  closes is folded in (`task_closed/1`, from the gate). Both run in this
+  acts is folded in as it goes (`task_progress/1`, after each journaled
+  call, a few times a second at most) and once more as it closes
+  (`task_closed/1`, from the gate). Both run in this
   process, never in the caller's: a vault that can't be written is logged
   and nothing else notices.
 
@@ -32,6 +34,8 @@ defmodule TinyAxe.Vault do
   @state ".tiny-axe/ingested.json"
   @manifest ".tiny-axe/vault.json"
   @lock ".tiny-axe/lock"
+  # A running task's new calls are folded in at most this often.
+  @progress_ms 300
   # A lock older than this was left by a writer that died.
   @stale_lock_s 120
   @folders ~w(Sites Pages Controls Paths Tools Tasks Workflows .tiny-axe)
@@ -65,6 +69,12 @@ defmodule TinyAxe.Vault do
   @spec task_closed(String.t()) :: :ok
   def task_closed(id) do
     if enabled?(), do: GenServer.cast(__MODULE__, {:task_closed, id}), else: :ok
+  end
+
+  @doc "Folds a running task's new calls into the vault soon, in the background."
+  @spec task_progress(String.t()) :: :ok
+  def task_progress(id) do
+    if enabled?(), do: GenServer.cast(__MODULE__, {:task_progress, id}), else: :ok
   end
 
   @doc """
@@ -110,8 +120,9 @@ defmodule TinyAxe.Vault do
   ## Server
 
   @impl true
+  # The state: the running tasks with a fold already on its way.
   def init(:ok) do
-    if enabled?(), do: {:ok, nil, {:continue, :backfill}}, else: {:ok, nil}
+    if enabled?(), do: {:ok, MapSet.new(), {:continue, :backfill}}, else: {:ok, MapSet.new()}
   end
 
   @impl true
@@ -125,9 +136,25 @@ defmodule TinyAxe.Vault do
     do: {:reply, run(fn -> ingest(journals(), dir()) end, "backfill"), s}
 
   @impl true
-  def handle_cast({:task_closed, id}, s) do
+  def handle_cast({:task_progress, id}, pending) do
+    if id in pending do
+      {:noreply, pending}
+    else
+      Process.send_after(self(), {:progress, id}, @progress_ms)
+      {:noreply, MapSet.put(pending, id)}
+    end
+  end
+
+  def handle_cast({:task_closed, id}, pending) do
     run(fn -> ingest(journals(), dir(), only: [id]) end, "task #{id}")
-    {:noreply, s}
+    {:noreply, MapSet.delete(pending, id)}
+  end
+
+  @impl true
+  def handle_info({:progress, id}, pending) do
+    # Closed in the meantime: that fold took everything.
+    if id in pending, do: run(fn -> ingest(journals(), dir(), only: [id]) end, "task #{id}")
+    {:noreply, MapSet.delete(pending, id)}
   end
 
   defp run(fun, what) do

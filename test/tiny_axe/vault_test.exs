@@ -446,6 +446,7 @@ defmodule TinyAxe.VaultProcessTest do
 
     id = "20261001-100000-#{System.unique_integer([:positive])}"
     journal = Path.join([TinyAxe.Ops.Journal.state_dir(), "tasks", id])
+    File.mkdir_p!(Path.dirname(journal))
     File.cp_r!(@fixture, journal)
 
     previous = Application.get_env(:tiny_axe, :vault)
@@ -463,5 +464,58 @@ defmodule TinyAxe.VaultProcessTest do
     # The cast is handled before the call that follows it.
     assert {:ok, _} = Vault.backfill()
     assert File.read!(Path.join([tmp, "vault", "Tasks", id <> ".md"])) =~ "## Steps"
+  end
+
+  @tag :tmp_dir
+  test "a running task reaches the vault as each call is journaled", %{tmp_dir: tmp} do
+    assert Vault.task_progress("nothing-happens") == :ok
+
+    id = "20261001-100000-#{System.unique_integer([:positive])}"
+    journal = Path.join([TinyAxe.Ops.Journal.state_dir(), "tasks", id])
+    File.mkdir_p!(journal)
+    File.cp!(Path.join(@fixture, "decisions.jsonl"), Path.join(journal, "decisions.jsonl"))
+    File.cp!(Path.join(@fixture, "task.json"), Path.join(journal, "task.json"))
+
+    [first | rest] =
+      @fixture |> Path.join("calls.jsonl") |> File.read!() |> String.split("\n", trim: true)
+
+    previous = Application.get_env(:tiny_axe, :vault)
+    vault = Path.join(tmp, "vault")
+    Application.put_env(:tiny_axe, :vault, enabled: true, dir: vault)
+
+    on_exit(fn ->
+      File.rm_rf!(journal)
+
+      if previous,
+        do: Application.put_env(:tiny_axe, :vault, previous),
+        else: Application.delete_env(:tiny_axe, :vault)
+    end)
+
+    # As the gate journals them, never closed.
+    append = fn line ->
+      TinyAxe.Tools.Journal.append(id, line |> JSON.decode!() |> Map.delete("at"))
+    end
+
+    lines_in = fn ->
+      case File.read(Path.join(vault, ".tiny-axe/ingested.json")) do
+        {:ok, raw} -> get_in(JSON.decode!(raw), ["tasks", id, "lines"])
+        _ -> nil
+      end
+    end
+
+    append.(first)
+    assert eventually(fn -> lines_in.() == 1 end)
+    assert File.exists?(Path.join([vault, "Tasks", id <> ".md"]))
+
+    Enum.each(rest, append)
+    assert eventually(fn -> lines_in.() == 1 + length(rest) end)
+  end
+
+  defp eventually(check, tries \\ 40) do
+    cond do
+      check.() -> true
+      tries == 0 -> false
+      true -> Process.sleep(50) && eventually(check, tries - 1)
+    end
   end
 end
