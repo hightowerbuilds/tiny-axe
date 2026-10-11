@@ -86,7 +86,7 @@ defmodule Mix.Tasks.TinyAxe.Mcp do
         Mix.raise("server names use letters, digits and -")
 
       {:error, :reserved} ->
-        Mix.raise("\"browser\" is tiny-axe's own browser; pick another name")
+        Mix.raise("\"#{name}\" is one of tiny-axe's own servers; pick another name")
 
       {:error, reason} ->
         Mix.raise("couldn't write #{MCP.config_path()}: #{reason}")

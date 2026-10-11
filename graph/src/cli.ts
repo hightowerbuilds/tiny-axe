@@ -1,16 +1,23 @@
 // `tiny-axe graph`: serves the know-how vault on 127.0.0.1 and prints the
-// address. It doesn't open a browser; the user does.
+// address. It doesn't open a browser; the user does. With --mcp it's an MCP
+// server on stdio instead, serving the vault only when a tool asks (mcp.ts).
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { start } from "./server.ts";
+import { serveMcp } from "./mcp.ts";
 
 const USAGE = `usage: tiny-axe graph [--port PORT] [--vault FOLDER]
+       tiny-axe graph --mcp [--port PORT] [--vault FOLDER]
 
 Serves what tiny-axe knows about the web on http://127.0.0.1:PORT
-(default 4747) and prints the address to open. ctrl+c stops it.`;
+(default 4747) and prints the address to open. ctrl+c stops it.
+
+With --mcp it's an MCP server on stdin/stdout instead (graph_open,
+graph_close): the address is served only once graph_open asks, on PORT
+or the next free port up to PORT+10 (0 takes any free port).`;
 
 const DEFAULT_PORT = 4747;
 
@@ -36,6 +43,7 @@ try {
     options: {
       port: { type: "string" },
       vault: { type: "string" },
+      mcp: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   }).values;
@@ -49,29 +57,42 @@ if (args.help) {
 }
 
 const port = args.port === undefined ? DEFAULT_PORT : Number(args.port);
-if (!Number.isInteger(port) || port < 1 || port > 65535) fail(`--port needs a number from 1 to 65535, not ${args.port}`);
-
-const vault = args.vault ?? defaultVault();
-if (!existsSync(join(vault, ".tiny-axe", "vault.json"))) {
-  fail(
-    `there's no vault at ${vault} yet. tiny-axe writes it as tasks finish; ` +
-      `use --vault FOLDER to open another one.`,
-    1,
-  );
+const lowest = args.mcp ? 0 : 1;
+if (!Number.isInteger(port) || port < lowest || port > 65535) {
+  fail(`--port needs a number from ${lowest} to 65535, not ${args.port}`);
 }
 
-try {
-  const running = await start({ vault, web: webDir(), port });
-  console.log(`tiny-axe graph: open ${running.url}`);
-  console.log(`Serving ${vault} on this computer only. ctrl+c stops it.`);
+const vault = args.vault ?? defaultVault();
 
-  const stop = () => {
-    running.close().then(() => process.exit(0));
-  };
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
-} catch (error) {
-  const e = error as NodeJS.ErrnoException;
-  if (e.code === "EADDRINUSE") fail(`port ${port} is in use; try --port ${port + 1}`);
-  fail(e.message, 1);
+// The vault may not exist yet: graph_open checks on each call.
+if (args.mcp) {
+  serveMcp({ vault, web: webDir(), port });
+} else {
+  await serve();
+}
+
+async function serve() {
+  if (!existsSync(join(vault, ".tiny-axe", "vault.json"))) {
+    fail(
+      `there's no vault at ${vault} yet. tiny-axe writes it as tasks finish; ` +
+        `use --vault FOLDER to open another one.`,
+      1,
+    );
+  }
+
+  try {
+    const running = await start({ vault, web: webDir(), port });
+    console.log(`tiny-axe graph: open ${running.url}`);
+    console.log(`Serving ${vault} on this computer only. ctrl+c stops it.`);
+
+    const stop = () => {
+      running.close().then(() => process.exit(0));
+    };
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+  } catch (error) {
+    const e = error as NodeJS.ErrnoException;
+    if (e.code === "EADDRINUSE") fail(`port ${port} is in use; try --port ${port + 1}`);
+    fail(e.message, 1);
+  }
 }

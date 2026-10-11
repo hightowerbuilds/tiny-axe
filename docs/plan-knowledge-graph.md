@@ -1,6 +1,10 @@
 # Plan for the know-how graph
 
-Status (2026-10-10): G0, G3 and G4 built. G0: the format is in
+Status (2026-10-11): G0, G1, G3 and G4 built, and the graph opens from
+chat: `/graph` (or asking the agent, which calls `graph__graph_open`) prints
+the page's address and copies it. G1 reads today's journals as they are:
+the gate doesn't yet log a call's class and the agent doesn't write
+`task.json`, so those show as `unrecorded` (vault-format.md). G0: the format is in
 [vault-format.md](vault-format.md), with a fixture vault, `TinyAxe.Vault.Format`
 and the viewer's reader, each tested against it. G3: `tiny-axe graph`
 serves the vault (`graph/`: token, 127.0.0.1 only, note view, backlinks,
@@ -8,7 +12,7 @@ search, live updates). G4: the home page is the graph (flat 2D by default,
 3D a switch away), with filters, hover, drag, and a local graph beside each
 note; the G3 overview moved to `/overview`. It holds 60 frames a second
 with 4,928 notes on integrated graphics (`graph/scripts/sample-vault.ts`).
-G1, G2 and G5 onward pending. This runs alongside
+G2 and G5 onward pending. This runs alongside
 [the browser decisions and learning plan](plan-browser-decisions-and-learning.md)
 (Phases 2–5 in progress there) and reads what that work records. It never
 changes the gate, the browser policy or the purchase controls.
@@ -239,7 +243,13 @@ button moves between them.
   keeps only that site's notes, and the tools used there.
 - **Where it lives**: source in `graph/` at the repo root (its own
   `package.json`, `tsconfig.json`, tests with Node's own test runner).
-  Built output and the server go to `priv/graph/`, so the release carries them and works offline.
+  `mix tiny_axe.install` builds it into `~/.local/share/tiny-axe/graph/`;
+  from the repo, `graph/dist/`. Either works offline.
+- **From chat**: tiny-axe runs the viewer as a built-in MCP server
+  (`node server.js --mcp`, `TinyAxe.Graph`), as it runs the browser. Its
+  `graph_open` tool (class `local`) opens the page's port on first use and
+  returns the address; `graph_close` stops it. `/graph` and `/graph close`
+  call the same tools. Nothing opens a browser.
   `mix tiny_axe.install` runs the build.
 
 ## Workflows
@@ -289,7 +299,8 @@ built in parallel once G0 fixes the format.
 | `Tools.Gate` | Elixir | One added line: tell the vault a task closed. Nothing else changes |
 | `graph/server/` | TypeScript | HTTP, token, vault index, file watching, JSON endpoints, user notes (G6) |
 | `graph/web/` | TypeScript | Views, Three.js graphs, Markdown rendering |
-| Launcher, `bin/tiny-axe-dev`, `mix tiny_axe.install` | Bash / Elixir | The `graph` subcommand; building `graph/` into `priv/graph/` |
+| `TinyAxe.Graph`, `/graph` in `TinyAxe.TUI` | Elixir | Running the viewer as the built-in "graph" MCP server; the chat command |
+| Launcher, `bin/tiny-axe-dev`, `mix tiny_axe.install` | Bash / Elixir | The `graph` subcommand; building `graph/` into `~/.local/share/tiny-axe/graph/` |
 
 The writer only reads the learning plan's records. If Phases 2 or 3 change
 a record's shape, ingest follows the schema version recorded with it. The

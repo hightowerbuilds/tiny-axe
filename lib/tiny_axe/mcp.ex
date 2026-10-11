@@ -71,7 +71,7 @@ defmodule TinyAxe.MCP do
   end
 
   @doc """
-  Every configured server (and tiny-axe's browser): whether it's running, its
+  Every configured server (and tiny-axe's browser and graph): whether it's running, its
   tools by class, and why it isn't running, if it failed.
   """
   @spec status() :: [map()]
@@ -189,10 +189,13 @@ defmodule TinyAxe.MCP do
   @spec call(String.t(), String.t(), map(), timeout()) :: {:ok, map()} | {:error, term()}
   defdelegate call(server, tool, args, timeout \\ 120_000), to: Client
 
-  # tiny-axe's own browser (TinyAxe.Browser) runs under this name.
-  defp reserved?("browser") do
+  # tiny-axe's own servers run under these names: its browser (TinyAxe.Browser)
+  # and the know-how graph (TinyAxe.Graph).
+  @reserved ["browser", "graph"]
+
+  defp reserved?(name) when name in @reserved do
     Logger.warning(
-      "MCP server name \"browser\" is tiny-axe's own; rename yours in #{config_path()}"
+      "MCP server name \"#{name}\" is tiny-axe's own; rename yours in #{config_path()}"
     )
 
     true
@@ -248,7 +251,7 @@ defmodule TinyAxe.MCP do
   def put_config(name, config) do
     cond do
       not valid_name?(name) -> {:error, :bad_name}
-      name == "browser" -> {:error, :reserved}
+      name in @reserved -> {:error, :reserved}
       true -> update_file(&Map.put(&1, name, config))
     end
   end

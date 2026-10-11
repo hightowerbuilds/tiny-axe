@@ -135,10 +135,17 @@ export async function start(options: Options): Promise<Running> {
     for (const res of streams) res.write(": still here\n\n");
   }, 25_000);
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(options.port, HOST, () => resolve());
-  });
+  // A port in use leaves nothing running behind (the MCP mode tries the next).
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.port, HOST, () => resolve());
+    });
+  } catch (error) {
+    clearInterval(keepalive);
+    watcher.close();
+    throw error;
+  }
   port = (server.address() as { port: number }).port;
 
   return {

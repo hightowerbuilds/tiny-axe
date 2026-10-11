@@ -164,7 +164,9 @@ defmodule TinyAxe.Pipeline do
   end
 
   # With MCP servers connected, the router also asks whether the request needs
-  # them; their names make the question concrete.
+  # them; their names make the question concrete. The graph runs whenever Node
+  # does, so it's named for what it does: a bare "graph" would pull in
+  # questions about graphs in general.
   defp route_questions do
     case TinyAxe.MCP.running() do
       [] ->
@@ -175,11 +177,16 @@ defmodule TinyAxe.Pipeline do
           type: :noul,
           instructions:
             "Does the request need one of tiny-axe's connected services to act or look " <>
-              "something up (#{Enum.join(servers, ", ")}), rather than only an answer, edits " <>
-              "to project files, organising files, or shell commands?"
+              "something up (#{Enum.map_join(servers, "; ", &describe_server/1)}), rather " <>
+              "than only an answer, edits to project files, organising files, or shell commands?"
         })
     end
   end
+
+  defp describe_server("graph"),
+    do: "graph: gives the user a link to a page of what tiny-axe itself has learned"
+
+  defp describe_server(name), do: name
 
   # Commands go to the Commander, file tasks (moving, organising, writing
   # documents) to the Organizer, and requests that need connected services to

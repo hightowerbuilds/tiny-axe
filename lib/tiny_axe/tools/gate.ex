@@ -79,7 +79,10 @@ defmodule TinyAxe.Tools.Gate do
   end
 
   @spec close_task(String.t()) :: :ok
-  def close_task(id), do: GenServer.call(__MODULE__, {:close, id})
+  def close_task(id) do
+    :ok = GenServer.call(__MODULE__, {:close, id})
+    TinyAxe.Vault.task_closed(id)
+  end
 
   @doc "The MCP config that gives a driver this task's gate and nothing else."
   @spec mcp_config(map()) :: map()

@@ -30,6 +30,8 @@ defmodule TinyAxe.Application do
         # The user's MCP servers, one supervised connection each (TinyAxe.MCP).
         {Registry, keys: :unique, name: TinyAxe.MCP.Registry},
         {DynamicSupervisor, name: TinyAxe.MCP.Supervisor, strategy: :one_for_one},
+        # The know-how vault's writer: backfills in the background, then each closed task.
+        TinyAxe.Vault,
         # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
         TinyAxe.Tools.Gate,
         {Bandit,
@@ -58,6 +60,7 @@ defmodule TinyAxe.Application do
         Task.start(fn ->
           TinyAxe.MCP.start_configured()
           if TinyAxe.Browser.available?(), do: TinyAxe.Browser.start()
+          if TinyAxe.Graph.available?(), do: TinyAxe.Graph.start()
         end)
 
     result

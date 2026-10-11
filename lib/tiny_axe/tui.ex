@@ -419,10 +419,10 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools and /credit-card are handled here, like shell built-ins:
-      # no model involved.
+      # cd, pwd, tools, /graph and /credit-card are handled here, like shell
+      # built-ins: no model involved.
       prompt in ["pwd", "tools"] or prompt =~ ~r/\Acd(\s|\z)/ or
-          String.starts_with?(prompt, "/credit-card") ->
+        prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
@@ -452,6 +452,30 @@ defmodule TinyAxe.TUI do
 
   defp builtin(state, "pwd"),
     do: add_meta(state, "📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())}")
+
+  # The know-how graph: the viewer (TinyAxe.Graph) gives a link, which is shown
+  # and copied, never opened. Starting it can take a moment, so it runs aside.
+  defp builtin(state, "/graph" <> rest) do
+    action =
+      case String.trim(rest) do
+        "" -> :open
+        "close" -> :close
+        _ -> nil
+      end
+
+    if action do
+      tui = self()
+      copy = state.clipboard
+
+      Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+        send(tui, {:graph, graph(action, copy)})
+      end)
+
+      %{state | status: if(action == :open, do: "opening the graph…", else: "closing the graph…")}
+    else
+      add_meta(state, "/graph · /graph close")
+    end
+  end
 
   defp builtin(state, "/credit-card" <> rest) do
     case String.split(String.trim(rest), " ", parts: 2) do
@@ -552,6 +576,14 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  defp graph(:close, _copy) do
+    with :ok <- TinyAxe.Graph.close(), do: :closed
+  end
+
+  defp graph(:open, copy) do
+    with {:ok, url} <- TinyAxe.Graph.open(), do: {:opened, url, copy.(url) == :ok}
+  end
+
   ## Pipeline events
 
   defp on_info({:pipeline, id, event}, %{run: {id, _pid}} = state) do
@@ -559,6 +591,25 @@ defmodule TinyAxe.TUI do
   end
 
   defp on_info({:pipeline, _stale_id, _event}, state), do: {:noreply, state, render?: false}
+
+  # The URL gets a line of its own, as code so Markdown leaves it as it is, for
+  # the terminal to make clickable (the transcript can't hold OSC 8 links).
+  defp on_info({:graph, {:opened, url, copied?}}, state) do
+    copied = if copied?, do: "; the link is copied", else: ""
+
+    state =
+      state
+      |> add_meta("🧠 what tiny-axe knows, served on this computer only#{copied}:")
+      |> add_meta("`#{url}`")
+
+    {:noreply, %{state | status: "ready"}}
+  end
+
+  defp on_info({:graph, :closed}, state),
+    do: {:noreply, %{add_meta(state, "🧠 closed the graph page") | status: "ready"}}
+
+  defp on_info({:graph, {:error, message}}, state),
+    do: {:noreply, %{add_meta(state, "✗ graph: #{message}") | status: "ready"}}
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
 

@@ -150,10 +150,20 @@ defmodule TinyAxe.Agent do
     Never type passwords or card details: ask the user (browser_handoff). To buy \
     something, go through the shop to the final "Place order" (or "Pay") button and \
     click it: tiny-axe then shows the order to the user, who decides.
-
+    #{graph_line(servers)}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
     """
+  end
+
+  # Only when the graph server is connected, so its tool exists.
+  defp graph_line(servers) do
+    if TinyAxe.Graph.name() in servers,
+      do:
+        "\nWhen the user wants to see what tiny-axe knows or has learned, or the graph, " <>
+          "call graph__graph_open and give them the link it returns; you can't open a " <>
+          "browser for them, so never say you did.\n",
+      else: ""
   end
 
   @doc false

@@ -49,6 +49,8 @@ The status bar shows how full the model's context window is (`ctx 58%`). Once th
 
 tiny-axe keeps track of where it is, like a shell: the title shows 📍 and the current folder. Type `cd <folder>` or `pwd` at the prompt to move or check (no model involved). When a request names another folder ("in my tiny-app repo…"), the decider picks it from real folders nearby, and after commands run, the location follows them (e.g. into `web/` after `cd web && npm install`). Every model is told where it is and what's there, relative paths mean "here", and commands run here.
 
+Type `/graph` to see what tiny-axe has learned: it serves the know-how graph on this computer only and shows (and copies) the link, never opening a browser itself; `/graph close` stops the page. The agent can do the same when you ask what it knows.
+
 Mention files or folders with `@path` (relative to the project, `~/…` or absolute) to give them to the model. Otherwise the decider picks the project files a request is about.
 
 ## How it works

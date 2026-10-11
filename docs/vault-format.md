@@ -27,9 +27,32 @@ vault/
   vault, so a link names a basename, never a folder (as in Obsidian).
 - Every file is written to a temporary name in the same folder and renamed
   into place.
-- `.tiny-axe/` belongs to tiny-axe: the manifest now, and later what has been
-  ingested (G1) and the user's own notes (G6). Readers ignore other files
+- `.tiny-axe/` belongs to tiny-axe: the manifest, what has been ingested
+  (below), and later the user's own notes (G6). Readers ignore other files
   in it.
+
+### What the writer keeps
+
+`.tiny-axe/ingested.json` (schema `tiny-axe-vault-state/1`, JSON with sorted
+keys) is the writer's own record, which readers ignore: for each task, how
+many `calls.jsonl` lines are in and where its tab was after the last of
+them; and for each note, what it adds up to (counts, dates, provenance,
+the pages a path led to, a task's steps). Notes are rendered from it, not
+rebuilt from the journals, so a task whose journal has been pruned keeps
+its share of every count. It holds nothing a note doesn't show, plus page
+keys (never URLs).
+
+- A run reads only the lines not yet in, and only whole lines (the gate may
+  be writing the last one). Running again adds nothing and writes nothing.
+- Notes are written first, then the manifest, then `ingested.json`. A run
+  cut short leaves the old record, so the next run redoes it in full:
+  nothing is lost or counted twice. Temporary files it left are removed.
+- `.tiny-axe/lock` (created exclusively; broken when older than 2 minutes)
+  keeps two writers from interleaving.
+- A note is written only when its text changed; the manifest only when
+  something else was.
+- The writer leaves alone a vault whose manifest names another schema, and
+  never deletes a note.
 
 ### The manifest
 
@@ -103,12 +126,13 @@ Dates (`first_seen`, `last_seen`) are UTC `YYYY-MM-DD`, from the journal's
 |---|---|---|
 | `site` | The host: lowercased, a trailing `.` and a leading `www.` removed, `:port` kept if present | The key |
 | `page` | Site key + the URL's path after templating (below); `/` when empty | The key |
-| `control` | `<page key>\|<role>\|<label, lowercased>` | `<label> (<role>)` |
+| `control` | `<page key>\|<role>\|<label, lowercased>` (empty when there is no label) | `<label> (<role>)` |
 | `path` | `<subject key>\|<tool>\|<answers>\|<class>\|<gate>\|<outcome>` | See below |
-| `tool` | The gate's name, `<server>__<tool>` | `<tool> (<server>)` |
+| `tool` | The gate's name, `<server>__<tool>` | `<tool> (<server>)`; just the name when it has no `__` (server `null`) |
 | `task` | The gate's task id | The key |
 
-- A control's **role** is the target's `role`, or its `tag` if it has none.
+- A control's **role** is the target's `role`, or its `tag` if it has none,
+  or `element`.
   Its **label** is the target's `text` with whitespace collapsed and
   trimmed, cut to 80 characters; `(no label)` if empty. Its title keeps the
   label's case from the earliest call (tasks in id order, calls in order).
@@ -153,6 +177,10 @@ kind, key, title, trust, seen, looked, first_seen, last_seen
 
 `seen`: actions on the site's pages; `looked`: looks at them (below).
 
+A page (and its site) that an action only led to still gets a note, so the
+link resolves: with no actions or looks, dated by when it was reached until
+something else dates it.
+
 Body: one line, e.g. `7 actions and 1 look, 2026-10-01 to 2026-10-02.`
 (`on 2026-10-01` when both dates are the same; singular for 1.)
 
@@ -188,7 +216,7 @@ first_seen, last_seen, tasks, decisions
 |---|---|
 | `subject` | Key of what was acted on: the control; for a navigation, the target page; for a call with neither, the tool |
 | `site` | The subject's site key, or `null` for a tool |
-| `answers` | `rules` when no decision was asked, otherwise `<question>=<bucket>` for each question in name order, space-separated |
+| `answers` | `rules` when no decision was asked, otherwise `<question>=<bucket>` for each question in name order, space-separated; `unanswered` when the record has no answers (the decider was unavailable), shown as "Asked, but no answer came back." |
 | `class` | The gate's class for the call (`read`, `local`, `outward`, `commit`, `handoff`, `refused`), or `unrecorded` |
 | `gate` | What the gate did: `ran`, `approved`, `denied` or `refused` |
 | `outcome` | `unchecked` until outcome verification (learning plan Phase 3) |
@@ -224,11 +252,11 @@ Taken 2 times, 2026-10-01 to 2026-10-02.
 
 ## Gate
 
-Class: local · Gate: ran · Reasons: no_external_effect      (Reasons left out when none)
+Class: local · Gate: ran · Reasons: no_external_effect      (Reasons joined by ", ", left out when none)
 
 ## Led to
 
-- [[<page>|<page title>]]                       (pages reached that differ from the page acted on)
+- [[<page>|<page title>]]                       (pages reached that differ from the page acted on, by key)
 ```
 
 ### Tool
@@ -248,6 +276,10 @@ refused, sites, pruned
 ```
 
 `pruned` is `true` once the task's journal has been deleted; its notes stay.
+`started` is the first call's `at`. `sites`: the sites of every page the
+task acted on, looked at or was led to. A task with no calls yet has no
+note. `driver` is `unrecorded` when there's no `task.json`, and the request
+`(not recorded)`.
 
 Body:
 
@@ -270,21 +302,33 @@ Version 1 reads a task folder (`tasks/<id>/`):
 
 | File | Written by | Used for |
 |---|---|---|
-| `calls.jsonl` | The gate | Every call: `tool`, `args`, `decision` (the gate's), `error`, `result` (first 300 characters), `decisions`, `at`, and `class` (added in G1) |
+| `calls.jsonl` | The gate | Every call: `tool`, `args`, `decision` (the gate's), `error`, `result` (first 300 characters), `decisions`, `at`, and `class` (planned) |
 | `decisions.jsonl` | The gate, for BrowserPolicy | `evidence.target`, `answers`, `disposition`, `reason_codes`, `model`, versions |
-| `task.json` | The agent (added in G1) | `driver`, `objective` (already redacted) |
+| `task.json` | The agent (planned) | `driver`, `objective` (already redacted) |
+
+The gate doesn't write `class` yet, nor the agent `task.json` (the fixture
+has both), and older journals have no `decisions` either. Until they do: a
+path's class is the call's `class`, else its last decision record's
+`disposition`, else `unrecorded`; the driver is `unrecorded` and the request
+`(not recorded)`. The request is never taken from anywhere else (such as
+the evidence's copy of the objective).
 
 - **Actions and looks.** Calls to `browser_snapshot`, `browser_take_screenshot`,
   `browser_find`, `browser_extract`, `browser_read`, `browser_scroll`,
   `browser_wait_for`, `browser_console_messages`, `browser_network_requests`,
   `browser_tabs`, `browser_inspect`, `browser_hover` and `browser_show` are
-  **looks**: counted on the page and the tool, no path. Every other call is
-  an **action** and has a path.
+  **looks**: counted on the page and the tool, no path. A look counts on the
+  page its result reports, or else where the tab was. Every other call is
+  an **action** and has a path. A tool name's server is what comes before
+  `__`; `browser` calls are the browser's.
 - **The page.** A browser result starting `Page: <url>` says where the tab
   is after the call. The page a call acts on is where the previous browser
   call left the tab, or else the decision record's `evidence.target.page`.
-  A navigation acts on its target (`args.url`). A call "led to" its result's
-  page when that differs from the page it acted on.
+  A navigation (a browser action with a string `args.url`) acts on its
+  target. A call "led to" its result's page when that differs from the page
+  it acted on. A result that isn't a web page (`about:blank`) leaves the tab
+  nowhere known; one without `Page:` (an error) leaves it where it was. Each
+  task starts with the tab nowhere known.
 - **Never copied**: `args` (typed text, field values, search words), result
   text beyond the `Page:` URL, query strings and fragments, the evidence's
   `context`, and anything from `purchases/` (which holds the shipping
