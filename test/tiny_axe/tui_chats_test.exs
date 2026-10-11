@@ -166,6 +166,18 @@ defmodule TinyAxe.TUIChatsTest do
     assert {:meta, "allowed github__create_issue once"} in parked(state, 1).transcript
   end
 
+  test "a sub-agent's question (TinyAxe.Agent.Dispatch) from another chat names both" do
+    {state, id} = running("alpha question")
+    state = type(state, "/new")
+    {ask, ref} = tool_ask()
+    sub = %{n: 2, objective: "check the second site"}
+    state = info(state, {:pipeline, id, {:subagent, sub, {:tool_approval, ask}}})
+
+    assert state.tool_ask.ref == ref
+    assert state.tool_ask.from == "chat 1 · agent 2"
+    assert draw(state) =~ "asked by chat 1 · agent 2"
+  end
+
   test "an agent's question from another chat names both" do
     {state, id} = running("alpha question")
     state = type(state, "/new")
