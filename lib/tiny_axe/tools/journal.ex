@@ -53,6 +53,33 @@ defmodule TinyAxe.Tools.Journal do
     written
   end
 
+  @doc """
+  Adds to the task's `task.json` (`docs/vault-format.md`): what the agent
+  knows about the task (`driver`, the already redacted `objective`, and for
+  a sub-agent its `parent` task and `part`). Never raises, like the rest.
+  """
+  @spec info(String.t(), map()) :: :ok
+  def info(id, fields) do
+    path = Path.join(dir(id), "task.json")
+
+    known =
+      with {:ok, raw} <- File.read(path),
+           {:ok, %{} = known} <- JSON.decode(raw),
+           do: known,
+           else: (_ -> %{})
+
+    fields = for {k, v} <- fields, v != nil, into: %{}, do: {to_string(k), v}
+
+    case File.write(path, JSON.encode!(Map.merge(known, fields))) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("tiny-axe couldn't write task.json of task #{id}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
   @spec append_decision(String.t(), map()) :: :ok
   def append_decision(id, record) do
     line = record |> Map.put(:at, DateTime.utc_now() |> DateTime.to_iso8601()) |> JSON.encode!()

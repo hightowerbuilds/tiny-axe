@@ -304,13 +304,13 @@ Version 1 reads a task folder (`tasks/<id>/`):
 |---|---|---|
 | `calls.jsonl` | The gate | Every call: `tool`, `args`, `decision` (the gate's), `error`, `result` (first 300 characters), `decisions`, `at`, and `class` (planned) |
 | `decisions.jsonl` | The gate, for BrowserPolicy | `evidence.target`, `answers`, `disposition`, `reason_codes`, `model`, versions |
-| `task.json` | The agent (planned) | `driver`, `objective` (already redacted) |
+| `task.json` | The agent | `driver`, `objective` (already redacted); a sub-agent's also `parent` (the task that dispatched it) and `part` (what it was handed) |
 
-The gate doesn't write `class` yet, nor the agent `task.json` (the fixture
-has both), and older journals have no `decisions` either. Until they do: a
+The gate doesn't write `class` yet (the fixture has it), and older
+journals have no `decisions` or `task.json` either. Until they do: a
 path's class is the call's `class`, else its last decision record's
-`disposition`, else `unrecorded`; the driver is `unrecorded` and the request
-`(not recorded)`. The request is never taken from anywhere else (such as
+`disposition`, else `unrecorded`; without `task.json` the driver is
+`unrecorded` and the request `(not recorded)`. The request is never taken from anywhere else (such as
 the evidence's copy of the objective).
 
 - **Actions and looks.** Calls to `browser_snapshot`, `browser_take_screenshot`,

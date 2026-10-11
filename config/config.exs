@@ -145,11 +145,18 @@ config :tiny_axe, :models,
   without_asking: [{:claude, "claude-haiku-5-5"}]
 
 # The agent: how long a run may take, how hard Claude/Codex think, and how many
-# turns tiny-axe's own loop gives the local model.
+# turns tiny-axe's own loop gives the local model. A Claude or Codex agent can
+# hand up to 4 independent parts to sub-agents at once (dispatch_agents,
+# TinyAxe.Agent.Dispatch): each gets a gate task with these smaller limits,
+# and the whole dispatch is stopped after :dispatch_timeout, which must stay
+# under Claude Code's 15-minute tool timeout (MCP_TOOL_TIMEOUT).
 config :tiny_axe,
   agent_timeout: 1_800_000,
   agent_effort: "medium",
-  local_agent_steps: 12
+  local_agent_steps: 12,
+  subagent_max_calls: 30,
+  subagent_max_minutes: 10,
+  dispatch_timeout: 780_000
 
 config :tiny_axe, :jev, model: "jev-latest"
 

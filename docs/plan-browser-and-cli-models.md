@@ -277,6 +277,42 @@ nothing depends on trusting the driver:
 
 `esc` kills the driver; the CLI runner already does this.
 
+### Sub-agents (built 2026-10-11)
+
+A top-level agent task driven by Claude or Codex is offered one more
+gate-owned tool, `dispatch_agents` (`TinyAxe.Agent.Dispatch`), and its
+system prompt says when to use it: independent parts that each take
+several steps (checking several sites), never small or sequential work, at
+most 4, and then combine the answers.
+
+- **Class `local`**: it runs without asking; it only starts work here. The
+  sub-agents' own calls go through the gate and ask as usual; their
+  questions join the TUI's queue marked "asked by agent N".
+- **Each part** is `TinyAxe.Agent.run_part/3`, the same machinery as a run:
+  its own gate task (journal, `task.json` naming the parent, its own browser
+  tab lease), smaller limits (`:subagent_max_calls` 30,
+  `:subagent_max_minutes` 10), the parent's driver (the quota stop still
+  holds) and servers, and the same completion check, so what it reports
+  about browser actions is checked before the parent sees it. Its gate
+  objective is the user's request, never the agent-written part, so browser
+  decisions still judge by the user's words. No purchase intent: buying
+  stays with the parent. A sub-agent's task (depth 1) is never offered the
+  tool, so there's no recursion.
+- **The browser** is shared but never a tab: each gate task leases its own
+  (the server serializes calls and picks a tab no other task holds).
+- **Results**: one tool result with each part's objective, outcome (done,
+  fell short, error, timed out) and answer. One failing doesn't stop the
+  others. The whole dispatch is stopped after `:dispatch_timeout` (13
+  minutes, under Claude Code's 15-minute `MCP_TOOL_TIMEOUT`); stragglers
+  are killed and reported as timed out.
+- **Cancelling**: the call waits in the gate's HTTP process, not the run's,
+  so a guard watches the run's process (the parent task's owner): when the
+  user cancels, it kills the sub-agents, which kills their CLIs and closes
+  their gate tasks.
+- **Events**: `{:subagent, %{n: n, objective: text}, event}`; the TUI shows
+  "🤖 agent N started", its tool lines as "agent N · …", and "agent N
+  finished (…)"; its text never streams into the reply.
+
 ### The browser server (ours)
 
 This is a Node MCP server (`priv/browser/server.mjs`) that drives the

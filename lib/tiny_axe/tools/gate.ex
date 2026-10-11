@@ -49,6 +49,11 @@ defmodule TinyAxe.Tools.Gate do
   Each task leases its own browser tabs (`TinyAxe.Browser.bind/3`); closing
   the task frees them for the next one.
 
+  A top-level agent task driven by Claude or Codex is also offered the
+  gate-owned `dispatch_agents` tool (`TinyAxe.Agent.Dispatch`): independent
+  parts of the request handed to sub-agents, each with a gate task of its
+  own (`:depth` 1), which is never offered it.
+
   A refusal comes back to the agent as a tool error saying why, so it can
   carry on or tell the user.
   """
@@ -58,6 +63,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{Browser, MCP, Purchases, Tools}
+  alias TinyAxe.Agent.Dispatch
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
@@ -69,8 +75,9 @@ defmodule TinyAxe.Tools.Gate do
   Opens a task: its own address and token for the driver. `notify` gets the
   task's events (and approval questions). `opts`: `:servers` (`:all` or a
   list of names), `:max_calls`, `:max_minutes`, `:intent`, what the user
-  asked to buy, if anything (`TinyAxe.Purchases.intent/2`), and `:objective`,
-  the user's request, which browser decisions are shown as the task.
+  asked to buy, if anything (`TinyAxe.Purchases.intent/2`), `:objective`,
+  the user's request, which browser decisions are shown as the task, and
+  for a sub-agent's task, `:depth` (1) and `:parent` (the parent task's id).
   """
   @spec open_task((term() -> any()), keyword()) :: {:ok, map()} | {:error, term()}
   def open_task(notify, opts \\ []) do
@@ -98,6 +105,11 @@ defmodule TinyAxe.Tools.Gate do
         allowed: MapSet.new(),
         intent: Keyword.get(opts, :intent),
         objective: opts |> Keyword.get(:objective) |> then(&(&1 && Redact.text(&1))),
+        # 0 for an agent's own task, 1 for a sub-agent's; and who drives it
+        # (driven_by/2): together they say whether dispatch_agents is offered.
+        depth: Keyword.get(opts, :depth, 0),
+        parent: Keyword.get(opts, :parent),
+        driver: nil,
         # The latest calls and what the gate did, newest last, for decisions.
         outcomes: [],
         # Its browser assessments, for reuse and held restrictions
@@ -186,6 +198,20 @@ defmodule TinyAxe.Tools.Gate do
       ""
   end
 
+  @doc """
+  Records which model drives a task. Returns whether the task is offered
+  `dispatch_agents`: only an agent's own task (not a sub-agent's), driven by
+  Claude or Codex (the local model is weak at long chains, and one GPU runs
+  one request at a time anyway).
+  """
+  @spec driven_by(String.t(), TinyAxe.Model.choice()) :: boolean()
+  def driven_by(id, choice), do: GenServer.call(__MODULE__, {:driver, id, choice})
+
+  defp dispatches?(%{depth: 0, driver: driver}) when driver != nil,
+    do: TinyAxe.Model.remote?(driver)
+
+  defp dispatches?(_task), do: false
+
   @doc "The MCP config that gives a driver this task's gate and nothing else."
   @spec mcp_config(map()) :: map()
   def mcp_config(%{url: url, token: token}) do
@@ -215,7 +241,8 @@ defmodule TinyAxe.Tools.Gate do
   @doc """
   The tools a task may use, as MCP tool definitions: its servers' tools, and
   with a browser, the gate's own `browser_assess` and `browser_verify` (and
-  `browser_choose` while choosing is on).
+  `browser_choose` while choosing is on), and `dispatch_agents` when the
+  task is offered it (`driven_by/2`).
   """
   @spec tools(map()) :: [map()]
   def tools(task) do
@@ -229,7 +256,8 @@ defmodule TinyAxe.Tools.Gate do
         |> Map.put("name", t.name)
       end
 
-    if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
+    listed = if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
+    if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
   end
 
   @doc "Runs one tool call through the gate. Returns an MCP result."
@@ -500,6 +528,15 @@ defmodule TinyAxe.Tools.Gate do
     own = Decisions.listed_name(name)
 
     cond do
+      own == Dispatch.name() and dispatches?(task) ->
+        %{
+          name: own,
+          server: nil,
+          tool: own,
+          definition: Dispatch.definition(),
+          policy: %{"gate" => true, "dispatch" => true}
+        }
+
       Decisions.owns?(own) and Enum.any?(tools, &browser?/1) ->
         [definition] = for d <- Decisions.definitions(), d["name"] == own, do: d
         %{name: own, server: nil, tool: own, definition: definition, policy: %{"gate" => true}}
@@ -511,6 +548,7 @@ defmodule TinyAxe.Tools.Gate do
 
   defp browser?(tool), do: tool.policy["browser"] == true
   defp gate?(tool), do: tool.policy["gate"] == true
+  defp dispatch?(tool), do: tool.policy["dispatch"] == true
 
   # Browser actions are assessed by what they'd do on the page (the gate
   # looks first, with browser_inspect); other tools are classed by their
@@ -520,6 +558,14 @@ defmodule TinyAxe.Tools.Gate do
     cond do
       hidden?(tool) ->
         {:refused, "that tool is for tiny-axe only", task}
+
+      # Starting work on this machine: runs without asking. The sub-agents'
+      # own calls come through here like any other.
+      dispatch?(tool) ->
+        case Dispatch.parts(args) do
+          {:ok, parts} -> {:local, "starts #{length(parts)} sub-agent(s) here", task}
+          {:error, why} -> {:refused, why, task}
+        end
 
       gate?(tool) and tool.name == "browser_verify" ->
         case find_action(task.id, args["action_id"]) do
@@ -1040,6 +1086,10 @@ defmodule TinyAxe.Tools.Gate do
 
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
+
+  # Waits here, in the HTTP request, for the sub-agents' results.
+  defp decide(task, %{policy: %{"dispatch" => true}}, args, _class, _allowed),
+    do: {:ran, Dispatch.run(task, args)}
 
   # browser_assess answers with the assessment, browser_verify with the
   # verification; nothing runs.
@@ -1582,6 +1632,11 @@ defmodule TinyAxe.Tools.Gate do
 
   def handle_call({:get, id}, _from, tasks), do: {:reply, tasks[id], tasks}
 
+  def handle_call({:driver, id, choice}, _from, tasks) do
+    tasks = update_task(tasks, id, &%{&1 | driver: choice})
+    {:reply, dispatches?(tasks[id]), tasks}
+  end
+
   def handle_call({:examples, id, stage, ids}, _from, tasks),
     do:
       {:reply, :ok,
@@ -1697,6 +1752,7 @@ defmodule TinyAxe.Tools.Gate do
     case Enum.find(tasks, fn {_id, t} -> t[:monitor] == ref end) do
       {id, t} ->
         for server <- t.leased, do: Task.start(fn -> Browser.release(server, id) end)
+        TinyAxe.Vault.task_closed(id)
         {:noreply, Map.delete(tasks, id)}
 
       nil ->

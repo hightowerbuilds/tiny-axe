@@ -180,6 +180,8 @@ defmodule TinyAxe.TUI do
   defp asked_by({kind, ask}, id) when kind in [:ask_remote, :tool_approval, :purchase_approval],
     do: {kind, Map.put(ask, :run, id)}
 
+  # A sub-agent's questions too (TinyAxe.Agent.Dispatch).
+  defp asked_by({:subagent, sub, event}, id), do: {:subagent, sub, asked_by(event, id)}
   defp asked_by(event, _id), do: event
 
   # A question is shown now, or waits its turn behind the one on screen.
@@ -875,6 +877,11 @@ defmodule TinyAxe.TUI do
 
   defp apply_event({:completion, _}, state), do: state
 
+  ## Sub-agents (TinyAxe.Agent.Dispatch): their lines, marked; their questions
+  ## join the queue saying who asks; their text and answers stay out of the reply.
+
+  defp apply_event({:subagent, %{n: n} = sub, event}, state), do: subagent(event, n, sub, state)
+
   defp apply_event({:review, _}, state), do: state
   # Which way the request went; the route line already shows it.
   defp apply_event({:task, _}, state), do: state
@@ -994,6 +1001,39 @@ defmodule TinyAxe.TUI do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
   end
+
+  defp subagent(:started, n, sub, state),
+    do: add_meta(state, "🤖 agent #{n} started: #{String.slice(sub.objective, 0, 120)}")
+
+  defp subagent({:finished, outcome}, n, _sub, state),
+    do: add_meta(state, "agent #{n} finished (#{String.replace(to_string(outcome), "_", " ")})")
+
+  defp subagent({kind, ask}, n, _sub, state)
+       when kind in [:ask_remote, :tool_approval, :purchase_approval],
+       do: apply_event({kind, Map.put(ask, :from, "agent #{n}")}, state)
+
+  defp subagent({kind, _} = event, n, _sub, state)
+       when kind in [
+              :tool_call,
+              :tool_result,
+              :tool_limit,
+              :outcome,
+              :completion,
+              :purchase_refused
+            ] do
+    shown = apply_event(event, state)
+    {before, added} = Enum.split(shown.transcript, length(state.transcript))
+
+    marked =
+      Enum.map(added, fn
+        {:meta, line} -> {:meta, "agent #{n} · " <> line}
+        e -> e
+      end)
+
+    %{shown | transcript: before ++ marked}
+  end
+
+  defp subagent(_event, _n, _sub, state), do: state
 
   defp outcome_codes(codes), do: codes |> List.delete("outcome_unresolved") |> Enum.join(", ")
 
