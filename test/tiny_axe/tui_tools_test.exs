@@ -68,6 +68,43 @@ defmodule TinyAxe.TUIToolsTest do
     assert state.tool_ask == nil
   end
 
+  test "a second question waits its turn, and the first answer brings it up" do
+    {state, first} = asking(running())
+    {state, second} = asking(state)
+
+    assert state.tool_ask.ref == first
+    assert [{:tool_ask, %{ref: ^second}}] = state.waiting
+    assert draw(state) =~ "1 more question waiting"
+
+    {:noreply, state} = TUI.handle_event(key("y"), state)
+    assert_received {:tool_answer, ^first, :once}
+    assert state.tool_ask.ref == second
+    assert state.waiting == []
+
+    {:noreply, state} = TUI.handle_event(key("n"), state)
+    assert_received {:tool_answer, ^second, :deny}
+    assert state.tool_ask == nil
+  end
+
+  test "cancelling refuses the run's waiting questions too, not another run's" do
+    {state, first} = asking(running())
+    {state, second} = asking(state)
+    other = make_ref()
+    elsewhere = %{tool: "x", server: "s", description: nil, args: %{}, class: :outward}
+    elsewhere = Map.merge(elsewhere, %{reply_to: self(), ref: other, run: make_ref()})
+    state = %{state | waiting: state.waiting ++ [{:tool_ask, elsewhere}]}
+
+    # The run's process is killed: a stand-in, not this test.
+    {id, _} = state.run
+    state = TUI.Run.cancel(%{state | run: {id, spawn(fn -> Process.sleep(:infinity) end)}})
+
+    assert_received {:tool_answer, ^first, :deny}
+    assert_received {:tool_answer, ^second, :deny}
+    refute_received {:tool_answer, ^other, _}
+    assert state.tool_ask == nil
+    assert [{:tool_ask, %{ref: ^other}}] = state.waiting
+  end
+
   test "tool calls and refusals appear in the transcript" do
     state =
       running()

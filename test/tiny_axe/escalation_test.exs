@@ -13,7 +13,7 @@ defmodule TinyAxe.EscalationTest do
 
   @moduletag :tmp_dir
 
-  @keys ~w(model_backend decider script_model script_decider fs_root project_dir code_check web_search escalate)a
+  @keys ~w(model_backend decider script_model script_decider fs_root project_dir code_check web_search escalate models)a
 
   setup %{tmp_dir: dir} do
     previous = Map.new(@keys, &{&1, Application.get_env(:tiny_axe, &1)})
@@ -34,9 +34,17 @@ defmodule TinyAxe.EscalationTest do
     Application.put_env(:tiny_axe, :project_dir, dir)
     Application.put_env(:tiny_axe, :code_check, false)
     Application.put_env(:tiny_axe, :web_search, false)
+    # Haiku asks first here, so the asking itself can be tested; the test
+    # of `without_asking` puts it back.
+    unasked([])
     TinyAxe.Location.reset()
     set_claude_usage(0.1)
     %{dir: dir}
+  end
+
+  defp unasked(choices) do
+    models = Application.get_env(:tiny_axe, :models, [])
+    Application.put_env(:tiny_axe, :models, Keyword.put(models, :without_asking, choices))
   end
 
   # The fake claude's answers are JSON of what it was given; these start so.
@@ -171,6 +179,25 @@ defmodule TinyAxe.EscalationTest do
 
       assert done(events) == "local 2"
       assert {:chose, %{attempt: 2, score: 0.5, attempts: 3}} in events
+    end
+
+    test "a model the user lets go without asking: not asked, and it answers" do
+      script()
+      unasked([{:claude, "claude-haiku-5-5"}])
+      events = run("Something hard", :ask)
+
+      assert all(events, :ask_remote) == []
+      assert [%{to: "Claude Haiku 5.5"}] = all(events, :escalate)
+      assert from_claude?(done(events))
+    end
+
+    test "without asking still keeps a session that said no local" do
+      script()
+      unasked([{:claude, "claude-haiku-5-5"}])
+      events = run("Something hard", :denied)
+
+      assert all(events, :ask_remote) == [] and all(events, :escalate) == []
+      assert done(events) == "local 2"
     end
 
     test "denied for the session: nothing is asked or sent" do

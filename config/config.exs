@@ -134,9 +134,15 @@ config :tiny_axe, :purchases,
 # Claude Haiku 5.5 is the only Claude model: the agent and the one escalation
 # rung (no Sonnet). It's pinned by its full name (Jev still makes the
 # decisions), so an alias moving to a new model can't change results unseen.
+#
+# `without_asking`: models that start work without the "use a bigger model?"
+# question (the user's choice, 2026-10-11: Haiku just goes). The TUI still
+# says who is working; a session the user turned off-machine models off for
+# (or eval runs kept local) still keeps them local, and the quota stop holds.
 config :tiny_axe, :models,
   escalate: [{:claude, "claude-haiku-5-5"}],
-  agent: {:claude, "claude-haiku-5-5"}
+  agent: {:claude, "claude-haiku-5-5"},
+  without_asking: [{:claude, "claude-haiku-5-5"}]
 
 # The agent: how long a run may take, how hard Claude/Codex think, and how many
 # turns tiny-axe's own loop gives the local model.

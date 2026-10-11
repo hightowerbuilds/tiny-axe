@@ -47,14 +47,19 @@ defmodule TinyAxe.TUI.Run do
 
   def cancel(%{run: nil} = state), do: state
 
-  def cancel(%{run: {_id, pid}} = state) do
+  def cancel(%{run: {id, pid}} = state) do
     Process.exit(pid, :kill)
 
     if state.card_flow, do: TinyAxe.Cards.discard_entry()
 
-    # A tool call or purchase waiting for an answer is refused, so the gate lets it go.
-    if ask = state.tool_ask, do: send(ask.reply_to, {:tool_answer, ask.ref, :deny})
-    if ask = state.purchase_ask, do: send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
+    # This run's questions, on screen or waiting, are refused, so the gate lets
+    # them go; other runs' questions stay.
+    mine = fn ask -> ask != nil and ask[:run] in [id, nil] end
+    asked = [asking: state.asking, tool_ask: state.tool_ask, purchase_ask: state.purchase_ask]
+    {refused, waiting} = Enum.split_with(state.waiting, fn {_field, ask} -> mine.(ask) end)
+    for {field, ask} <- asked ++ refused, mine.(ask), do: refuse(field, ask)
+    cleared = for {field, ask} <- asked, mine.(ask), into: %{}, do: {field, nil}
+    state = Map.merge(%{state | waiting: waiting}, cleared)
 
     # Killing the task doesn't stop the sandboxed command, so kill that directly.
     state =
@@ -76,13 +81,15 @@ defmodule TinyAxe.TUI.Run do
         pending_prompt: nil,
         streaming: nil,
         compacting: nil,
-        asking: nil,
-        tool_ask: nil,
-        purchase_ask: nil,
         card_flow: nil,
         transcript: state.transcript ++ partial ++ [{:meta, "cancelled"}]
     }
   end
+
+  defp refuse(:tool_ask, ask), do: send(ask.reply_to, {:tool_answer, ask.ref, :deny})
+  defp refuse(:purchase_ask, ask), do: send(ask.reply_to, {:purchase_answer, ask.ref, :deny})
+  # The asking process is killed with its run: nothing waits for a reply.
+  defp refuse(:asking, _ask), do: :ok
 
   def fail(state, message) do
     %{

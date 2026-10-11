@@ -110,6 +110,9 @@ defmodule TinyAxe.TUI do
        tool_ask: nil,
        # A purchase waiting for the user to type its total (TinyAxe.Purchases).
        purchase_ask: nil,
+       # Questions (asking, tool_ask, purchase_ask) that arrived while another
+       # was on screen, oldest first, as {field, ask}: each is shown in turn.
+       waiting: [],
        # /credit-card in progress (TinyAxe.TUI.CardFlow): nothing secret in it.
        card_flow: nil,
        # Whether this request is an agent run: its answer goes after its tool lines.
@@ -149,10 +152,42 @@ defmodule TinyAxe.TUI do
   # Every event and message goes through these, so the conversation is saved
   # outside this process after any change (see TinyAxe.Session).
   @impl true
-  def handle_event(event, state), do: event |> on_event(state) |> saved(state)
+  def handle_event(event, state), do: event |> on_event(state) |> next_question() |> saved(state)
 
   @impl true
-  def handle_info(msg, state), do: msg |> on_info(state) |> saved(state)
+  def handle_info(msg, state), do: msg |> on_info(state) |> next_question() |> saved(state)
+
+  # Once a question is answered, the next one waiting takes its place.
+  defp next_question({:noreply, state} = result) when is_map(state),
+    do: put_elem(result, 1, promote(state))
+
+  defp next_question({:noreply, state, _opts} = result), do: put_elem(result, 1, promote(state))
+  defp next_question(result), do: result
+
+  defp promote(%{waiting: [{field, ask} | rest]} = state) do
+    if asked?(state),
+      do: state,
+      else: %{Map.put(state, field, ask) | waiting: rest, status: "waiting for your answer…"}
+  end
+
+  defp promote(state), do: state
+
+  defp asked?(state),
+    do: state.asking != nil or state.tool_ask != nil or state.purchase_ask != nil
+
+  # Questions remember which run asked them, so cancelling a run refuses only
+  # its own (TUI.Run.cancel/1).
+  defp asked_by({kind, ask}, id) when kind in [:ask_remote, :tool_approval, :purchase_approval],
+    do: {kind, Map.put(ask, :run, id)}
+
+  defp asked_by(event, _id), do: event
+
+  # A question is shown now, or waits its turn behind the one on screen.
+  defp offer(state, field, ask) do
+    if asked?(state),
+      do: %{state | waiting: state.waiting ++ [{field, ask}]},
+      else: %{Map.put(state, field, ask) | status: "waiting for your answer…"}
+  end
 
   defp saved(result, before) do
     now = elem(result, 1)
@@ -603,7 +638,7 @@ defmodule TinyAxe.TUI do
   ## Pipeline events
 
   defp on_info({:pipeline, id, event}, %{run: {id, _pid}} = state) do
-    {:noreply, apply_event(event, state)}
+    {:noreply, apply_event(asked_by(event, id), state)}
   end
 
   defp on_info({:pipeline, _stale_id, _event}, state), do: {:noreply, state, render?: false}
@@ -738,8 +773,7 @@ defmodule TinyAxe.TUI do
 
   ## Escalation to bigger models
 
-  defp apply_event({:ask_remote, ask}, state),
-    do: %{state | asking: ask, status: "waiting for your answer…"}
+  defp apply_event({:ask_remote, ask}, state), do: offer(state, :asking, ask)
 
   defp apply_event({:escalate, %{to: to, reason: why}}, state) do
     %{state | status: "asking #{to}…"}
@@ -761,7 +795,7 @@ defmodule TinyAxe.TUI do
   defp apply_event({:purchase_approval, ask}, state) do
     stage = if ask[:mode] == :card_step, do: :consent, else: :total
     ask = Map.merge(ask, %{typed: "", stage: stage, masked: "", unlocked: [], hint: nil})
-    %{state | purchase_ask: ask, status: "waiting for your answer…"}
+    offer(state, :purchase_ask, ask)
   end
 
   defp apply_event({:purchase_refused, %{summary: s, failed: failed}}, state) do
@@ -794,8 +828,7 @@ defmodule TinyAxe.TUI do
   defp apply_event({:agent_local, why}, state),
     do: add_meta(state, "the local model will drive instead (#{why})")
 
-  defp apply_event({:tool_approval, ask}, state),
-    do: %{state | tool_ask: ask, status: "waiting for your answer…"}
+  defp apply_event({:tool_approval, ask}, state), do: offer(state, :tool_ask, ask)
 
   defp apply_event({:tool_call, %{tool: tool, class: class, args: args} = call}, state) do
     shown = if args == %{}, do: "", else: " " <> String.slice(JSON.encode!(args), 0, 120)

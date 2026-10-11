@@ -59,7 +59,7 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" add a card ", Enum.filter(lines, & &1), 0, area)
   end
 
-  def render(%{purchase_ask: ask}, area) when ask != nil do
+  def render(%{purchase_ask: ask} = state, area) when ask != nil do
     s = ask.summary
     red = %Style{fg: :red, modifiers: [:bold]}
     card_step? = ask[:mode] == :card_step
@@ -90,7 +90,8 @@ defmodule TinyAxe.TUI.Overlays do
         purchase_prompt(ask) ++
         [
           ask[:hint] && styled(ask.hint, :yellow),
-          styled("esc refuse", :dark_gray)
+          styled("esc refuse", :dark_gray),
+          queue_line(state, ask)
         ]
 
     [
@@ -108,7 +109,7 @@ defmodule TinyAxe.TUI.Overlays do
     ]
   end
 
-  def render(%{asking: ask}, area) when ask != nil do
+  def render(%{asking: ask} = state, area) when ask != nil do
     lines = [
       styled("Send this request to #{ask.to}?", :cyan, [:bold]),
       styled(""),
@@ -121,14 +122,15 @@ defmodule TinyAxe.TUI.Overlays do
         :yellow
       ),
       styled(""),
-      styled("y yes, for this session · n no, keep everything local this session", :dark_gray)
+      styled("y yes, for this session · n no, keep everything local this session", :dark_gray),
+      queue_line(state, ask)
     ]
 
-    popup(" use a bigger model? ", lines, 0, area)
+    popup(" use a bigger model? ", Enum.filter(lines, & &1), 0, area)
   end
 
   # The agent needs the user to do something in the browser window.
-  def render(%{tool_ask: %{class: :handoff} = ask}, area) do
+  def render(%{tool_ask: %{class: :handoff} = ask} = state, area) do
     lines = [
       styled("Your turn in the browser", :cyan, [:bold]),
       styled(""),
@@ -140,13 +142,14 @@ defmodule TinyAxe.TUI.Overlays do
         :yellow
       ),
       styled(""),
-      styled("y done · n I won't", :dark_gray)
+      styled("y done · n I won't", :dark_gray),
+      queue_line(state, ask)
     ]
 
-    popup(" over to you ", lines, 0, area)
+    popup(" over to you ", Enum.filter(lines, & &1), 0, area)
   end
 
-  def render(%{tool_ask: ask}, area) when ask != nil do
+  def render(%{tool_ask: ask} = state, area) when ask != nil do
     args =
       case ask.args do
         args when args == %{} -> ["(no arguments)"]
@@ -178,7 +181,7 @@ defmodule TinyAxe.TUI.Overlays do
         do: "y allow once · a allow this tool for the session · n refuse",
         else: "y allow · n refuse"
 
-    footer = [styled(""), styled(keys, :dark_gray)]
+    footer = Enum.filter([styled(""), styled(keys, :dark_gray), queue_line(state, ask)], & &1)
 
     popup(" allow this tool call? ", lines ++ body ++ footer, 0, area)
   end
@@ -325,6 +328,25 @@ defmodule TinyAxe.TUI.Overlays do
 
   # Long lines wrap rather than run off the edge: a command or warning cut off
   # there is one the user approves without seeing in full.
+  # Who is asking (an agent or chat, when it isn't the one in front of the
+  # user) and how many other questions wait behind this one.
+  defp queue_line(state, ask) do
+    from = if ask[:from], do: "asked by #{ask.from}"
+    more = Map.get(state, :waiting, [])
+
+    waiting =
+      case length(more) do
+        0 -> nil
+        1 -> "1 more question waiting"
+        n -> "#{n} more questions waiting"
+      end
+
+    case Enum.filter([from, waiting], & &1) do
+      [] -> nil
+      parts -> styled(Enum.join(parts, " · "), :magenta)
+    end
+  end
+
   defp popup(title, lines, scroll, area) do
     [
       {%Popup{

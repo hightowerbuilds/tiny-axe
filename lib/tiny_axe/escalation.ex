@@ -92,7 +92,8 @@ defmodule TinyAxe.Escalation do
   @doc """
   Whether `choice` may be used now: `{:ok, mode}` (with the user's answer, if
   they were asked), `{:skip, why}` for this rung only, or `{:stop, why}` for
-  the whole ladder.
+  the whole ladder. A model in `:models` `without_asking` is used without
+  asking unless the session said no.
   """
   @spec permit(Model.choice(), String.t(), mode(), notify()) ::
           {:ok, mode()} | {:skip, String.t()} | {:stop, String.t()}
@@ -101,10 +102,15 @@ defmodule TinyAxe.Escalation do
       not Model.remote?(choice) -> {:ok, mode}
       full = over_quota(choice) -> {:skip, full}
       mode == :allowed -> {:ok, :allowed}
+      mode == :ask and choice in without_asking() -> {:ok, :ask}
       mode == :ask -> ask(choice, why, notify)
       true -> {:stop, "sending requests off this machine is off for this session"}
     end
   end
+
+  # Models the user lets start work without the question (`:models`
+  # `without_asking`).
+  defp without_asking, do: List.wrap(Model.role(:without_asking))
 
   defp ask(choice, why, notify) do
     ref = make_ref()
