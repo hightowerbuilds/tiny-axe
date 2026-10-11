@@ -14,8 +14,13 @@ defmodule TinyAxe.TUI do
   Keys: `enter` send · `alt+enter` newline · `esc` cancel · `pgup`/`pgdn` scroll
   (and `↑`/`↓`/`home`/`end` with an empty prompt) · `ctrl+y` copy the newest code
   block, again for the one before · `ctrl+z` undo the last file plan ·
-  `ctrl+k` compact now · `ctrl+t` show/hide the sidebar · `ctrl+l` clear · `ctrl+c` quit. When the model proposes file edits, each is
+  `ctrl+k` compact now · `ctrl+t` show/hide the sidebar · `ctrl+o` next chat ·
+  `ctrl+l` clear this chat · `ctrl+c` quit. When the model proposes file edits, each is
   shown as a diff: `y` save · `n` skip · `esc` skip the rest · `↑`/`↓` scroll.
+
+  Chats (`TUI.Chats`): `/new` starts another chat while the one left keeps
+  working, `/chats` lists them, `/chat N` switches, `/chat close` closes an
+  idle one. Questions from any chat show up wherever you are.
   """
 
   use ExRatatui.App
@@ -26,6 +31,7 @@ defmodule TinyAxe.TUI do
   alias TinyAxe.{Context, Files}
 
   alias TinyAxe.TUI.{
+    Chats,
     CommandWorkflow,
     CompactionWorkflow,
     FileWorkflow,
@@ -126,6 +132,9 @@ defmodule TinyAxe.TUI do
        # textarea's first visible row.
        pulse: Pulse.new(),
        halt_on_exit: Keyword.get(opts, :halt_on_exit, false),
+       # The chats put aside, which keep running; the active one's fields are
+       # the ones here (TinyAxe.TUI.Chats lists which).
+       chats: Chats.restore(saved),
        session?: session?,
        # The compacted summary of older turns: %{text, turns, check, before, after}.
        summary: saved.summary,
@@ -152,16 +161,32 @@ defmodule TinyAxe.TUI do
   # Every event and message goes through these, so the conversation is saved
   # outside this process after any change (see TinyAxe.Session).
   @impl true
-  def handle_event(event, state), do: event |> on_event(state) |> next_question() |> saved(state)
+  # A key answering another chat's question, or a message for a chat put
+  # aside, is handled within that chat (TUI.Chats.within/3).
+  def handle_event(event, state) do
+    state
+    |> Chats.within(Chats.asker(state, event), &on_event(event, &1))
+    |> next_question()
+    |> Chats.relabeled()
+    |> saved(state)
+  end
 
   @impl true
-  def handle_info(msg, state), do: msg |> on_info(state) |> next_question() |> saved(state)
+  def handle_info(msg, state) do
+    state
+    |> Chats.within(Chats.owner(state, msg), &on_info(msg, &1))
+    |> next_question()
+    |> Chats.relabeled()
+    |> saved(state)
+  end
 
   # Once a question is answered, the next one waiting takes its place.
   defp next_question({:noreply, state} = result) when is_map(state),
-    do: put_elem(result, 1, promote(state))
+    do: put_elem(result, 1, Chats.promote(state, &promote/1))
 
-  defp next_question({:noreply, state, _opts} = result), do: put_elem(result, 1, promote(state))
+  defp next_question({:noreply, state, _opts} = result),
+    do: put_elem(result, 1, Chats.promote(state, &promote/1))
+
   defp next_question(result), do: result
 
   defp promote(%{waiting: [{field, ask} | rest]} = state) do
@@ -193,14 +218,7 @@ defmodule TinyAxe.TUI do
 
   defp saved(result, before) do
     now = elem(result, 1)
-
-    changed? =
-      now.transcript != before.transcript or now.history != before.history or
-        now.summary != before.summary
-
-    if now.session? and changed?,
-      do: TinyAxe.Session.save(now.history, now.transcript, now.summary)
-
+    if now.session?, do: Chats.persist(now, before)
     result
   end
 
@@ -208,7 +226,7 @@ defmodule TinyAxe.TUI do
 
   defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state) do
     if state.card_flow, do: TinyAxe.Cards.discard_entry()
-    {:stop, Run.cancel(state)}
+    {:stop, state |> Chats.cancel_all() |> Run.cancel()}
   end
 
   # /credit-card: every key goes to the flow (and its secrets to the vault).
@@ -227,6 +245,10 @@ defmodule TinyAxe.TUI do
 
   defp on_event(%Event.Paste{content: content}, %{card_flow: flow} = state) when flow != nil,
     do: {:noreply, %{state | card_flow: TinyAxe.TUI.CardFlow.paste(flow, content)}}
+
+  # Another chat; the one left keeps running, and its questions still come up.
+  defp on_event(%Event.Key{code: "o", modifiers: ["ctrl"]}, state),
+    do: {:noreply, Chats.next(state)}
 
   # The request waits for this answer; it holds for the rest of the session.
   defp on_event(%Event.Key{code: code}, %{asking: ask} = state) when ask != nil do
@@ -358,7 +380,9 @@ defmodule TinyAxe.TUI do
      }}
   end
 
-  defp on_event(%Event.Key{code: "enter", modifiers: []}, state), do: submit(state)
+  # Chat commands work while this chat is busy too: that's when they're wanted.
+  defp on_event(%Event.Key{code: "enter", modifiers: []}, state),
+    do: Chats.submit(state) || submit(state)
 
   defp on_event(%Event.Key{code: "enter"}, state) do
     ExRatatui.textarea_handle_key(state.input, "enter", [])
