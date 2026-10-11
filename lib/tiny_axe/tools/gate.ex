@@ -54,6 +54,11 @@ defmodule TinyAxe.Tools.Gate do
   parts of the request handed to sub-agents, each with a gate task of its
   own (`:depth` 1), which is never offered it.
 
+  Every agent task, once its driver is known, is also offered the gate-owned
+  `shell_run` tool (`TinyAxe.Agent.ShellTool`): commands that only look run
+  at once, read-only; any other is asked about every time, never for the
+  session.
+
   A refusal comes back to the agent as a tool error saying why, so it can
   carry on or tell the user.
   """
@@ -62,8 +67,8 @@ defmodule TinyAxe.Tools.Gate do
 
   require Logger
 
-  alias TinyAxe.{Browser, MCP, Purchases, Tools}
-  alias TinyAxe.Agent.Dispatch
+  alias TinyAxe.{Browser, MCP, Ops, Purchases, Tools}
+  alias TinyAxe.Agent.{Dispatch, ShellTool}
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
@@ -212,6 +217,9 @@ defmodule TinyAxe.Tools.Gate do
 
   defp dispatches?(_task), do: false
 
+  defp shells?(%{driver: driver}) when driver != nil, do: ShellTool.available?()
+  defp shells?(_task), do: false
+
   @doc "The MCP config that gives a driver this task's gate and nothing else."
   @spec mcp_config(map()) :: map()
   def mcp_config(%{url: url, token: token}) do
@@ -241,8 +249,8 @@ defmodule TinyAxe.Tools.Gate do
   @doc """
   The tools a task may use, as MCP tool definitions: its servers' tools, and
   with a browser, the gate's own `browser_assess` and `browser_verify` (and
-  `browser_choose` while choosing is on), and `dispatch_agents` when the
-  task is offered it (`driven_by/2`).
+  `browser_choose` while choosing is on), `dispatch_agents` when the task
+  is offered it (`driven_by/2`), and `shell_run` once a driver drives it.
   """
   @spec tools(map()) :: [map()]
   def tools(task) do
@@ -257,7 +265,8 @@ defmodule TinyAxe.Tools.Gate do
       end
 
     listed = if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
-    if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
+    listed = if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
+    if shells?(task), do: listed ++ [ShellTool.definition()], else: listed
   end
 
   @doc "Runs one tool call through the gate. Returns an MCP result."
@@ -537,6 +546,15 @@ defmodule TinyAxe.Tools.Gate do
           policy: %{"gate" => true, "dispatch" => true}
         }
 
+      own == ShellTool.name() and shells?(task) ->
+        %{
+          name: own,
+          server: nil,
+          tool: own,
+          definition: ShellTool.definition(),
+          policy: %{"gate" => true, "shell" => true}
+        }
+
       Decisions.owns?(own) and Enum.any?(tools, &browser?/1) ->
         [definition] = for d <- Decisions.definitions(), d["name"] == own, do: d
         %{name: own, server: nil, tool: own, definition: definition, policy: %{"gate" => true}}
@@ -549,6 +567,7 @@ defmodule TinyAxe.Tools.Gate do
   defp browser?(tool), do: tool.policy["browser"] == true
   defp gate?(tool), do: tool.policy["gate"] == true
   defp dispatch?(tool), do: tool.policy["dispatch"] == true
+  defp shell?(tool), do: tool.policy["shell"] == true
 
   # Browser actions are assessed by what they'd do on the page (the gate
   # looks first, with browser_inspect); other tools are classed by their
@@ -565,6 +584,13 @@ defmodule TinyAxe.Tools.Gate do
         case Dispatch.parts(args) do
           {:ok, parts} -> {:local, "starts #{length(parts)} sub-agent(s) here", task}
           {:error, why} -> {:refused, why, task}
+        end
+
+      # Read-only runs at once; anything else asks (decide/5).
+      shell?(tool) ->
+        case ShellTool.check(args) do
+          {:refused, why} -> {:refused, why, task}
+          {class, reason, plan} -> {class, reason, Map.put(task, :shell, plan)}
         end
 
       gate?(tool) and tool.name == "browser_verify" ->
@@ -1091,6 +1117,20 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(task, %{policy: %{"dispatch" => true}}, args, _class, _allowed),
     do: {:ran, Dispatch.run(task, args)}
 
+  # A command waits here for its run; one that changes things asks first,
+  # every time: allowing shell_run for the session would allow any command.
+  defp decide(task, %{policy: %{"shell" => true}}, _args, {:read, _reason}, _allowed),
+    do: {:ran, ShellTool.run(task, task.shell, :read_only)}
+
+  defp decide(task, %{policy: %{"shell" => true}} = tool, args, {:outward, reason}, _allowed) do
+    shown = %{command: task.shell.command, dir: Ops.show(task.shell.dir)}
+
+    case ask(task, tool, args, :outward, reason, %{shell: shown}) do
+      :deny -> {:denied, refusal("the user said no to this command")}
+      _once -> {:approved, ShellTool.run(task, task.shell, :approved)}
+    end
+  end
+
   # browser_assess answers with the assessment, browser_verify with the
   # verification; nothing runs.
   defp decide(%{verification: v}, %{policy: %{"gate" => true}}, _args, _class, _allowed),
@@ -1560,7 +1600,9 @@ defmodule TinyAxe.Tools.Gate do
        class: class,
        reason: reason,
        # Browser actions are asked about one by one.
-       session_ok: tool.policy["browser"] != true and class == :outward,
+       session_ok:
+         tool.policy["browser"] != true and tool.policy["shell"] != true and
+           class == :outward,
        reply_to: self(),
        ref: ref
      }

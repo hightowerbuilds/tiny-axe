@@ -2,7 +2,8 @@ defmodule TinyAxe.Capabilities do
   @moduledoc """
   What tiny-axe can and can't do with the shell, in plain words, for every
   model that needs to know: the Commander that plans commands, the answer
-  route, the organizer and the router (and, later, the agent's shell tool).
+  route, the organizer and the router, and the agent with its `shell_run`
+  tool (`TinyAxe.Agent.ShellTool`).
 
   It's generated from the lists and settings the code itself uses (the
   read-only list in `TinyAxe.Shell.ReadOnly`, what `TinyAxe.Shell` hides and
@@ -18,21 +19,22 @@ defmodule TinyAxe.Capabilities do
   @examples ~w(ls cat head tail wc grep rg find tree du df free ps pgrep lsof ss uname uptime
                which jq diff)
 
-  @doc "The full description, for prompts that plan or talk about commands."
-  @spec shell() :: String.t()
-  def shell do
+  @doc """
+  The full description, for prompts that plan or talk about commands; with
+  `:agent`, for the agent, which runs them itself with `shell_run`.
+  """
+  @spec shell(:planner | :agent) :: String.t()
+  def shell(who \\ :planner) do
     {root, packages} = Validation.refused()
 
     """
-    How tiny-axe runs shell commands (this is how it works; tell the user accurately):
-    - tiny-axe runs commands when the user asks for something to be run or checked on \
-    their computer: its command planner writes them, and each runs with `sh -c` as the \
-    user, in a bubblewrap sandbox, in the current folder or a subfolder of it.
+    #{opening(who)}
     - Commands that only look run straight away, without asking: #{examples()}, git for \
     reading (#{git_reads()}), and `--version` of common programs. A command line only \
     looks when every command in it is on that list, joined by |, &&, || or ;, with no \
     redirection into a file and no $(…) or backticks. These run with the whole computer \
-    read-only, and tiny-axe then reads their output to answer.
+    read-only, and #{if who == :agent, do: "you get", else: "tiny-axe then reads"} their \
+    output#{if who == :agent, do: "", else: " to answer"}.
     - Anything else (installing, building, testing, making, moving or deleting files, \
     git commit or push, stopping a process) is shown to the user first and runs only \
     if they approve. Approved commands can change the folder they run in; they can't \
@@ -52,6 +54,28 @@ defmodule TinyAxe.Capabilities do
     and what it leaves running in the background stops when it ends.
     """
     |> String.trim()
+  end
+
+  defp opening(:planner) do
+    """
+    How tiny-axe runs shell commands (this is how it works; tell the user accurately):
+    - tiny-axe runs commands when the user asks for something to be run or checked on \
+    their computer: its command planner writes them, and each runs with `sh -c` as the \
+    user, in a bubblewrap sandbox, in the current folder or a subfolder of it.\
+    """
+  end
+
+  defp opening(:agent) do
+    """
+    You can run shell commands yourself with shell_run (this is how it works; tell the \
+    user accurately):
+    - Use it when the request needs something run or checked on the user's computer \
+    (disk space, processes, versions, git, files' contents, installs, builds, tests). \
+    Each command runs with `sh -c` as the user, in a bubblewrap sandbox, in the current \
+    folder or the folder you give as cwd, and you get its exit status and output. Each \
+    call starts afresh: a `cd` lasts only for that command line. Prefer one command line \
+    that does what's needed over many small calls.\
+    """
   end
 
   @doc "One paragraph, for a list of what tiny-axe can do."

@@ -193,6 +193,37 @@ defmodule TinyAxe.TUIToolsTest do
            ]
   end
 
+  test "the agent's command shows the command and its folder, and offers only y or n" do
+    ref = make_ref()
+
+    ask = %{
+      tool: "shell_run",
+      server: nil,
+      description: "Run a shell command.",
+      args: %{"command" => "npm install"},
+      class: :outward,
+      reason: "runs a command in ~/code/web that can change things",
+      session_ok: false,
+      shell: %{command: "npm install", dir: "~/code/web"},
+      reply_to: self(),
+      ref: ref
+    }
+
+    state = event(running(), {:tool_approval, ask})
+    screen = draw(state)
+
+    assert screen =~ "The agent wants to run a command"
+    assert screen =~ "in ~/code/web"
+    assert screen =~ "$ npm install"
+    assert screen =~ "y run · n refuse"
+    refute screen =~ "for the session"
+
+    {:noreply, state} = TUI.handle_event(key("a"), state)
+    refute_received {:tool_answer, ^ref, _}
+    {:noreply, _state} = TUI.handle_event(key("y"), state)
+    assert_received {:tool_answer, ^ref, :once}
+  end
+
   describe "browser actions" do
     defp browser_ask(state, class, reason) do
       ref = make_ref()

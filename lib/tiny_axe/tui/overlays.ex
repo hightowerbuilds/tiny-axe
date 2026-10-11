@@ -149,6 +149,43 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" over to you ", Enum.filter(lines, & &1), 0, area)
   end
 
+  # The agent's shell_run, for a command that can change things: asked
+  # about every time (TinyAxe.Agent.ShellTool).
+  def render(%{tool_ask: %{shell: shell} = ask} = state, area) do
+    header = [
+      Line.new([
+        Span.new("The agent wants to run a command", style: %Style{modifiers: [:bold]})
+      ]),
+      styled("in #{shell.dir}", :cyan),
+      styled(
+        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
+        :cyan
+      ),
+      styled("")
+    ]
+
+    command =
+      shell.command
+      |> String.split("\n")
+      |> Enum.with_index()
+      |> Enum.map(fn {line, i} ->
+        styled(if(i == 0, do: "$ ", else: "  ") <> line, nil, [:bold])
+      end)
+
+    footer =
+      Enum.filter(
+        [
+          styled(""),
+          styled("Commands can't be undone with ctrl+z.", :dark_gray),
+          styled("y run · n refuse", :dark_gray),
+          queue_line(state, ask)
+        ],
+        & &1
+      )
+
+    popup(" run this command? ", header ++ command ++ footer, 0, area)
+  end
+
   def render(%{tool_ask: ask} = state, area) when ask != nil do
     args =
       case ask.args do

@@ -1,8 +1,7 @@
 # Plan: the shell, told straight
 
-Status (2026-10-11): S1 built on branch `agents-shell` (uncommitted, for
-review); S2 waits for agent dispatch (`agents-dispatch`) to merge, since both
-add a gate-owned tool.
+Status (2026-10-11): S1 merged to main (68bc10a). S2 built on branch
+`agents-shell-tool`.
 
 ## Why
 
@@ -120,3 +119,25 @@ in `TinyAxe.Shell`; returns exit status and output (trimmed); journaled like
 any call (the vault records the tool, never the command line's arguments).
 The agent's system prompt gets the `TinyAxe.Capabilities` text. Sub-agents
 get it too.
+
+### S2 as built
+
+- `TinyAxe.Agent.ShellTool` (`shell_run {command, cwd?}`): offered by the
+  gate to every agent task once `driven_by/2` names its driver, sub-agents'
+  included, while `bwrap` is installed and `config :tiny_axe, :agent_shell`
+  isn't false. `cwd` is relative to the current folder, `~/…` or absolute.
+- `check/1` runs the Commander's `Validation.check/2` (its advice about
+  `"dir"` reworded for `"cwd"`), then `ReadOnly.all?/1`: `:read` runs at
+  once with `mode: :read_only`; `:outward` asks with the command and folder
+  (`shell:` in the `{:tool_approval, …}`, shown by the TUI's own popup) and
+  never for the session, then is checked again and runs `mode: :approved`.
+- A guard stops the sandbox (`Shell.stop/1`) if the run that owns the task
+  dies, as when the user cancels.
+- The result: what ran, where, how, the exit status, and the last 12,000
+  characters of output, marked as material, never instructions; an error
+  when the exit status isn't 0. The journal keeps the call like any other;
+  the vault records only the tool.
+- The agent's system prompt gets `Capabilities.shell(:agent)`: the same
+  description as the planner's, told as "you run them".
+- Tests: `test/tiny_axe/agent_shell_test.exs`, plus the popup in
+  `tui_tools_test.exs`.

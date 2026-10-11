@@ -31,6 +31,10 @@ defmodule TinyAxe.Agent do
   run by `run_part/3` with the same machinery: its own gate task, the same
   driver, prompt and completion check.
 
+  Every driver, sub-agents' too, can run shell commands with the gate's
+  `shell_run` (`TinyAxe.Agent.ShellTool`), and its prompt says how they run
+  (`TinyAxe.Capabilities.shell/1`).
+
   Events, besides the gate's (`:tool_call`, `:tool_approval`, ...) and the
   usual `:delta`, `:done`, `:error`:
 
@@ -40,7 +44,7 @@ defmodule TinyAxe.Agent do
   """
 
   alias TinyAxe.{Escalation, Location, MCP, Model, Ops, Tools}
-  alias TinyAxe.Agent.{ClaudeDriver, CodexDriver, Dispatch, LocalDriver}
+  alias TinyAxe.Agent.{ClaudeDriver, CodexDriver, Dispatch, LocalDriver, ShellTool}
   alias TinyAxe.Tools.{Gate, Redact}
 
   @doc "Whether there's anything for an agent to use."
@@ -179,7 +183,13 @@ defmodule TinyAxe.Agent do
     dispatch = Gate.driven_by(task.id, choice)
     Tools.Journal.info(task.id, %{driver: model})
     notify.({:agent, %{driver: Model.label(choice), servers: request.servers, task: task.id}})
-    system = system_prompt(request.servers, request.briefing, dispatch: dispatch)
+
+    system =
+      system_prompt(request.servers, request.briefing,
+        dispatch: dispatch,
+        shell: ShellTool.available?()
+      )
+
     driver(choice).run(Map.put(request, :system, system), task, choice, notify)
   end
 
@@ -259,6 +269,7 @@ defmodule TinyAxe.Agent do
   # the checks whatever a driver makes of it.
   # A top-level task driven by Claude or Codex also hears when to hand parts
   # to sub-agents (`dispatch: true`, only when the gate offers the tool).
+  # Every driver hears how shell_run works (`shell: true`, while it's offered).
   def system_prompt(servers, briefing \\ "", opts \\ []) do
     browser =
       if Enum.any?(MCP.tools(servers), &(&1.policy["browser"] == true)),
@@ -284,7 +295,7 @@ defmodule TinyAxe.Agent do
     Never type passwords or card details: ask the user (browser_handoff). To buy \
     something, go through the shop to the final "Place order" (or "Pay") button and \
     click it: tiny-axe then shows the order to the user, who decides.
-    #{graph_line(servers)}#{dispatch_line(opts[:dispatch])}
+    #{graph_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
     """ <> browser
@@ -292,6 +303,9 @@ defmodule TinyAxe.Agent do
 
   defp dispatch_line(true), do: "\n" <> Dispatch.instructions() <> "\n"
   defp dispatch_line(_), do: ""
+
+  defp shell_line(true), do: "\n" <> ShellTool.instructions() <> "\n"
+  defp shell_line(_), do: ""
 
   # Only when the graph server is connected, so its tool exists.
   defp graph_line(servers) do
