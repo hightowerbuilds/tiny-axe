@@ -106,7 +106,11 @@ the answers, and what the gate then did.
 The benchmark executes no browser actions. Replay checks policy composition; live mode
 checks classification with the configured decider and excludes injected
 outage cases. JSON results include evidence, questions, answers, source hashes,
-and budget skips. This is not a complete browser-task success rate. See the
+and budget skips. This is not a complete browser-task success rate; for that,
+`mix tiny_axe.browser_task_eval` runs 24 full tasks (development and holdout
+sites) through the real agent, gate and browser against local fixture sites,
+scoring what the sites actually received (`--driver scripted --decider
+scripted` runs offline; `--max-jev-calls` and `--max-tasks` cap a real run). See the
 [browser decisions and learning plan](docs/plan-browser-decisions-and-learning.md)
 for the build status and remaining work.
 

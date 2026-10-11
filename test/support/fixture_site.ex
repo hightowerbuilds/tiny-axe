@@ -25,9 +25,35 @@ defmodule TinyAxe.FixtureSite do
       POST carries them (so a test can see they arrived); a line reports
       whether the number field shows dots
     * `/pay-step` — a two-step checkout: card details and "Continue", then a
-      review page ("Paying with Visa ending in 1111") and "Place order"
+      review page ("Paying with Visa ending in 1111") and "Place order";
+      with `?relabel=1`, "Continue" becomes "Continue to review" once a card
+      number is typed
     * `/order-insecure` — card fields in a form that would send them over
       plain http
+    * `/popup` — a link that opens `/article` in a new tab
+    * `/bind` — a clock ticking every 100 ms beside a button whose label
+      follows `set_label/1` (checked every 700 ms, so the network still goes
+      quiet); a click POSTs `/bind-effect` with the label it had
+    * `/note` — a note form (an optional "To" and the note) whose POST
+      `/note` is recorded when it arrives, then answered as `set_outcome/1`
+      says: `:ok` ("Note sent"), `:refused` (200, "Couldn't send your note"),
+      `:bad_gateway` (502, "may not have been saved") or `{:hang, ms}` (no
+      answer for that long: a lost response). Below the form, what arrived:
+      a note's text, or for one sent to someone, only "Sent to <them>".
+      `/notes` lists the notes; `/inbox` is old mail from alice@example.com
+      quoting "hello there"
+    * `/echo` — a note form whose script shows the note at once
+      (optimistic) while its POST `/echo` is recorded and answered 502; the
+      page itself never lists notes
+    * `/toast` — a comment form; its POST is recorded and the page that comes
+      back lists the comment, with an error toast outside the main region
+    * `/invite` — one "To" field and "Invite"; POST `/invite` records it,
+      then answers 502; the page lists "Invited <them>"
+    * `/rows` — saved addresses, each with its own "Remove" form (POST
+      `/rows/remove`, then back to the list without it)
+    * `/autosave` — a name field that saves itself (POST `/autosave`) a moment
+      after typing, and shows what was saved when loaded again; nothing on
+      the page says it was saved
 
   Everything sent to the site is recorded: `submissions/0`.
   """
@@ -41,6 +67,8 @@ defmodule TinyAxe.FixtureSite do
   def start do
     Agent.start_link(fn -> [] end, name: __MODULE__.Log)
     Agent.start_link(fn -> 12.0 end, name: __MODULE__.Price)
+    Agent.start_link(fn -> "Send note" end, name: __MODULE__.Label)
+    Agent.start_link(fn -> :ok end, name: __MODULE__.Outcome)
 
     {:ok, pid} =
       Bandit.start_link(plug: __MODULE__, ip: {127, 0, 0, 1}, port: 0, startup_log: false)
@@ -171,6 +199,222 @@ defmodule TinyAxe.FixtureSite do
     """)
   end
 
+  get "/popup" do
+    html(
+      conn,
+      ~s(<title>Popup</title><main><a href="/article" target="_blank">Open article</a></main>)
+    )
+  end
+
+  @doc "The button's label on `/bind`."
+  def set_label(label), do: Agent.update(__MODULE__.Label, fn _ -> label end)
+
+  get "/bind" do
+    html(conn, """
+    <title>Notes</title><main><section><h2>Notes</h2><p id="clock">Tick 0</p>
+    <button id="act" onclick="fetch('/bind-effect?label=' + encodeURIComponent(this.textContent), {method: 'POST'})">#{Agent.get(__MODULE__.Label, & &1)}</button>
+    </section></main>
+    <script>
+    let n = 0;
+    setInterval(() => { document.getElementById('clock').textContent = 'Tick ' + (++n); }, 100);
+    setInterval(() => fetch('/bind-label').then(r => r.text()).then(t => {
+      const b = document.getElementById('act');
+      if (b.textContent !== t) b.textContent = t;
+    }), 700);
+    </script>
+    """)
+  end
+
+  get "/bind-label" do
+    send_resp(conn, 200, Agent.get(__MODULE__.Label, & &1))
+  end
+
+  post "/bind-effect" do
+    record(conn)
+    send_resp(conn, 200, "ok")
+  end
+
+  @doc "How `/note` answers once it has recorded a note."
+  def set_outcome(mode), do: Agent.update(__MODULE__.Outcome, fn _ -> mode end)
+
+  get "/note" do
+    arrived =
+      for {"/note", p} <- submissions() do
+        if p["to"] in [nil, ""],
+          do: "<li>#{Plug.HTML.html_escape(p["note"])}</li>",
+          else: "<li>Sent to #{Plug.HTML.html_escape(p["to"])}</li>"
+      end
+
+    html(conn, """
+    <title>Notes</title><main><h1>Notes</h1>
+    <form method="post" action="/note" aria-label="Write a note">
+    <label>To <input name="to"></label>
+    <label>Note <textarea name="note"></textarea></label>
+    <button>Send note</button></form>
+    <h2>Arrived</h2><ul>#{Enum.join(arrived)}</ul></main>
+    """)
+  end
+
+  get "/echo" do
+    html(conn, """
+    <title>Echo</title><main><h1>Echo</h1>
+    <form id="f" method="post" action="/echo" aria-label="Write a note">
+    <label>Note <textarea name="note"></textarea></label><button>Post</button></form>
+    <ul id="sent"></ul></main>
+    <script>
+    document.getElementById("f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const note = new FormData(e.target).get("note");
+      const li = document.createElement("li"); li.textContent = note;
+      document.getElementById("sent").appendChild(li);
+      fetch("/echo", {method: "POST", body: new URLSearchParams({note})});
+    });
+    </script>
+    """)
+  end
+
+  post "/echo" do
+    record(conn)
+    send_resp(conn, 502, "bad gateway")
+  end
+
+  get "/toast" do
+    html(conn, """
+    <title>Comments</title><main><h1>Comments</h1>
+    <form method="post" action="/toast" aria-label="Add a comment">
+    <label>Comment <textarea name="text"></textarea></label><button>Post comment</button></form></main>
+    """)
+  end
+
+  post "/toast" do
+    record(conn)
+
+    html(conn, """
+    <title>Comments</title><main><h1>Comments</h1><ul><li>#{Plug.HTML.html_escape(conn.params["text"])}</li></ul></main>
+    <div role="alert" class="toast">Couldn't save your comment. Try again.</div>
+    """)
+  end
+
+  get "/invite" do
+    invited =
+      for {"/invite", %{"to" => to}} <- submissions(),
+          do: "<li>Invited #{Plug.HTML.html_escape(to)}</li>"
+
+    html(conn, """
+    <title>Invite</title><main><h1>Invite</h1>
+    <form method="post" action="/invite" aria-label="Invite someone">
+    <label>To <input name="to"></label><button>Invite</button></form>
+    <ul>#{Enum.join(invited)}</ul></main>
+    """)
+  end
+
+  post "/invite" do
+    record(conn)
+
+    conn
+    |> put_resp_content_type("text/html")
+    |> send_resp(502, "<main><h1>502 Bad Gateway</h1></main>")
+  end
+
+  get "/inbox" do
+    html(conn, """
+    <title>Inbox</title><main><h1>Inbox</h1>
+    <p>From alice@example.com: "hello there", you wrote last week.</p></main>
+    """)
+  end
+
+  get "/notes" do
+    sent =
+      for {"/note", %{"note" => n}} <- submissions(), do: "<li>#{Plug.HTML.html_escape(n)}</li>"
+
+    html(
+      conn,
+      "<title>Your notes</title><main><h1>Your notes</h1><ul>#{Enum.join(sent)}</ul></main>"
+    )
+  end
+
+  post "/note" do
+    record(conn)
+
+    case Agent.get(__MODULE__.Outcome, & &1) do
+      :ok ->
+        html(conn, "<title>Sent</title><main><h1>Note sent</h1></main>")
+
+      :refused ->
+        html(
+          conn,
+          "<title>Not sent</title><main><h1>Couldn't send your note</h1><p>The server rejected it.</p></main>"
+        )
+
+      :bad_gateway ->
+        conn
+        |> put_resp_content_type("text/html")
+        |> send_resp(
+          502,
+          "<title>502</title><main><h1>502 Bad Gateway</h1><p>Your note may not have been saved.</p></main>"
+        )
+
+      {:hang, ms} ->
+        Process.sleep(ms)
+        html(conn, "<title>Late</title><main><h1>Note sent, late</h1></main>")
+    end
+  end
+
+  @rows [{"elm", "12 Elm St, Springfield"}, {"harbor", "4 Harbor Rd, Bayside"}]
+
+  get "/rows" do
+    removed = for {"/rows/remove", %{"id" => id}} <- submissions(), do: id
+
+    rows =
+      for {id, text} <- @rows, id not in removed do
+        ~s(<li>#{text} <form method="post" action="/rows/remove" style="display:inline">) <>
+          ~s(<input type="hidden" name="id" value="#{id}"><button>Remove</button></form></li>)
+      end
+
+    html(
+      conn,
+      "<title>Addresses</title><main><h1>Saved addresses</h1><ul>#{Enum.join(rows)}</ul></main>"
+    )
+  end
+
+  post "/rows/remove" do
+    record(conn)
+    conn |> put_resp_header("location", "/rows") |> send_resp(303, "")
+  end
+
+  get "/autosave" do
+    saved = for({"/autosave", %{"name" => n}} <- submissions(), do: n) |> List.last()
+    # ?broken=1: typing only sends an analytics beacon; nothing is saved.
+    send_it =
+      if conn.params["broken"] == "1",
+        do:
+          ~s|fetch("/beacon", {method: "POST", body: JSON.stringify({event: "typing", seq: 15})})|,
+        else:
+          ~s|fetch("/autosave", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({name: e.target.value})})|
+
+    html(conn, """
+    <title>Profile</title><main><h1>Profile</h1><section aria-label="Profile">
+    <p>Changes save automatically as you type.</p>
+    <label>Display name <input id="name" value="#{Plug.HTML.html_escape(saved || "Sam")}"></label></section></main>
+    <script>
+    let timer;
+    document.getElementById("name").addEventListener("input", (e) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => #{send_it}, 200);
+    });
+    </script>
+    """)
+  end
+
+  post "/autosave" do
+    record(conn)
+    send_resp(conn, 200, "ok")
+  end
+
+  post "/beacon" do
+    send_resp(conn, 204, "")
+  end
+
   match "/policy-effect" do
     record(conn)
     html(conn, "<main>Action recorded</main>")
@@ -275,6 +519,7 @@ defmodule TinyAxe.FixtureSite do
     <label>Expiry <input name="ccexp" autocomplete="cc-exp"></label>
     <label>CVC <input name="cvc" autocomplete="cc-csc"></label>
     <button>Continue</button></form></main>
+    #{if conn.params["relabel"], do: relabel_script(), else: ""}
     """)
   end
 
@@ -293,6 +538,14 @@ defmodule TinyAxe.FixtureSite do
     """)
   end
 
+  defp relabel_script do
+    """
+    <script>document.querySelector('[name=ccnumber]').addEventListener('input', (e) => {
+      if (e.target.value) document.querySelector('button').textContent = 'Continue to review';
+    });</script>
+    """
+  end
+
   # Laid out like Amazon's checkout: the price on its own line under the
   # title, the card's brand and its last digits on separate lines.
   get "/order-amazonish" do
@@ -303,6 +556,24 @@ defmodule TinyAxe.FixtureSite do
     <div>Paying with</div><div>Mastercard</div><div>ending in 2701</div>
     <div>Items: $19.99</div><div>Shipping &amp; handling: $0.00</div>
     <div>Estimated tax: $1.82</div><div>Order total: $21.81</div>
+    <form method="post" action="/place-order"><button>Place your order</button></form></main>
+    """)
+  end
+
+  # Amazon's checkout as of October 2026: a card offer with a price far over
+  # the total, and a popularity line between the title and its price.
+  get "/order-amazon-2026" do
+    html(conn, """
+    <title>Place Your Order - Amazon Checkout</title><main><h1>Checkout</h1>
+    <div>Delivering to Sam Lee</div><div>1 HIGH ST, SPRINGFIELD</div><div>Change</div>
+    <div>Paying with Mastercard 2701</div><div>Change</div><div>$150</div>
+    <div>Get a $150 Amazon Gift Card instantly upon approval for Prime Visa. No annual fee. Open offer</div>
+    <div>Arriving tomorrow</div>
+    <div><a href="#">VIOY Headphone Extension Cable 20 FT, 3.5mm Male to Female Braided Aux Cord</a></div>
+    <div>400+ bought in past month</div><div>$8.99</div>
+    <div>Sold by: VIOY US</div><div>Qty: 1</div>
+    <div>Items: $8.99</div><div>Shipping &amp; handling: $0.00</div>
+    <div>Estimated tax: $0.82</div><div>Order total: $9.81</div>
     <form method="post" action="/place-order"><button>Place your order</button></form></main>
     """)
   end

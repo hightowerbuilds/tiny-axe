@@ -88,6 +88,34 @@ config :tiny_axe, :browser,
   enabled: true,
   headless: true
 
+# Choosing among similar elements on a page (TinyAxe.Browser.Choices), advice
+# only: it never runs or approves anything. :off; :shadow (the gate checks
+# clicks on controls whose label others on the page share, and only records
+# what it would advise; browser_choose isn't offered); or :on (browser_choose
+# is offered, and with :browser_choose_hints the gate holds such a click once
+# when its target clearly doesn't fit, saying which one does). Phase 4's
+# measurements and why the default is what it is: docs/plan-browser-decisions-and-learning.md.
+config :tiny_axe, browser_choose: :shadow, browser_choose_hints: true
+
+# Validated memory (TinyAxe.Browser.Examples): reviewed, versioned lessons
+# from earlier tasks, a few retrieved for a task's workflow and for what its
+# browser calls came to, advice only (never consulted by policy, approvals
+# or purchases). :off; :shadow (retrieved and journaled, never shown); or
+# :on (shown to the driver in the system prompt and in call results, the
+# same for every driver). Separate from :browser_choose. Phase 5's
+# measurements and why the default is what it is:
+# docs/plan-browser-decisions-and-learning.md. Lessons from real sessions
+# are kept (as unvalidated candidates, with redacted evidence apart from
+# the journals for :browser_examples_retention_days) only with
+# :browser_examples_persist; a person promotes them with
+# `mix tiny_axe.browser_examples`.
+config :tiny_axe,
+  browser_examples: :shadow,
+  browser_examples_persist: false,
+  browser_examples_retention_days: 30,
+  # Set versions kept in the store; older ones go to the system Trash.
+  browser_examples_versions_kept: 20
+
 # Purchases (TinyAxe.Purchases): off until the user turns them on. The agent
 # can only buy at a checkout tiny-axe reads itself, within these limits, after
 # the user types the exact total.
@@ -118,5 +146,8 @@ config :tiny_axe,
   local_agent_steps: 12
 
 config :tiny_axe, :jev, model: "jev-latest"
+
+# The prompt cursor pulses, with a ring blasting outward from it (TinyAxe.TUI.Pulse).
+config :tiny_axe, cursor_pulse: true
 
 import_config "#{config_env()}.exs"

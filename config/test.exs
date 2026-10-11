@@ -3,8 +3,10 @@ import Config
 config :tiny_axe, start_tui: false
 
 # Tests never touch the real journal; recovery tests point these at temp dirs.
-config :tiny_axe, state_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_state")
-config :tiny_axe, trash_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_trash")
+# Each test run has its own, so two runs at once can't prune each other's
+# task folders (test_helper.exs removes them afterwards).
+config :tiny_axe, state_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_state_#{System.pid()}")
+config :tiny_axe, trash_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_trash_#{System.pid()}")
 # Judging whether commands worked asks the model; tests don't.
 config :tiny_axe, check_command_outcome: false
 
@@ -26,3 +28,11 @@ config :tiny_axe,
 
 # No user purchase settings file in tests.
 config :tiny_axe, purchases_config: Path.join(System.tmp_dir!(), "tiny_axe_test_purchases.json")
+
+# No candidate checks unless a test turns them on (TinyAxe.Browser.Choices),
+# so other tests' scripted deciders see only the questions they expect.
+config :tiny_axe, browser_choose: :off
+
+# No example retrieval unless a test turns it on (TinyAxe.Browser.Examples),
+# so other tests' journals and results are as before.
+config :tiny_axe, browser_examples: :off, browser_examples_persist: false

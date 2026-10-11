@@ -116,6 +116,46 @@ defmodule TinyAxe.TUIToolsTest do
     assert state.run == nil
   end
 
+  test "what browser actions came to appears as short status lines" do
+    state =
+      running()
+      |> event(
+        {:outcome,
+         %{
+           id: "act-1",
+           action: ~s(click "Post comment"),
+           status: :unresolved,
+           codes: ["outcome_unresolved", "response_lost"],
+           by: :gate
+         }}
+      )
+      |> event(
+        {:outcome,
+         %{id: "act-2", action: ~s(click "Send"), status: :succeeded, codes: [], by: :agent}}
+      )
+      |> event(
+        {:outcome,
+         %{
+           id: "act-3",
+           action: ~s(click "Save"),
+           status: :failed,
+           codes: ["error_shown"],
+           by: :completion
+         }}
+      )
+      |> event({:completion, %{outcome: :replaced, confirmed: [], unresolved: [], failed: []}})
+      |> event({:completion, %{outcome: :delivered, confirmed: [], unresolved: [], failed: []}})
+
+    metas = for {:meta, m} <- state.transcript, do: m
+
+    assert metas == [
+             ~s[? not confirmed: click "Post comment" (response_lost)],
+             ~s(✓ confirmed: click "Send"),
+             ~s[✗ didn't take effect: click "Save" (error_shown)],
+             "⚠ tiny-axe held back the agent's reply: what it checked contradicts it"
+           ]
+  end
+
   describe "browser actions" do
     defp browser_ask(state, class, reason) do
       ref = make_ref()

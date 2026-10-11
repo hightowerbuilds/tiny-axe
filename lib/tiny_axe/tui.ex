@@ -24,7 +24,17 @@ defmodule TinyAxe.TUI do
 
   alias ExRatatui.Event
   alias TinyAxe.{Context, Files}
-  alias TinyAxe.TUI.{CommandWorkflow, CompactionWorkflow, FileWorkflow, Run, Transcript, View}
+
+  alias TinyAxe.TUI.{
+    CommandWorkflow,
+    CompactionWorkflow,
+    FileWorkflow,
+    Pulse,
+    Run,
+    Transcript,
+    View
+  }
+
   import TinyAxe.TUI.Conversation, only: [add_meta: 2]
 
   import TinyAxe.TUI.Presentation,
@@ -58,6 +68,9 @@ defmodule TinyAxe.TUI do
         {w, h} -> {w, h}
         _ -> {80, 24}
       end
+
+    # Test-mode TUIs get no timer; tests send :pulse themselves.
+    if opts[:test_mode] == nil and Pulse.enabled?(), do: Pulse.schedule()
 
     {:ok,
      %{
@@ -106,6 +119,9 @@ defmodule TinyAxe.TUI do
        scroll: :bottom,
        size: size,
        tick: 0,
+       # The prompt cursor's pulse (TinyAxe.TUI.Pulse): its frame and the
+       # textarea's first visible row.
+       pulse: Pulse.new(),
        halt_on_exit: Keyword.get(opts, :halt_on_exit, false),
        session?: session?,
        # The compacted summary of older turns: %{text, turns, check, before, after}.
@@ -613,6 +629,14 @@ defmodule TinyAxe.TUI do
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
 
+  defp on_info(:pulse, state) do
+    Pulse.schedule()
+
+    if state.run == nil,
+      do: {:noreply, Pulse.step(state)},
+      else: {:noreply, state, render?: false}
+  end
+
   defp on_info(:tick, state) do
     Run.schedule_tick()
     {:noreply, %{state | tick: state.tick + 1}}
@@ -784,10 +808,39 @@ defmodule TinyAxe.TUI do
        when d in [:refused, :denied, :failed],
        do: add_meta(state, "✗ #{tool}: #{why}")
 
+  defp apply_event({:tool_result, %{decision: :advised, tool: tool}}, state),
+    do:
+      add_meta(state, "↺ #{tool}: held once, tiny-axe's candidate check suggests another element")
+
   defp apply_event({:tool_result, _}, state), do: state
 
   defp apply_event({:tool_limit, %{reason: why}}, state),
     do: add_meta(state, "⚠ the agent was stopped: #{why}")
+
+  # What a browser action came to (TinyAxe.Browser.Outcomes): short lines,
+  # confirmed or not; the reason codes say why.
+  defp apply_event({:outcome, %{status: :succeeded, action: action}}, state),
+    do: add_meta(state, "✓ confirmed: #{action}")
+
+  defp apply_event({:outcome, %{status: :unresolved, action: action, codes: codes}}, state),
+    do: add_meta(state, "? not confirmed: #{action} (#{outcome_codes(codes)})")
+
+  defp apply_event({:outcome, %{status: :failed, action: action, codes: codes}}, state),
+    do: add_meta(state, "✗ didn't take effect: #{action} (#{outcome_codes(codes)})")
+
+  defp apply_event({:outcome, _}, state), do: state
+
+  defp apply_event({:completion, %{outcome: :replaced}}, state),
+    do: add_meta(state, "⚠ tiny-axe held back the agent's reply: what it checked contradicts it")
+
+  defp apply_event({:completion, %{outcome: :caveated, unresolved: u, failed: f}}, state),
+    do:
+      add_meta(
+        state,
+        "⚠ tiny-axe marked #{length(u) + length(f)} action(s) in the reply as not confirmed"
+      )
+
+  defp apply_event({:completion, _}, state), do: state
 
   defp apply_event({:review, _}, state), do: state
   # Which way the request went; the route line already shows it.
@@ -908,6 +961,8 @@ defmodule TinyAxe.TUI do
     Logger.warning("TinyAxe.TUI ignored an unknown event: #{inspect(event, limit: 5)}")
     state
   end
+
+  defp outcome_codes(codes), do: codes |> List.delete("outcome_unresolved") |> Enum.join(", ")
 
   defp tool_class_word(:read), do: "run"
   defp tool_class_word(:local), do: "run (local)"

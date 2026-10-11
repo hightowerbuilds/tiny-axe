@@ -17,6 +17,15 @@ defmodule TinyAxe.Agent do
   escalation); without it, the local model drives. Whatever drives, every
   tool call goes through the gate.
 
+  Whatever drives, the answer is checked before the user sees it
+  (`TinyAxe.Tools.Gate.complete/2`): compared with what the task's browser
+  actions came to, after one more look at anything sent but unconfirmed. An
+  answer a verified outcome contradicts (it says a failed action worked) is
+  replaced by what tiny-axe could confirm; one that mentions what remains
+  unconfirmed goes out under a note naming it. A driver's success never
+  counts as proof, and its text isn't streamed: nothing of the answer
+  reaches the user before the check.
+
   Events, besides the gate's (`:tool_call`, `:tool_approval`, ...) and the
   usual `:delta`, `:done`, `:error`:
 
@@ -48,8 +57,25 @@ defmodule TinyAxe.Agent do
     case Gate.open_task(notify, intent: intent, objective: objective(prompt, history)) do
       {:ok, task} ->
         try do
-          request = %{prompt: prompt, history: history, system: system_prompt(servers)}
-          deliver(drive(choice, request, task, servers, remote, notify), notify)
+          # Reviewed examples for this request's workflow, when retrieval is
+          # on (TinyAxe.Browser.Examples): the same for every driver.
+          request = %{
+            prompt: prompt,
+            history: history,
+            system: system_prompt(servers, Gate.briefing(task.id))
+          }
+
+          # The driver's own text is held back: the user sees the answer only
+          # once the completion step has checked it. Tool lines still stream.
+          held = fn
+            {:delta, _text} -> :ok
+            event -> notify.(event)
+          end
+
+          choice
+          |> drive(request, task, servers, remote, held)
+          |> complete(task)
+          |> deliver(notify)
         after
           Gate.close_task(task.id)
         end
@@ -117,6 +143,10 @@ defmodule TinyAxe.Agent do
   defp driver({:codex, _}), do: CodexDriver
   defp driver({:ollama, _}), do: LocalDriver
 
+  # The shared completion step, the same for every driver.
+  defp complete({:ok, text, choice}, task), do: {:ok, Gate.complete(task.id, text), choice}
+  defp complete(other, _task), do: other
+
   defp deliver({:ok, text, choice}, notify) do
     if Model.remote?(choice), do: notify.({:answered_by, %{model: Model.label(choice)}})
     notify.({:done, text})
@@ -133,7 +163,19 @@ defmodule TinyAxe.Agent do
   end
 
   @doc false
-  def system_prompt(servers) do
+  # Every driver gets this same prompt, with the browser's decision tool
+  # explained the same way when the task has a browser, and any reviewed
+  # examples retrieved for it (`briefing`, advice only); the gate enforces
+  # the checks whatever a driver makes of it.
+  def system_prompt(servers, briefing \\ "") do
+    browser =
+      if Enum.any?(MCP.tools(servers), &(&1.policy["browser"] == true)),
+        do:
+          "\n\n" <>
+            TinyAxe.Browser.Decisions.instructions() <>
+            if(briefing in [nil, ""], do: "", else: "\n\n" <> briefing),
+        else: ""
+
     """
     You are tiny-axe's agent, working for the user on their own computer. \
     Today is #{Date.utc_today()}. The current folder is #{Ops.show(Location.current())}.
@@ -153,7 +195,7 @@ defmodule TinyAxe.Agent do
     #{graph_line(servers)}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
-    """
+    """ <> browser
   end
 
   # Only when the graph server is connected, so its tool exists.
