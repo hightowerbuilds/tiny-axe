@@ -275,9 +275,20 @@ async function header(p) {
   return `Page: ${p.url()} · ${await p.title().catch(() => "")}${profileNote} · observation ${observation(p)}`;
 }
 
-async function snapshot(p) {
+// The whole snapshot, redacted; what the agent gets is cut (snapshot/1),
+// browser_find searches all of it.
+async function fullSnapshot(p) {
   const { result } = await hidden(p, () => p.ariaSnapshot({ mode: "ai" }));
-  return clip(redact(result));
+  return redact(result);
+}
+
+async function snapshot(p) {
+  const whole = await fullSnapshot(p);
+  if (whole.length <= MAX_TEXT) return whole;
+  return whole.slice(0, MAX_TEXT) +
+    `\n… (snapshot cut at ${MAX_TEXT.toLocaleString("en-US")} of ${whole.length.toLocaleString("en-US")} characters: ` +
+    "elements further down the page aren't shown. browser_find with words from the element you want " +
+    "(e.g. its button text) searches the whole page and gives refs.)";
 }
 
 function clip(text, max = MAX_TEXT) {
@@ -305,6 +316,9 @@ function checkUrl(url) {
 }
 
 class UserError extends Error {}
+// Refused before anything was done: the action keeps no record, so the gate
+// knows it didn't happen (not_executed), never that it may have.
+class NotDone extends UserError {}
 
 // ---------- acting ----------
 
@@ -312,6 +326,58 @@ function target(p, ref) {
   // A ref from a snapshot, never a label or a selector.
   if (!ref || !/^(f\d+)?e\d+$/.test(String(ref))) throw new UserError(`"${ref}" isn't a ref: take a snapshot and use the element's ref, like e12`);
   return p.locator(`aria-ref=${ref}`);
+}
+
+// Why an element can't be clicked, typed into or hovered, or null: hidden
+// (no size, not shown, or clipped away by a box around it, like a closed
+// panel), or placed off the page where only the keyboard reaches it, as
+// shops do with their keyboard-shortcut lists. Playwright would wait out
+// its timeout on those. One in a scrolling box (a carousel) is left to
+// Playwright, which scrolls it into view.
+const UNREACHABLE = (el) => {
+  const b = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  if (s.display === "none" || s.visibility === "hidden" || b.width <= 1 || b.height <= 1) return "hidden";
+  for (let n = el.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    const o = getComputedStyle(n);
+    const flow = o.overflowX + " " + o.overflowY;
+    if (/(auto|scroll)/.test(flow) && (n.scrollWidth > n.clientWidth || n.scrollHeight > n.clientHeight)) return null;
+    if (/(hidden|clip)/.test(flow)) {
+      const c = n.getBoundingClientRect();
+      const w = Math.min(b.right, c.right) - Math.max(b.left, c.left);
+      const h = Math.min(b.bottom, c.bottom) - Math.max(b.top, c.top);
+      if (w <= 1 || h <= 1) return "hidden";
+    }
+  }
+  const x = b.left + window.scrollX, y = b.top + window.scrollY;
+  const W = document.documentElement.scrollWidth, H = document.documentElement.scrollHeight;
+  return x + b.width <= 0 || y + b.height <= 0 || x >= W || y >= H ? "off the page" : null;
+};
+
+async function unreachable(loc) {
+  if (!(await loc.count().catch(() => 0))) return null;
+  if (!(await loc.first().isVisible().catch(() => true))) {
+    // It may be about to show (a menu opening).
+    const shown = await loc.first().waitFor({ state: "visible", timeout: 1500 }).then(() => true, () => false);
+    if (!shown) return "hidden";
+  }
+  return loc.first().evaluate(UNREACHABLE, null, { timeout: 2000 }).catch(() => null);
+}
+
+// The ref's element, refused before acting if it can't be reached.
+async function reachable(p, ref) {
+  const loc = target(p, ref);
+  const why = await unreachable(loc);
+  if (why === "hidden") {
+    throw new NotDone(`${ref} is on the page but hidden (in a closed menu or panel, say), so nothing was done. ` +
+      "Open what holds it first, or use browser_find to find a visible element that does the same");
+  }
+  if (why === "off the page") {
+    throw new NotDone(`${ref} is placed off the page, where only the keyboard reaches it (a keyboard-shortcut ` +
+      "list, say), so nothing was done. It's usually a copy of a control shown elsewhere: use browser_find to " +
+      "find the visible one");
+  }
+  return loc;
 }
 
 // Never types into a password or card field, whatever the gate decided.
@@ -450,7 +516,7 @@ async function similar(p, ref, withRefs) {
     candidates.push({ ...info, target: await el.evaluate((a, b) => a === b, handle) });
   }
   if (withRefs) {
-    const snap = await snapshot(p);
+    const snap = await fullSnapshot(p);
     const name = candidates[0].text;
     for (const m of snap.matchAll(/^\s*- \w+ "((?:[^"\\]|\\.)*)"[^\n]*\[ref=((?:f\d+)?e\d+)\]/gm)) {
       if (m[1] !== name) continue;
@@ -1029,13 +1095,15 @@ const TOOLS = {
     },
   },
   browser_find: {
-    description: "Find text on the current page; returns each match with the line around it.",
+    description: "Find elements and text anywhere on the current page, however long it is: each match from the " +
+      "page's whole snapshot, with its ref (or the ref of the element it's in) and what it's inside. Use it when a " +
+      "snapshot was cut, or to find a button or field by its words. Matches that are hidden or off the page are marked.",
     inputSchema: obj({ text: { type: "string" } }, ["text"]),
     annotations: ro,
     async run({ text: needle }, lease) {
       const p = await page(lease);
-      const lines = (await readable(p)).split("\n").filter((l) => l.toLowerCase().includes(String(needle).toLowerCase()));
-      const found = lines.length ? lines.slice(0, 30).map((l) => "- " + l.trim()).join("\n") : "(not found)";
+      const whole = await fullSnapshot(p);
+      const found = await findInSnapshot(p, whole, String(needle ?? ""));
       return text(`${await header(p)}\n\n${untrusted(found)}`);
     },
   },
@@ -1083,7 +1151,7 @@ const TOOLS = {
     annotations: { readOnlyHint: false, openWorldHint: true },
     async run({ ref, doubleClick }, lease, record) {
       const p = await page(lease);
-      const loc = target(p, ref);
+      const loc = await reachable(p, ref);
       // A checkbox or radio button: afterwards it should be toggled, or chosen.
       const box = record ? await loc.evaluate((el) => ["checkbox", "radio"].includes(el.type) ? { type: el.type, checked: el.checked } : null, null, { timeout: 2000 }).catch(() => null) : null;
       const handle = box ? await grab(record, loc) : null;
@@ -1099,7 +1167,7 @@ const TOOLS = {
     annotations: { readOnlyHint: false },
     async run({ ref, text: value, submit }, lease, record) {
       const p = await page(lease);
-      const loc = target(p, ref);
+      const loc = await reachable(p, ref);
       await refuseSensitive(loc);
       const handle = await grab(record, loc);
       await loc.fill(String(value), { timeout: 10000 });
@@ -1134,7 +1202,7 @@ const TOOLS = {
     annotations: { readOnlyHint: false },
     async run({ ref, values }, lease, record) {
       const p = await page(lease);
-      const loc = target(p, ref);
+      const loc = await reachable(p, ref);
       const handle = await grab(record, loc);
       await loc.selectOption(values, { timeout: 10000 });
       expectField(record, handle, { selected: (values || []).map(String) });
@@ -1158,7 +1226,7 @@ const TOOLS = {
     annotations: { readOnlyHint: false },
     async run({ ref }, lease) {
       const p = await page(lease);
-      await target(p, ref).hover({ timeout: 10000 });
+      await (await reachable(p, ref)).hover({ timeout: 10000 });
       return after(p);
     },
   },
@@ -1326,6 +1394,53 @@ const TOOLS = {
 
 function text(t) { return { content: [{ type: "text", text: t }] }; }
 
+// browser_find's matches in a snapshot: each line that has the words, with
+// the ref it carries (or its nearest element's), the elements it's inside,
+// and whether the element can be reached; text-only copies of a control's
+// label (aria-hidden) are left out, since the control itself matches.
+const MAX_FOUND = 30;
+async function findInSnapshot(p, whole, needle) {
+  const want = needle.trim().toLowerCase();
+  if (!want) throw new UserError("browser_find needs some words to look for");
+  const lines = whole.split("\n");
+  const indent = (l) => l.length - l.trimStart().length;
+  const refOf = (l) => l.match(/\[ref=((?:f\d+)?e\d+)\]/)?.[1] ?? null;
+  const hit = lines.map((l, i) => l.toLowerCase().includes(want) ? i : -1).filter((i) => i >= 0);
+  const shown = hit.filter((i) => !/\[aria-hidden\]/.test(lines[i]));
+  // Only copies matched: then they point to the elements they're in.
+  const picked = shown.length ? shown : hit;
+  const matches = [];
+  const total = picked.length;
+  for (const i of picked.slice(0, MAX_FOUND)) {
+    const line = lines[i];
+    // What it's inside, nearest last: the lines above it with less indent.
+    const inside = [];
+    let ref = /\[aria-hidden\]/.test(line) ? null : refOf(line), at = indent(line);
+    for (let j = i - 1; j >= 0 && at > 0; j--) {
+      if (indent(lines[j]) < at) {
+        at = indent(lines[j]);
+        if (!ref) ref = refOf(lines[j]);
+        const what = lines[j].trim().replace(/^- /, "").replace(/\s*\[(ref|active|cursor)[^\]]*\]/g, "").replace(/:$/, "");
+        // An unnamed wrapper says nothing about where it is.
+        if (!/^(generic|group|list|listitem)$/.test(what)) inside.unshift(what.slice(0, 60));
+      }
+    }
+    matches.push({ line: line.trim(), ref, inside: inside.slice(-3) });
+  }
+  if (!matches.length) return `"${needle}" isn't anywhere in the page's snapshot (${whole.length} characters).`;
+  const notes = await Promise.all(matches.map(async (m) => {
+    if (!m.ref) return "";
+    const why = await unreachable(p.locator(`aria-ref=${m.ref}`)).catch(() => null);
+    return why ? `  ⚠ ${why}: not clickable` : "";
+  }));
+  const body = matches.map((m, i) =>
+    `${m.line}${notes[i]}${m.inside.length ? `\n    in: ${m.inside.join(" › ")}` : ""}` +
+    (m.ref && m.ref !== refOf(m.line) ? `\n    ref of the element it's in: ${m.ref}` : ""));
+  const more = total > matches.length ? `\n… and ${total - matches.length} more; use more specific words.` : "";
+  return `${total} match${total === 1 ? "" : "es"} for "${needle}" in the page's whole snapshot ` +
+    `(${whole.length} characters), in page order:\n\n${body.join("\n")}${more}`;
+}
+
 // ---------- MCP over stdio ----------
 
 function send(msg) { process.stdout.write(JSON.stringify(msg) + "\n"); }
@@ -1376,7 +1491,10 @@ async function handle(msg) {
             try {
               result = await tool.run(args, lease, record);
             } catch (e) {
-              if (record) await finishAction(record, lease, e.message);
+              if (e instanceof NotDone) {
+                if (record) actions.delete(record.id);
+                record = null;
+              } else if (record) await finishAction(record, lease, e.message);
               throw e;
             }
             if (record) {

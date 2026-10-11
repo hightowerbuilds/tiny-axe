@@ -136,6 +136,67 @@ defmodule TinyAxe.BrowserTest do
     assert text(call(s, "browser_tabs", %{action: "list"})) =~ "* 0: Volcanoes"
   end
 
+  describe "a page longer than the snapshot" do
+    test "the snapshot says it was cut, how much, and to use find", %{site: site, server: s} do
+      out = text(call(s, "browser_navigate", %{url: site <> "/long-shop"}))
+
+      assert out =~ ~r/snapshot cut at 25,000 of [\d,]+ characters/
+      assert out =~ "browser_find"
+      refute out =~ ~r/button "Add to cart" \[ref=/
+    end
+
+    test "find searches the whole page and gives refs, marking ones that can't be clicked", %{
+      site: site,
+      server: s
+    } do
+      call(s, "browser_navigate", %{url: site <> "/long-shop"})
+      out = text(call(s, "browser_find", %{text: "add to cart"}))
+
+      assert out =~ ~s(3 matches for "add to cart" in the page's whole snapshot)
+
+      assert out =~
+               ~r/button "Add to cart, shift, alt, K" \[ref=\w+\][^\n]*⚠ off the page: not clickable/
+
+      assert out =~ ~r/button "Add to cart \(panel\)" \[ref=\w+\][^\n]*⚠ hidden: not clickable/
+      [_, ref] = Regex.run(~r/button "Add to cart" \[ref=(\w+)\](?![^\n]*⚠)/, out)
+      assert out =~ "in: main"
+
+      # The ref works, though the snapshot never showed it.
+      refute call(s, "browser_click", %{ref: ref})["isError"]
+      assert text(call(s, "browser_find", %{text: "cart:"})) =~ "Cart: 1"
+    end
+
+    test "find says when nothing matches", %{site: site, server: s} do
+      call(s, "browser_navigate", %{url: site <> "/long-shop"})
+      assert text(call(s, "browser_find", %{text: "zeppelin"})) =~ ~s("zeppelin" isn't anywhere)
+    end
+
+    test "a click on a control off the page or hidden is refused at once, as not done", %{
+      site: site,
+      server: s
+    } do
+      call(s, "browser_navigate", %{url: site <> "/long-shop"})
+      out = text(call(s, "browser_find", %{text: "add to cart"}))
+      [_, decoy] = Regex.run(~r/"Add to cart, shift, alt, K" \[ref=(\w+)\]/, out)
+      [_, panel] = Regex.run(~r/"Add to cart \(panel\)" \[ref=(\w+)\]/, out)
+
+      t0 = System.monotonic_time(:millisecond)
+
+      result =
+        call(s, "browser_click", %{ref: decoy, _tinyaxe_action: "act-#{System.unique_integer()}"})
+
+      assert System.monotonic_time(:millisecond) - t0 < 5_000
+      assert result["isError"] == true
+      assert text(result) =~ "placed off the page"
+      # No record: the gate takes it as not done, never as maybe sent.
+      refute Map.has_key?(result, "_tinyaxe")
+
+      result = call(s, "browser_click", %{ref: panel})
+      assert text(result) =~ "hidden"
+      assert result["isError"] == true
+    end
+  end
+
   test "through the gate, every read tool runs without asking, and is journaled", %{
     site: site,
     server: s

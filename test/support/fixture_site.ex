@@ -12,6 +12,10 @@ defmodule TinyAxe.FixtureSite do
     * `/contact` — a form that POSTs; `/search` — a form that GETs results
     * `/shop` — "Add to cart" (on the page only), "Buy now" (records a
       purchase), and an unlabelled button that records a click
+    * `/long-shop` — a product page whose snapshot runs past the cut: a
+      keyboard-shortcut "Add to cart" placed off the page (as Amazon's is),
+      one hidden in a closed panel, and the real "Add to cart" at the
+      bottom, which counts clicks in "Cart: N"
     * `/login` — a sign-in form with a password field
     * `/dialog` — a button that asks "Clear everything?" before recording
     * `/exfil` — a link whose address carries a long query string
@@ -160,6 +164,25 @@ defmodule TinyAxe.FixtureSite do
     <button id="add" onclick="document.getElementById('cart').textContent='Cart: ' + (++window.n || (window.n=1))">Add to cart</button>
     <button onclick="fetch('/bought', {method: 'POST'})">Buy now</button>
     <button id="mystery" onclick="fetch('/mystery', {method: 'POST'})">⚙</button>
+    </main>
+    """)
+  end
+
+  get "/long-shop" do
+    filler =
+      for i <- 1..400,
+          do:
+            "<li><a href=\"/article?r=#{i}\">Related product #{i}: a spare part that fits many models</a></li>"
+
+    html(conn, """
+    <title>Long shop</title>
+    <div style="position:absolute; left:-10000px; top:400px; width:300px">
+      <button onclick="window.decoy=1">Add to cart, shift, alt, K</button>
+    </div>
+    <div style="height:0; overflow:hidden"><button>Add to cart (panel)</button></div>
+    <main><h1>Bone nut</h1><ul>#{Enum.join(filler)}</ul>
+    <p id="cart">Cart: 0</p>
+    <button onclick="document.getElementById('cart').textContent='Cart: ' + (++window.n || (window.n=1))">Add to cart</button>
     </main>
     """)
   end

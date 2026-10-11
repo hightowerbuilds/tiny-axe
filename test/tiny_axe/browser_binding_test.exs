@@ -128,12 +128,12 @@ defmodule TinyAxe.BrowserBindingTest do
     JSON.decode!(text(result))
   end
 
-  # Waits until the page's own polling shows the new label (without taking a
-  # snapshot, which would hand out fresh refs).
+  # Waits until the page's own polling shows the new label, reading its text
+  # (browser_extract), never a snapshot, which would hand out fresh refs.
   defp until_shown(ctx, task, label) do
     assert Enum.any?(1..40, fn _ ->
              Process.sleep(100)
-             text(act(ctx, task, "browser_find", %{text: label})) =~ "- #{label}"
+             text(act(ctx, task, "browser_extract", %{})) =~ label
            end)
   end
 

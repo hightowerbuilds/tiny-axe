@@ -919,7 +919,16 @@ Its tools: `browser_navigate`, `navigate_back`, `snapshot` (with refs),
   - `browser_take_screenshot`, which returns a PNG
   - `browser_extract`: the article or main text
   - `browser_read`: a URL read in its own tab, rendering JavaScript
-  - `browser_find`, `browser_tabs` (list and select), `browser_wait_for`
+  - `browser_find`: searches the page's whole snapshot (a snapshot shown to
+    the agent is cut at 25,000 characters, and says so) and returns each
+    match with its ref and what it's inside, marking elements that are
+    hidden or placed off the page (2026-10-11: Amazon's real "Add to cart"
+    sat past the cut, and its keyboard-shortcut copy, off the page, was the
+    only one the agent could see)
+  - Clicking, typing into, choosing in or hovering over an element that's
+    hidden or off the page is refused at once, with no action record, so the
+    gate counts it as not done rather than waiting out Playwright's timeout
+  - `browser_tabs` (list and select), `browser_wait_for`
   - `browser_console_messages` and `browser_network_requests`
   - Only http and https URLs are opened.
 - **Redaction happens on the page, before anything leaves the server:**
