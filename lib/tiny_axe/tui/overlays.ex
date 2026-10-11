@@ -248,7 +248,10 @@ defmodule TinyAxe.TUI.Overlays do
       ]),
       # On its own line, so a long path can't push the note off the edge.
       styled("in #{TinyAxe.Ops.show(plan.dir)}", :cyan),
-      styled("only this folder can be changed; network on", :cyan),
+      styled(
+        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
+        :cyan
+      ),
       styled("y run · n cancel · ↑/↓ scroll", :dark_gray),
       styled("")
     ]

@@ -75,7 +75,7 @@ defmodule TinyAxe.TUICommandTest do
 
     screen = draw(state)
     assert screen =~ "run these commands?"
-    assert screen =~ "only this folder can be changed; network on"
+    assert screen =~ "only this folder and tool installs"
     assert screen =~ "$ echo hello from the sandbox"
 
     state = state |> key("y") |> settle()
