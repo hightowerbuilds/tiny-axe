@@ -61,11 +61,12 @@ defmodule TinyAxe.TUI.Run do
     cleared = for {field, ask} <- asked, mine.(ask), into: %{}, do: {field, nil}
     state = Map.merge(%{state | waiting: waiting}, cleared)
 
-    # Killing the task doesn't stop the sandboxed command, so kill that directly.
+    # Killing the task doesn't stop the sandboxed command, so stop that (and
+    # whatever it started) directly.
     state =
       case state.running_cmd do
         %{os_pid: os_pid} = cmd when is_integer(os_pid) ->
-          System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+          TinyAxe.Shell.stop(os_pid)
           entry = {:output, cmd.command, String.trim_trailing(cmd.output), "cancelled"}
           %{state | running_cmd: nil, transcript: state.transcript ++ [entry]}
 

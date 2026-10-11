@@ -10,12 +10,12 @@ Work done since this review. The findings below are left as written.
 
 | Item | Status | What changed |
 | --- | --- | --- |
-| F6 command boundary | Done | Commands never run in the home folder, a hidden folder, or outside home and the project, whatever the current folder. Checked when planned and again just before running. |
+| F6 command boundary | Done | Commands that change things never run in the home folder, a hidden folder, or outside home and the project, whatever the current folder; symlinks are followed for the check. Checked when planned and again just before running. Since the shell plan (S1): commands that only look (`TinyAxe.Shell.ReadOnly`) may run anywhere, without asking, in a read-only sandbox; secrets are hidden from every command; started in `~`, the planner names a subfolder. |
 | F7 edit snapshots | Done | The version of each file given to the model is hashed when it's read. An edit is refused if the file changed while the model was writing, was only partly shown, or was never given to it. |
 | F1 unknown decisions | Done | Coverage below 5% is unknown, not a score. `Decider.p/2` and `yes?/3` never treat unknown as yes. Scores are shown as "score N/100", not as percentages of correctness, and a skipped review says so. |
 | F4 conversation context | Done | Routing, the verifier, and plan and command reviews all see the request, the recent conversation, the summary and the current folder. |
 | F5 request budget | Done | Every model request is fitted into the window (attached material shrinks first, then old turns go), and `@mentioned` files share a budget. |
-| Instrumentation and evaluation | Started | Model and decider calls emit telemetry, and Ollama's load, prompt and generation times are recorded. `mix tiny_axe.eval` runs 17 fixed tasks (11 dev, 6 held out) with independent checks. Grow toward 60–100. |
+| Instrumentation and evaluation | Started | Model and decider calls emit telemetry, and Ollama's load, prompt and generation times are recorded. `mix tiny_axe.eval` runs 19 fixed tasks (12 dev, 7 held out) with independent checks. Grow toward 60–100. |
 | F2 evidence-aware verification | Started | Illustrative snippets are no longer compiled as programs, invalid doctests are reported instead of crashing the checker, harmless attribute warnings don't fail code, and the fix prompt says a failing example may be the wrong part. Measured: a passing code check was right 5/5 times, a failing one only 3/7 (the rest were wrong doctests on correct code). Evidence states and telling wrong examples from wrong code are next. |
 | F3 retrieval and project validation | Open | |
 | P2 tuning | Open | Needs a larger task set first. |
@@ -332,6 +332,10 @@ Recommended changes:
 - Revalidate the approved execution boundary immediately before execution.
 - Add regression cases where home or a hidden folder is the current project.
 - Test filesystem containment separately from model routing and approval.
+
+Status (shell plan S1, 2026-10-11): the boundary now applies to commands that
+change things; read-only commands run without approval in a sandbox where
+nothing is writable and secrets are hidden. See [plan-shell.md](plan-shell.md).
 
 This is a source-confirmed policy bypass, not a demonstrated malicious exploit.
 User approval is still required. The shell sandbox also permits network access

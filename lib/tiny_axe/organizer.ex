@@ -253,6 +253,9 @@ defmodule TinyAxe.Organizer do
     an existing text file when the user asks for changes to it.
     - Hidden files and folders (names starting with a dot) are off limits.
     - Only include steps the user asked for.
+    - Shell commands aren't part of a plan: tiny-axe's command route runs those when \
+    the user asks for something to be run or checked (folder sizes, disk space, \
+    installs). If the request needs one, say so in "reply" and leave the steps empty.
     """
   end
 

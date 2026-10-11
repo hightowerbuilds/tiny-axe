@@ -77,9 +77,9 @@ defmodule TinyAxe.Pipeline do
     files: %{
       type: :noul,
       instructions:
-        "Is the request about files, folders or code in the user's current project, for " <>
-          "example \"my mix.exs\", \"the TUI module\", \"this project\" or \"what's in " <>
-          "this folder\"?"
+        "Is the request about the code or text in the user's current project's files, for " <>
+          "example \"my mix.exs\", \"the TUI module\" or \"explain this project\"? (Which " <>
+          "files or folders there are, or where one is, is the file organiser's question.)"
     },
     change: %{
       type: :noul,
@@ -93,9 +93,10 @@ defmodule TinyAxe.Pipeline do
         "Does the user want files or folders moved, copied, renamed, organised, deleted " <>
           "or cleaned out, folders " <>
           "made, or a document (notes, Markdown, plain text) written to a file on their " <>
-          "computer? Also yes if they ask what's in a folder on their computer or where a " <>
-          "file is. No if they want code in their project written or changed, or if " <>
-          "they're asking how to do it themselves (\"how do I move a file?\")."
+          "computer? Also yes if they ask what's in a folder on their computer (this one " <>
+          "included) or where a file is. No if they want code in their project written or " <>
+          "changed, if they're asking how to do it themselves (\"how do I move a file?\"), " <>
+          "or for folder sizes or disk space (a command answers those)."
     },
     elsewhere: %{
       type: :noul,
@@ -103,13 +104,8 @@ defmodule TinyAxe.Pipeline do
         "Does the request name a folder to work in other than the current folder " <>
           "(e.g. \"in my tiny-app repo\", \"go to Downloads\", \"the web folder\")?"
     },
-    command: %{
-      type: :noul,
-      instructions:
-        "Does the user want a shell command run for them: installing packages, " <>
-          "scaffolding a project (e.g. Vite), git, or running build, test or dev tools? " <>
-          "No if they only want to know which command to use."
-    }
+    # The command question comes from TinyAxe.Capabilities (route_questions/0).
+    command: %{type: :noul, instructions: ""}
   }
 
   @doc """
@@ -168,12 +164,15 @@ defmodule TinyAxe.Pipeline do
   # does, so it's named for what it does: a bare "graph" would pull in
   # questions about graphs in general.
   defp route_questions do
+    questions =
+      put_in(@route_questions.command.instructions, TinyAxe.Capabilities.command_question())
+
     case TinyAxe.MCP.running() do
       [] ->
-        @route_questions
+        questions
 
       servers ->
-        Map.put(@route_questions, :tools, %{
+        Map.put(questions, :tools, %{
           type: :noul,
           instructions:
             "Does the request need one of tiny-axe's connected services to act or look " <>

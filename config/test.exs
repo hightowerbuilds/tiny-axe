@@ -7,8 +7,9 @@ config :tiny_axe, start_tui: false
 # task folders (test_helper.exs removes them afterwards).
 config :tiny_axe, state_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_state_#{System.pid()}")
 config :tiny_axe, trash_dir: Path.join(System.tmp_dir!(), "tiny_axe_test_trash_#{System.pid()}")
-# Judging whether commands worked asks the model; tests don't.
-config :tiny_axe, check_command_outcome: false
+# Judging whether commands worked, and answering from their output, ask the
+# model; tests don't, unless they script one and turn it on.
+config :tiny_axe, check_command_outcome: false, command_answer: false
 
 # Fake `claude` and `codex` executables, so no test can use the real
 # subscriptions (test/support/fake_cli).

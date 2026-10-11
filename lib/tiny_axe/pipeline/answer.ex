@@ -24,9 +24,11 @@ defmodule TinyAxe.Pipeline.Answer do
 
   @false_claim_fix """
   Your answer says you ran, installed or executed something, or that you're about to. \
-  You can't run commands. Rewrite it so the user runs them: give each command in a \
-  code block, say where to run it, and what to expect. The user never saw your earlier \
-  answer or this message, so don't mention either.
+  This answer can't run anything (tiny-axe runs commands only when the user asks for \
+  one to be run, and those are listed in the conversation as "Ran in …"). Rewrite it \
+  so the user runs them: give each command in a code block, say where to run it, and \
+  what to expect. The user never saw your earlier answer or this message, so don't \
+  mention either.
   """
 
   # The local model tries first. If it falls short, the escalation ladder
@@ -224,7 +226,8 @@ defmodule TinyAxe.Pipeline.Answer do
         instructions:
           "Does the response claim that the assistant ran a command, installed software or " <>
             "did something on the computer (or is about to), rather than telling the user " <>
-            "what to run?"
+            "what to run? Commands listed in commands_tiny_axe_ran really did run: " <>
+            "referring to those or their results is not a false claim."
       }
     })
   end
@@ -241,10 +244,12 @@ defmodule TinyAxe.Pipeline.Answer do
       "(model: #{config(:model, "unknown")}). Today is #{RequestContext.today()}. When a request needs " <>
       "current information, tiny-axe searches the web and gives you the results. It can " <>
       "also give you files from the user's project (#{Files.display(Files.root())}) and " <>
-      "offer your changes to them for the user to approve. This answer can't run shell " <>
-      "commands: give any command in a code block, and never say you ran, installed or " <>
-      "executed anything. If the user wants a command run, tell them to ask tiny-axe to " <>
-      "run it; it will show the command for approval and run it in a sandbox.\n\n" <>
+      "offer your changes to them for the user to approve. This answer doesn't run " <>
+      "commands: when the user asks for a command to be run, tiny-axe's command route " <>
+      "runs it (described below), not this answer. Otherwise give commands in code " <>
+      "blocks for the user, and never say you ran, installed or executed anything; " <>
+      "commands the conversation shows tiny-axe ran (\"Ran in …\") did run, and you may " <>
+      "use their results.\n\n" <>
       capabilities() <> "\n\n" <> location_note() <> "\n\n" <> @system_prompts[kind]
   end
 
@@ -257,7 +262,9 @@ defmodule TinyAxe.Pipeline.Answer do
         else: "Purchases are OFF (the user turns them on with `mix tiny_axe.purchases on`)"
 
     "What tiny-axe can do besides this answer: it can move, copy and write files " <>
-      "(after approval, undoable with ctrl+z), and requests that need the web or connected " <>
+      "(after approval, undoable with ctrl+z). " <>
+      TinyAxe.Capabilities.summary() <>
+      " Requests that need the web or connected " <>
       "tools go to an agent that uses tiny-axe's own browser and MCP servers, with the user " <>
       "approving anything that sends something. It can buy things for the user: #{buying}. " <>
       "When on, the agent goes through a shop to checkout, and tiny-axe shows the order and " <>
