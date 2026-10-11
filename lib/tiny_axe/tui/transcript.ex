@@ -125,4 +125,10 @@ defmodule TinyAxe.TUI.Transcript do
 
   @doc "Drops formatted entries and measurements when the transcript is cleared."
   def clear_cache, do: Process.delete(@cache_key)
+
+  @doc "Hands the cache over when a chat is put aside; `put_cache/1` brings it back."
+  def take_cache, do: Process.delete(@cache_key)
+
+  def put_cache(nil), do: Process.delete(@cache_key)
+  def put_cache(cache), do: Process.put(@cache_key, cache)
 end

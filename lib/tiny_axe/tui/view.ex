@@ -10,7 +10,7 @@ defmodule TinyAxe.TUI.View do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea, Throbber}
   alias TinyAxe.Context
-  alias TinyAxe.TUI.{Overlays, Pulse, Transcript}
+  alias TinyAxe.TUI.{Chats, Overlays, Pulse, Transcript}
   import TinyAxe.TUI.Presentation, only: [styled: 1, styled: 2, review_label: 1]
   import TinyAxe.TUI.Conversation, only: [context_tokens: 1]
 
@@ -73,7 +73,7 @@ defmodule TinyAxe.TUI.View do
     case state.sidebar do
       nil ->
         width >= 110 and
-          (state.summary != nil or state.compacting != nil or
+          (state.summary != nil or state.compacting != nil or Chats.count(state) > 1 or
              Context.fraction(context_tokens(state)) >= 0.25)
 
       shown ->
@@ -81,7 +81,31 @@ defmodule TinyAxe.TUI.View do
     end
   end
 
+  # With several chats, a list of them goes above the meter.
   defp sidebar_widgets(state, area) do
+    case Chats.count(state) do
+      1 ->
+        context_widgets(state, area)
+
+      n ->
+        [chats_area, rest] = Layout.split(area, :vertical, [{:length, n + 2}, {:fill, 1}])
+        [{chats_widget(state), chats_area} | context_widgets(state, rest)]
+    end
+  end
+
+  defp chats_widget(state) do
+    %Paragraph{
+      text: Enum.map(Chats.lines(state), &styled/1),
+      block: %Block{
+        title: " chats · ctrl+o next ",
+        borders: [:all],
+        border_type: :rounded,
+        border_style: %Style{fg: :dark_gray}
+      }
+    }
+  end
+
+  defp context_widgets(state, area) do
     [meter_area, summary_area] = Layout.split(area, :vertical, [{:length, 6}, {:fill, 1}])
     tokens = context_tokens(state)
     fraction = Context.fraction(tokens)
@@ -200,14 +224,15 @@ defmodule TinyAxe.TUI.View do
   defp status_widget(%{run: nil} = state) do
     %Paragraph{
       text:
-        " #{state.status}  ·  #{ctx_label(state)}#{remote_label()}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
+        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
       style: %Style{fg: :dark_gray}
     }
   end
 
   defp status_widget(state) do
     %Throbber{
-      label: " #{state.status}  ·  #{ctx_label(state)}#{remote_label()}",
+      label:
+        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}",
       step: state.tick,
       throbber_style: %Style{fg: :cyan}
     }
