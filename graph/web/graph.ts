@@ -215,7 +215,8 @@ export class GraphView {
     this.resize = new ResizeObserver(() => this.sized());
     this.resize.observe(this.element);
     this.recolour();
-    matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => this.recolour());
+    // The sidebar's dark/light switch sets data-theme on the page.
+    new MutationObserver(() => this.recolour()).observe(document.documentElement, { attributeFilter: ["data-theme"] });
   }
 
   /** The graph to draw. Notes already drawn keep their places. */

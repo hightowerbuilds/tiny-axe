@@ -553,6 +553,18 @@ document.addEventListener("click", (event) => {
 
 window.addEventListener("popstate", () => route());
 
+// Dark by default; the switch's choice is remembered in this browser.
+function setTheme(theme: "dark" | "light") {
+  if (theme === "light") document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+  $("theme").setAttribute("aria-pressed", String(theme === "dark"));
+  remember("theme", theme);
+}
+setTheme(recall<string>("theme", "dark") === "light" ? "light" : "dark");
+$("theme").addEventListener("click", () =>
+  setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light"),
+);
+
 $("menu").addEventListener("click", () => {
   const open = $("sidebar").classList.toggle("open");
   $("menu").setAttribute("aria-expanded", String(open));

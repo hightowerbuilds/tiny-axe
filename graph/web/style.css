@@ -29,29 +29,28 @@
   --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #ffffff;
-    --panel: #f6f6f7;
-    --raised: #ececee;
-    --line: #dfdfe2;
-    --text: #222326;
-    --muted: #5c5f66;
-    --faint: #8b8e95;
-    --accent: #6d4fe0;
-    --focus: #6d4fe0;
-    --site: #b7741c;
-    --page: #2876c0;
-    --control: #138a6f;
-    --path: #6d4fe0;
-    --tool: #9a46ad;
-    --task: #6b707a;
-    --observed: #7d818a;
-    --verified: #2876c0;
-    --validated: #2b8f4e;
-    --blocked: #c93a33;
-  }
+/* Dark unless the sidebar's switch says light (remembered in this browser). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --panel: #f6f6f7;
+  --raised: #ececee;
+  --line: #dfdfe2;
+  --text: #222326;
+  --muted: #5c5f66;
+  --faint: #8b8e95;
+  --accent: #6d4fe0;
+  --focus: #6d4fe0;
+  --site: #b7741c;
+  --page: #2876c0;
+  --control: #138a6f;
+  --path: #6d4fe0;
+  --tool: #9a46ad;
+  --task: #6b707a;
+  --observed: #7d818a;
+  --verified: #2876c0;
+  --validated: #2b8f4e;
+  --blocked: #c93a33;
 }
 
 * { box-sizing: border-box; }
@@ -87,6 +86,8 @@ a:hover { text-decoration: underline; }
 .brand a { color: var(--text); font-weight: 650; font-size: 16px; }
 .brand a span { color: var(--muted); font-weight: 400; }
 #menu { display: none; }
+.brand-tools { display: flex; gap: 6px; }
+#theme { padding: 2px 8px; font-size: 12px; }
 
 .summary { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 
