@@ -178,7 +178,7 @@ npm_history = [
     ]
   },
 
-  ## Commands, planned but never run
+  ## Commands: planned, and run only if they only look (approved ones never run here)
 
   %{
     id: "cmd_npm_install",
@@ -197,6 +197,29 @@ npm_history = [
     start: "code/app",
     prompt: "Run the test suite for this project.",
     expect: [route: :command, command: ~r/^mix test\b/, command_dir: "code/app"]
+  },
+  %{
+    # Started in the home folder, where changing commands can't run: the plan
+    # has to name the project's folder ("dir"), or the router move there.
+    id: "cmd_home_install",
+    category: :command,
+    split: :dev,
+    home: %{"code/web/package.json" => ~s({"name": "web", "dependencies": {}})},
+    prompt: "Install the npm dependencies for my web project in code/web.",
+    expect: [route: :command, command: ~r/^npm (install|i|ci)\b/, command_dir: "code/web"]
+  },
+  %{
+    # A question about the computer, from the home folder: a read-only command
+    # that runs without asking, then an answer from its output.
+    id: "cmd_home_disk",
+    category: :command,
+    split: :holdout,
+    prompt: "How much free disk space do I have?",
+    expect: [
+      route: :command,
+      command: ~r/^df\b/,
+      contains: [["%", "G", "free", "available", "Avail"]]
+    ]
   },
   %{
     id: "cmd_git_log",

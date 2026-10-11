@@ -89,7 +89,7 @@ defmodule TinyAxe.PipelineTest do
 
     test "an answer claiming to have run something is sent back and rewritten" do
       Model.Script.script(fn messages, _opts ->
-        if last_user(messages) =~ "You can't run commands",
+        if last_user(messages) =~ "This answer can't run anything",
           do: "Run this yourself:\n\n```bash\nnpm install\n```",
           else: "I ran `npm install` for you."
       end)
@@ -222,6 +222,40 @@ defmodule TinyAxe.PipelineTest do
     end
   end
 
+  describe "route questions (shell plan S1)" do
+    test "one route owns each kind of request: commands for system questions, the organiser for folders" do
+      me = self()
+      Model.Script.script(fn _, _ -> "ok" end)
+
+      Decider.Script.script(fn
+        :kind, _, _ ->
+          :question
+
+        key, %{instructions: text}, _ when key in [:command, :files, :organize] ->
+          send(me, {key, text})
+          nil
+
+        :addresses, _, _ ->
+          0.9
+
+        _, _, _ ->
+          nil
+      end)
+
+      run("how much disk space do I have?")
+      assert_received {:command, command}
+
+      for example <- ["disk space", "processes or ports", "version of a program", "git status"],
+          do: assert(command =~ example)
+
+      assert command =~ "what's in a folder"
+      assert_received {:organize, organize}
+      assert organize =~ "what's in a folder on their computer (this one included)"
+      assert_received {:files, files}
+      refute files =~ "what's in"
+    end
+  end
+
   describe "conversation context (harness F4)" do
     @history [
       %{role: "user", content: "How do I install the dependencies for my Vite app?"},
@@ -249,6 +283,49 @@ defmodule TinyAxe.PipelineTest do
       assert_received {:route_state, %{request: "now run it", recent_conversation: conv}}
       assert conv =~ "npm install"
       assert_received {:verify_state, %{recent_conversation: ^conv}}
+    end
+
+    test "commands tiny-axe ran are known to the verifier, and not false claims" do
+      me = self()
+      Model.Script.script(fn _, _ -> "I ran `df -h` earlier: 40% of the disk is used." end)
+
+      Decider.Script.script(fn
+        :kind, _, _ ->
+          :question
+
+        :addresses, _, _ ->
+          0.9
+
+        :false_claim, q, state ->
+          send(me, {:claim, q, state})
+          0.02
+
+        _, _, _ ->
+          nil
+      end)
+
+      history = [
+        %{role: "user", content: "how full is my disk?"},
+        %{
+          role: "assistant",
+          content:
+            "*Ran in ~, without asking (they only look): `df -h` → exit 0.*\n\n40% is used."
+        }
+      ]
+
+      run("how did you know?", history)
+      assert_received {:claim, %{instructions: question}, state}
+      assert question =~ "commands_tiny_axe_ran really did run"
+
+      assert state.commands_tiny_axe_ran ==
+               "Ran in ~, without asking (they only look): `df -h` → exit 0."
+    end
+
+    test "the answer route is told commands are run by the command route, not to send the user off" do
+      prompt = TinyAxe.Pipeline.Answer.system_prompt(:question)
+      refute prompt =~ "tell them to ask tiny-axe"
+      assert prompt =~ "tiny-axe's command route runs it"
+      assert prompt =~ "run straight away in a read-only sandbox"
     end
 
     test "a plan's review sees the conversation too", %{dir: dir} do

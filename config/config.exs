@@ -55,10 +55,12 @@ config :tiny_axe,
   # Compact older turns into a summary once the conversation fills this much of
   # the context window, leaving room for web results, files and the answer.
   compact_at: 0.5,
-  # Shell commands (TinyAxe.Commander) run only after approval, in a sandbox,
-  # and are killed after this long.
+  # Shell commands (TinyAxe.Commander) run in a sandbox: those that only look
+  # straight away, others after approval. They're killed after this long, and
+  # with :command_answer the model reads their output and answers the request.
   commands: true,
   command_timeout: 600_000,
+  command_answer: true,
   # Claude and Codex through their subscription CLIs (never an API key), killed
   # after this long. See TinyAxe.Model.ClaudeCLI and TinyAxe.Model.CodexCLI.
   cli_timeout: 300_000,

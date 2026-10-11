@@ -96,25 +96,90 @@ defmodule TinyAxe.TUICommandTest do
 
     assert Enum.any?(
              state.transcript,
-             &match?({:meta, "✗ stopped: `echo made > made.txt && false` exited with 1" <> _}, &1)
+             &match?({:meta, "✗ stopped: `echo made > made.txt && false` exit 1" <> _}, &1)
            )
 
     # The location follows the commands to the folder they ran in.
     assert TinyAxe.Location.current() == dir
     assert {:meta, "📍 moved to " <> _} = List.last(state.transcript)
 
-    # The model's next turn will know what actually ran.
-    assert List.last(state.history).content =~ "$ echo hello from the sandbox → exited 0"
+    # The model's next turn will know what actually ran: the proposal became
+    # the record, led by what ran (later turns see only the start).
+    record = List.last(state.history).content
+
+    assert record =~
+             ~r/\A\*Ran in .+, after you approved: `echo hello from the sandbox` → exit 0; /
+
+    assert record =~ "(stopped there; 1 more didn't run)"
+    assert record =~ "$ echo hello from the sandbox\nhello from the sandbox"
+    refute record =~ "I'll run them."
 
     screen = draw(state)
     assert screen =~ "✓ exit 0"
     assert screen =~ "✗ exit 1"
   end
 
-  test "n cancels without running anything", %{tmp_dir: dir} do
-    state = with_plan(dir, ["touch ran.txt"]) |> key("n")
+  test "n cancels without running anything, and the proposal says so", %{tmp_dir: dir} do
+    state = with_plan(dir, ["touch ran.txt"])
+
+    state = %{
+      state
+      | history: [
+          %{role: "user", content: "do it"},
+          %{role: "assistant", content: "**Commands** (waiting for your approval, in ~/x)"}
+        ]
+    }
+
+    state = key(state, "n")
     assert state.pending_commands == nil
     refute File.exists?(Path.join(dir, "ran.txt"))
+    assert List.last(state.history).content == "**Commands** (not run: you said no, in ~/x)"
+  end
+
+  test "the model reads an approved run's output and answers", %{tmp_dir: dir} do
+    for {key, value} <- [command_answer: true, model_backend: nil, script_model: nil] do
+      previous = Application.get_env(:tiny_axe, key)
+
+      on_exit(fn ->
+        if previous == nil,
+          do: Application.delete_env(:tiny_axe, key),
+          else: Application.put_env(:tiny_axe, key, previous)
+      end)
+
+      if value != nil, do: Application.put_env(:tiny_axe, key, value)
+    end
+
+    me = self()
+
+    TinyAxe.Model.Script.script(fn messages, _opts ->
+      send(me, {:asked, messages})
+      "It printed 42."
+    end)
+
+    state = with_plan(dir, ["echo 42"]) |> key("y") |> settle()
+
+    assert_received {:asked, [%{role: "system"}, %{role: "user", content: asked}]}
+    assert asked =~ "Request: do it"
+    assert asked =~ "$ echo 42\n(exit 0)\n42"
+
+    assert {:assistant, "It printed 42."} in state.transcript
+    assert state.streaming == nil
+    [record, answer | _] = String.split(List.last(state.history).content, "\n\n")
+    assert record =~ "*Ran in "
+    assert answer == "It printed 42."
+  end
+
+  test "commands that only look show what's running instead of asking", %{tmp_dir: dir} do
+    {:ok, state} = TUI.mount(test_mode: @size)
+    plan = plan(dir, ["df -h"]) |> Map.put(:read_only, true)
+    state = TinyAxe.TUI.CommandWorkflow.event({:command_plan, plan}, state)
+
+    assert state.pending_commands == nil
+
+    assert {:meta, "running without asking (they only look), in " <> rest} =
+             List.last(state.transcript)
+
+    assert rest =~ "`df -h`"
   end
 
   test "esc stops a running command, sandbox included", %{tmp_dir: dir} do
