@@ -85,8 +85,15 @@ defmodule TinyAxe.AgentTest do
       server: s
     } do
       driver({:claude, "haiku"})
+      before = length(usage_lines("agent"))
       events = run(~s(Echo it. SCENARIO:tool:#{s}__echo:{"text":"hi"}), :allowed)
       reply = JSON.decode!(done(events))
+
+      # Its tokens are counted for /token, as the agent's.
+      Process.sleep(50)
+
+      assert [%{"backend" => "claude", "input" => 400, "output" => 42} | _] =
+               Enum.drop(usage_lines("agent"), before)
 
       assert reply["tool_result"] == %{"error" => false, "text" => "echo: hi"}
       assert [%{tool: tool, class: :read}] = all(events, :tool_call)
@@ -274,6 +281,22 @@ defmodule TinyAxe.AgentTest do
 
       events = route_events("Anything")
       assert {:task, :answer} in events
+    end
+  end
+
+  # Calls TinyAxe.Usage has on record, of a kind (for /token).
+  defp usage_lines(kind) do
+    TinyAxe.Usage.summary()
+
+    case File.read(TinyAxe.Usage.file()) do
+      {:ok, data} ->
+        data
+        |> String.split("\n", trim: true)
+        |> Enum.map(&JSON.decode!/1)
+        |> Enum.filter(&(&1["kind"] == kind))
+
+      _ ->
+        []
     end
   end
 end

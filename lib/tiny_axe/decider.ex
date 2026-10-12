@@ -141,6 +141,21 @@ defmodule TinyAxe.Decider do
     meta = Map.merge(%{backend: backend(impl), model: nil, usage: nil, request_id: nil}, meta)
     meta = Map.put(meta, :ms, ms)
 
+    # Jev's tokens, for /token (TinyAxe.Usage). The local decider's calls are
+    # counted by TinyAxe.Ollama, where they're made.
+    if meta.backend == "jev" do
+      usage = meta.usage || %{}
+
+      TinyAxe.Usage.emit(
+        :jev,
+        :decision,
+        meta.model,
+        %{input: usage[:input_tokens], output: usage[:output_tokens]},
+        match?({:ok, _}, result),
+        ms
+      )
+    end
+
     # Timed and counted for `mix tiny_axe.eval`.
     :telemetry.execute([:tiny_axe, :decider, :call], %{ms: ms, questions: map_size(questions)}, %{
       ok: match?({:ok, _}, result)

@@ -169,9 +169,13 @@ defmodule TinyAxe.AgentDispatchTest do
       server: s
     } do
       task = parent(s)
+      before = length(usage_lines("subagent"))
       result = dispatch(task, [echo(s, "one"), echo(s, "two"), echo(s, "three")])
 
       refute result["isError"]
+      # Each sub-agent's tokens are counted for /token, as a sub-agent's.
+      Process.sleep(50)
+      assert length(usage_lines("subagent")) - before == 3
       report = text(result)
       assert report =~ "3 sub-agents ran (3 done)"
 
@@ -419,6 +423,22 @@ defmodule TinyAxe.AgentDispatchTest do
       assert_received {:tool_answer, ^first_ref, :deny}
       assert_received {:tool_answer, ^second_ref, :deny}
       assert state.tool_ask == nil and state.waiting == []
+    end
+  end
+
+  # Calls TinyAxe.Usage has on record, of a kind (for /token).
+  defp usage_lines(kind) do
+    TinyAxe.Usage.summary()
+
+    case File.read(TinyAxe.Usage.file()) do
+      {:ok, data} ->
+        data
+        |> String.split("\n", trim: true)
+        |> Enum.map(&JSON.decode!/1)
+        |> Enum.filter(&(&1["kind"] == kind))
+
+      _ ->
+        []
     end
   end
 end

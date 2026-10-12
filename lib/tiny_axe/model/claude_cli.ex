@@ -64,10 +64,14 @@ defmodule TinyAxe.Model.ClaudeCLI do
               quota: acc.quota
             })
 
-        with {:ok, text} <- outcome(acc, status, noise, schema) do
+        result = outcome(acc, status, noise, schema)
+        ms = System.monotonic_time(:millisecond) - t0
+        count(acc, :answer, match?({:ok, _}, result), ms)
+
+        with {:ok, text} <- result do
           # Structured answers arrive whole (as a tool call), not as text deltas.
           if schema, do: on_delta.(text)
-          report_usage(acc, messages, opts, System.monotonic_time(:millisecond) - t0)
+          report_usage(acc, messages, opts, ms)
           {:ok, text}
         end
 
@@ -158,6 +162,28 @@ defmodule TinyAxe.Model.ClaudeCLI do
 
   def outcome(%{result: r} = acc, _status, _noise, nil),
     do: {:ok, r["result"] || IO.iodata_to_binary(acc.text)}
+
+  @doc """
+  Reports a run's tokens for /token (TinyAxe.Usage), from the stream's final
+  `result` event: `kind` is `:answer`, `:agent` or `:subagent`.
+  """
+  def count(acc, kind, ok, ms) do
+    usage = (acc.result && acc.result["usage"]) || %{}
+
+    TinyAxe.Usage.emit(
+      :claude,
+      kind,
+      acc.model,
+      %{
+        input: usage["input_tokens"],
+        output: usage["output_tokens"],
+        cache_read: usage["cache_read_input_tokens"],
+        cache_write: usage["cache_creation_input_tokens"]
+      },
+      ok,
+      ms
+    )
+  end
 
   defp report_usage(acc, messages, opts, ms) do
     with fun when is_function(fun, 1) <- Keyword.get(opts, :on_usage) do

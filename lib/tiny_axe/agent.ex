@@ -126,7 +126,9 @@ defmodule TinyAxe.Agent do
 
     case Escalation.permit(choice, why, :allowed, notify) do
       {:ok, _mode} ->
-        case start(choice, request(task, part_prompt(part), [], servers), task, held(notify)) do
+        request = request(task, part_prompt(part), [], servers) |> Map.put(:subagent, true)
+
+        case start(choice, request, task, held(notify)) do
           {:ok, text} -> {:ok, Gate.complete(task.id, text)}
           other -> other
         end

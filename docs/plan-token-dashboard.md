@@ -1,6 +1,6 @@
 # Plan: `/token`, a small dashboard of Haiku and Jev usage
 
-Status (2026-10-12): planned, not built. Branch `token-dashboard` (worktree
+Status (2026-10-12): T1 built (the numbers); T2 (the popup) next. Branch `token-dashboard` (worktree
 `../tiny-axe-lobster`).
 
 ## What the user asked for
@@ -70,7 +70,14 @@ So the numbers exist at every call; nothing collects them.
 
 ## Phases
 
-1. **T1, the numbers.** The `[:tiny_axe, :usage]` event from Jev, Haiku
+1. **T1, the numbers.** Done 2026-10-12: `TinyAxe.Usage.emit/6` from
+   `Decider` (Jev), `Ollama.chat`/`stream_chat` (every local call, errors
+   too), `ClaudeCLI` (answers) and `ClaudeDriver` (`:agent`, or `:subagent`
+   when Dispatch's request says so). The file is the record: `summary/0`
+   reads only what's new since it last looked, so several tiny-axe at once
+   all count; a file found shorter than what was read is read afresh.
+   Tested with the fake Claude CLI, a stubbed Jev and a stubbed Ollama, and
+   in the agent and sub-agent tests. Originally: The `[:tiny_axe, :usage]` event from Jev, Haiku
    answers, the agent and sub-agents, and every Ollama call (answers,
    decisions with the local decider, the local agent loop, compaction);
    `TinyAxe.Usage` with `usage.jsonl`, totals, pruning. Tests with the fake
