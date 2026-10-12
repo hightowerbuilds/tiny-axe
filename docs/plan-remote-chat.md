@@ -1,6 +1,6 @@
 # Plan: chat with tiny-axe from lobsterattack.yachts
 
-Status (2026-10-12): R1 written (lobsterattack branch `remote-chat`); migration not applied, functions not deployed. Branch `remote-chat` (worktree `../tiny-axe-remote`).
+Status (2026-10-12): R1 done: migration 0009 applied, ta-remote-* deployed from lobsterattack branch `remote-chat` (de60511), scripts/remote-check.ts passes 23/23 against the real project. R2 next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
 
 ## What the user asked for
 
