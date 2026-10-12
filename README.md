@@ -56,7 +56,7 @@ The status bar shows how full the model's context window is (`ctx 58%`). Once th
 
 tiny-axe keeps track of where it is, like a shell: the title shows 📍 and the current folder. Type `cd <folder>` or `pwd` at the prompt to move or check (no model involved). When a request names another folder ("in my tiny-app repo…"), the decider picks it from real folders nearby, and after commands run, the location follows them (e.g. into `web/` after `cd web && npm install`). Every model is told where it is and what's there, relative paths mean "here", and commands run here.
 
-The first time tiny-axe opens, it sets up your account on its website, [www.lobsterattack.yachts](https://www.lobsterattack.yachts): the model suggests usernames (the site says which are free), and you type a password, which goes only to the site (shown as dots; no model sees it). tiny-axe doesn't go on without one; "I already have an account" signs in from another computer. `/account` shows it. Your chats are sent to your own page of the site as they change, as a searchable list, for you, and anyone you let in, to see after signing in; anything not yet sent goes once the site can be reached. `/site` opens your chats in your browser, already signed in, and shows and copies the link. The agent can search and read past chats there too ("what did we decide about…"). See [docs/plan-lobsterattack.md](docs/plan-lobsterattack.md).
+The website account and chat archive are optional. `/account` sets up or shows your account, and `/site` opens its chat archive. Automatic website sync is off by default (`config :tiny_axe, :sync, enabled: true` enables it for ordinary chats). Local memory conversations are always excluded from sync. The site's search tools are remote; use `/memory` for on-machine search. See [docs/plan-lobsterattack.md](docs/plan-lobsterattack.md).
 
 `/token` shows how many tokens Claude Haiku, Jev and the local model (Gemma) have used this session, today and in the last 7 days, with Claude's 5-hour and 7-day usage windows and today's use by hour. The counts are kept in `usage.jsonl` in tiny-axe's state folder (no prompts or answers, no prices; 90 days). `esc` closes it. See [docs/plan-token-dashboard.md](docs/plan-token-dashboard.md).
 
@@ -64,7 +64,24 @@ Ask it to change how the desktop looks ("make the terminal font bigger", "switch
 
 Type `/new` to start another chat; the one you leave keeps working in the background, and its questions still pop up wherever you are ("asked by chat 1"). `/chats` lists them (what each is about, and whether it's working, waiting for you or idle), `/chat N` or `ctrl+o` switches, and `/chat close` closes the one on screen once it's idle. The status bar shows which chat you're in and what the others are doing; `esc` cancels only the chat on screen, `ctrl+c` quits them all.
 
-Every chat is kept on disk, in `~/.local/state/tiny-axe/history/` (one file per chat, with card numbers and keys removed), so it outlives tiny-axe. `/history` lists the recent ones, `/history words` finds chats that mention something, and `/history N` reopens one with its context, to carry on where it left off. Your page of tiny-axe's website shows every chat, from every session, under **Chats** (without what reopening one gives the model). See [docs/plan-history.md](docs/plan-history.md).
+Every chat is kept on disk in `~/.local/state/tiny-axe/history/`, including command output going forward. Saved text is redacted for card numbers and token-like strings. `/history` lists recent chats and `/history N` reopens one. [History format](docs/plan-history.md).
+
+`/memory` opens a separate **local memory conversation**. Its questions, results, follow-up questions, and answers stay on this machine, including after reopening. It uses its own local Gemma configuration regardless of the app's Claude or Jev settings. `/new` returns to ordinary chat.
+
+- `/memory search graphics card` finds entries containing both words.
+- `/memory search "graphics card"` finds consecutive words, ignoring case and separating punctuation.
+- `/memory search --literal "C++"` finds the exact characters, including case and punctuation.
+- `/memory next` pages through matches; `/memory open N` reads a result and its neighboring entries.
+- `/memory ask What GPU did we decide to buy?` asks local Gemma to search and answer with checked source quotes.
+- `/memory status` reports archive coverage; `/memory rebuild` rebuilds the index without changing saved chats.
+- `/memory review on` starts background Gemma reading. It creates local search notes for new and changed passages and resumes after restarting the app. Review starts off until you enable it.
+- `/memory review off` pauses review and keeps completed notes. `/memory review retry` retries failed passages; use `on` to resume if paused.
+
+The SQLite FTS5 index covers full saved messages, across sessions and folders. Direct search works without Ollama or an account. Gemma uses locally verified weights through loopback Ollama; failed inference never falls back to a remote model. Current default: `gemma4:e4b-it-qat`. Hosted Jev is excluded.
+
+Background review reads bounded passages throughout each entry, including long middles. Its generated descriptions, topics, and suggested questions help `/memory ask` find original sources; exact `/memory search` still searches only saved words. Answers quote original text, never generated notes. Foreground app tasks interrupt background review, and `/memory status` shows separate review progress and failures. Review does not train Gemma's weights. Automatic recall in ordinary agent conversations remains a later milestone. [Memory build plan, evaluation, and limitations](docs/plan-local-memory.md).
+
+Run the repeatable synthetic GPU check with `mix run --no-start scripts/memory-review-eval.exs`. It uses only local Gemma and temporary fixture chats, leaving your archive untouched.
 
 Mention files or folders with `@path` (relative to the project, `~/…` or absolute) to give them to the model. Otherwise the decider picks the project files a request is about.
 

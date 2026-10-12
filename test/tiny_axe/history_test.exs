@@ -68,7 +68,7 @@ defmodule TinyAxe.HistoryTest do
       ])
 
       d = doc(id)
-      assert d["version"] == 1
+      assert d["version"] == 2
       assert d["id"] == id
       assert d["session"] == History.session()
       assert d["title"] == "how much free space do I have?"
@@ -141,6 +141,23 @@ defmodule TinyAxe.HistoryTest do
 
       assert length(d["entries"]) == 2
     end
+  end
+
+  test "tool output and local-only policy survive save and reopen" do
+    id = History.new_id()
+
+    kept([
+      chat(id, [{:user, "show result"}, {:output, "echo result", "saved output", 0}],
+        local_only: true
+      )
+    ])
+
+    assert {:ok, loaded} = History.load(id)
+    assert loaded.local_only
+    assert {:output, "echo result", "saved output", 0} in loaded.transcript
+    assert doc(id)["entries"] |> List.last() |> Map.fetch!("text") =~ "saved output"
+    kept([chat(id, [{:user, "show result"}, {:assistant, "new turn"}], local_only: false)])
+    assert doc(id)["local_only"] == true
   end
 
   describe "reading them back" do

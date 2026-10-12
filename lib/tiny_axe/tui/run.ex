@@ -11,7 +11,9 @@ defmodule TinyAxe.TUI.Run do
 
     {:ok, pid} =
       Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
-        work.(&send(tui, {:pipeline, id, &1}))
+        TinyAxe.Memory.Inference.foreground(fn ->
+          work.(&send(tui, {:pipeline, id, &1}))
+        end)
       end)
 
     Process.monitor(pid)
@@ -20,6 +22,8 @@ defmodule TinyAxe.TUI.Run do
   end
 
   def schedule_tick, do: Process.send_after(self(), :tick, @tick_ms)
+
+  def request(%{local_only: true} = state, prompt), do: TinyAxe.TUI.MemoryChat.ask(state, prompt)
 
   def request(state, prompt) do
     history = request_history(state)

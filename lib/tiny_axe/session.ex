@@ -30,7 +30,9 @@ defmodule TinyAxe.Session do
   @doc "Saves every chat, in order, and which one is on screen (from 0)."
   @spec save_chats([chat()], non_neg_integer()) :: :ok
   def save_chats(chats, active) do
-    shown = Map.take(Enum.at(chats, active), [:history, :transcript, :summary, :saved_as])
+    shown =
+      Map.take(Enum.at(chats, active), [:history, :transcript, :summary, :saved_as, :local_only])
+
     Agent.cast(__MODULE__, &Map.merge(&1, Map.merge(shown, %{chats: chats, active: active})))
   end
 
@@ -52,7 +54,7 @@ defmodule TinyAxe.Session do
         }
   def restore do
     saved = Agent.get_and_update(__MODULE__, &{&1, Map.put(&1, :crashed, nil)})
-    shown = Map.take(saved, [:history, :transcript, :summary, :saved_as])
+    shown = Map.take(saved, [:history, :transcript, :summary, :saved_as, :local_only])
 
     # Saved before there were several chats: just the one.
     case saved do

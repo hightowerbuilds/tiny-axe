@@ -30,6 +30,8 @@ defmodule TinyAxe.TUI.Chats do
   # it starts.
   @blank %{
     saved_as: nil,
+    local_only: false,
+    memory_results: nil,
     history: [],
     transcript: [],
     summary: nil,
@@ -72,7 +74,7 @@ defmodule TinyAxe.TUI.Chats do
 
     parked =
       for {chat, id} <- Enum.zip(saved, ids), id != active, into: %{} do
-        chat = Map.take(chat, [:history, :transcript, :summary, :saved_as])
+        chat = Map.take(chat, [:history, :transcript, :summary, :saved_as, :local_only])
         {id, Map.merge(@blank, chat) |> Map.update!(:saved_as, &(&1 || TinyAxe.History.new_id()))}
       end
 
@@ -250,7 +252,7 @@ defmodule TinyAxe.TUI.Chats do
   screen if nothing's been asked there yet, else as a new chat.
   """
   def reopen(state, kept) do
-    fields = Map.take(kept, [:saved_as, :history, :transcript, :summary])
+    fields = Map.take(kept, [:saved_as, :history, :transcript, :summary, :local_only])
 
     if busy?(state) or Enum.any?(state.transcript, &match?({:user, _}, &1)) do
       open(state, fields)
@@ -300,6 +302,11 @@ defmodule TinyAxe.TUI.Chats do
   defp still_working(ns), do: " — chats #{Enum.join(ns, ", ")} are still working"
 
   defp list(state) do
+    state =
+      if Enum.any?(state.chats.order, &chat(state, &1).local_only),
+        do: TinyAxe.TUI.MemoryChat.ensure_local(state),
+        else: state
+
     Enum.reduce(state.chats.order, state, fn id, acc ->
       here = if id == state.chats.active, do: " ◂ this one", else: ""
       n = position(state, id)
@@ -417,8 +424,16 @@ defmodule TinyAxe.TUI.Chats do
   @doc "A chat's name: the start of its first prompt (🌐 for the site's /remote chat)."
   def title(state, id, max) do
     %{transcript: transcript, remote_chat: remote?} = chat(state, id)
-    title = name(transcript, if(remote?, do: max - 2, else: max))
-    if remote?, do: "🌐 " <> title, else: title
+    local? = chat(state, id).local_only
+
+    prefix =
+      cond do
+        local? -> "🔒 "
+        remote? -> "🌐 "
+        true -> ""
+      end
+
+    prefix <> name(transcript, if(prefix == "", do: max, else: max - 2))
   end
 
   defp name(transcript, max) do
@@ -479,7 +494,7 @@ defmodule TinyAxe.TUI.Chats do
 
   defp conversations(state) do
     for id <- state.chats.order,
-        do: Map.take(chat(state, id), [:saved_as, :history, :transcript, :summary])
+        do: Map.take(chat(state, id), [:saved_as, :history, :transcript, :summary, :local_only])
   end
 
   defp state_of(result) when is_tuple(result), do: elem(result, 1)

@@ -6,6 +6,8 @@ defmodule TinyAxe.TUI.CompactionWorkflow do
   import TinyAxe.TUI.Conversation, only: [context_tokens: 1]
 
   # After an answer, compact once the conversation has reached the threshold.
+  def maybe_start(%{local_only: true} = state), do: state
+
   def maybe_start(%{run: nil} = state) do
     if Context.compact?(context_tokens(state)), do: start(state), else: state
   end
@@ -13,6 +15,9 @@ defmodule TinyAxe.TUI.CompactionWorkflow do
   def maybe_start(state), do: state
 
   # Runs like a request (in the run slot, so esc cancels it and the prompt waits).
+  def start(%{local_only: true} = state),
+    do: %{state | status: "local memory reads saved sources; no cloud compaction"}
+
   def start(state) do
     case Compactor.split(state.history) do
       {[], _recent} ->

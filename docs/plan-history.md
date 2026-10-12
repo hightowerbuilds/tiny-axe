@@ -1,5 +1,8 @@
 # Plan: chat history
 
+**2026-10-12 update:** local memory now indexes the saved transcript with SQLite FTS5 and provides `/memory search` and `/memory ask`. New history files use version 2, preserve command output as `kind: "output"` with `command`, `output`, `status`, and combined searchable `text`, and carry a persistent `local_only` flag. Version 1 remains readable. Local-only conversations retain their policy when reopened and never enter website sync. Accounts are optional and automatic sync is disabled by default. See [the local memory plan](plan-local-memory.md). The website/graph sections below describe the earlier design.
+
+
 Status (2026-10-11): being built on branch `chat-history` (worktree
 `../tiny-axe-history`).
 

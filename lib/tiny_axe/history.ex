@@ -21,7 +21,7 @@ defmodule TinyAxe.History do
   alias TinyAxe.{Location, Ops}
   alias TinyAxe.Tools.Redact
 
-  @version 1
+  @version 2
   @id ~r/\A\d{8}-\d{6}-[0-9a-f]{4}\z/
   @title_chars 80
 
@@ -99,6 +99,7 @@ defmodule TinyAxe.History do
   defp summary(doc) do
     %{
       id: doc["id"],
+      local_only: doc["local_only"] == true,
       title: doc["title"],
       started: doc["started"],
       updated: doc["updated"],
@@ -120,6 +121,7 @@ defmodule TinyAxe.History do
       {:ok,
        %{
          saved_as: doc["id"],
+         local_only: doc["local_only"] == true,
          title: doc["title"],
          started: doc["started"],
          transcript: Enum.flat_map(doc["entries"], &entry/1),
@@ -131,6 +133,9 @@ defmodule TinyAxe.History do
 
   defp entry(%{"kind" => kind, "text" => text}) when kind in ~w(user assistant meta),
     do: [{String.to_existing_atom(kind), text}]
+
+  defp entry(%{"kind" => "output", "command" => command, "output" => output, "status" => status}),
+    do: [{:output, command, output, status}]
 
   defp entry(_), do: []
 
@@ -150,18 +155,38 @@ defmodule TinyAxe.History do
 
   defp summary_from(_), do: nil
 
-  defp read(id, dir \\ dir()) do
+  @doc "Read the canonical saved transcript, including its local-only policy."
+  def document(id, dir \\ dir()), do: read(id, dir)
+
+  @doc false
+  def decode_document(id, body) do
+    with {:ok, %{"id" => ^id, "entries" => entries} = doc} when is_list(entries) <-
+           JSON.decode(body),
+         true <-
+           Enum.all?(entries, fn e ->
+             is_map(e) and is_binary(e["text"]) and is_binary(e["kind"])
+           end),
+         true <-
+           Enum.all?(
+             ["title", "updated", "started", "folder"],
+             &(is_nil(doc[&1]) or is_binary(doc[&1]))
+           ) do
+      {:ok, doc}
+    else
+      _ -> {:error, :invalid_chat}
+    end
+  end
+
+  @doc "A validated document and the exact source bytes used for its revision."
+  def source(id, dir \\ dir()) do
     with true <- id?(id) || {:error, :bad_id},
          {:ok, body} <- File.read(Path.join(dir, id <> ".json")),
-         {:ok, %{"id" => ^id, "entries" => entries} = doc} when is_list(entries) <-
-           JSON.decode(body) do
-      entries = Enum.filter(entries, &(is_binary(&1["text"]) and is_binary(&1["kind"])))
-      {:ok, %{doc | "entries" => entries}}
-    else
-      {:ok, _other} -> {:error, :not_a_chat}
-      {:error, reason} -> {:error, reason}
-      false -> {:error, :bad_id}
-    end
+         {:ok, doc} <- decode_document(id, body),
+         do: {:ok, doc, body}
+  end
+
+  defp read(id, dir \\ dir()) do
+    with {:ok, doc, _body} <- source(id, dir), do: {:ok, doc}
   end
 
   ## Writing
@@ -200,17 +225,25 @@ defmodule TinyAxe.History do
           "summary" => summary_to(chat[:summary])
         }
 
-        hash = :erlang.phash2({entries, context})
+        local_only = chat[:local_only] == true
+        hash = :erlang.phash2({entries, context, local_only})
 
         if state.written[id] == hash do
           state
         else
           {known, state} = known(id, state)
-          doc = document(id, known, entries, context)
+
+          doc =
+            document(id, known, entries, context)
+            |> Map.put("local_only", local_only or known["local_only"] == true)
 
           case put(id, doc) do
             :ok ->
-              %{state | written: Map.put(state.written, id, hash)}
+              %{
+                state
+                | written: Map.put(state.written, id, hash),
+                  known: Map.put(state.known, id, Map.put(known, "local_only", doc["local_only"]))
+              }
 
             {:error, reason} ->
               Logger.warning(
@@ -226,10 +259,28 @@ defmodule TinyAxe.History do
   defp write(_chat, state), do: state
 
   defp entries(transcript) do
-    for {kind, text} <- transcript,
-        kind in [:user, :assistant, :meta],
-        is_binary(text),
-        do: %{"kind" => Atom.to_string(kind), "text" => Redact.secrets(text)}
+    Enum.flat_map(transcript, fn
+      {kind, text} when kind in [:user, :assistant, :meta] and is_binary(text) ->
+        [%{"kind" => Atom.to_string(kind), "text" => Redact.secrets(text)}]
+
+      {:output, command, output, status} when is_binary(command) and is_binary(output) ->
+        command = Redact.secrets(command)
+        output = Redact.secrets(output)
+        status = if is_integer(status), do: status, else: Redact.secrets(to_string(status))
+
+        [
+          %{
+            "kind" => "output",
+            "command" => command,
+            "output" => output,
+            "status" => status,
+            "text" => "#{command}\n#{output}\nexit: #{status}"
+          }
+        ]
+
+      _ ->
+        []
+    end)
   end
 
   defp summary_to(%{text: text} = s) when is_binary(text),
@@ -250,7 +301,7 @@ defmodule TinyAxe.History do
         known =
           case read(id) do
             {:ok, doc} ->
-              Map.take(doc, ["session", "started", "folder"])
+              Map.take(doc, ["session", "started", "folder", "local_only"])
 
             _ ->
               %{
@@ -300,7 +351,9 @@ defmodule TinyAxe.History do
          :ok <- File.chmod(tmp, 0o600),
          :ok <- File.rename(tmp, path) do
       # And on to the user's page of the site (TinyAxe.Sync).
-      TinyAxe.Sync.soon()
+      TinyAxe.Memory.changed()
+      if doc["local_only"] != true, do: TinyAxe.Sync.soon()
+      :ok
     end
   end
 

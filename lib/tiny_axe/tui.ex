@@ -45,6 +45,7 @@ defmodule TinyAxe.TUI do
 
   alias TinyAxe.TUI.{
     ChatHistory,
+    MemoryChat,
     Chats,
     RemoteChat,
     CommandWorkflow,
@@ -105,6 +106,8 @@ defmodule TinyAxe.TUI do
        saved_as: saved[:saved_as] || TinyAxe.History.new_id(),
        # The chats the last /history listed, by number (TinyAxe.TUI.ChatHistory).
        history_shown: [],
+       local_only: saved[:local_only] == true,
+       memory_results: nil,
        streaming: nil,
        pending_prompt: nil,
        # Transcript index where the current attempt's meta lines start.
@@ -437,7 +440,9 @@ defmodule TinyAxe.TUI do
 
   # Chat commands work while this chat is busy too: that's when they're wanted.
   defp on_event(%Event.Key{code: "enter", modifiers: []}, state),
-    do: Chats.submit(state) || ChatHistory.submit(state) || submit(state)
+    do:
+      Chats.submit(state) || MemoryChat.submit(state) || ChatHistory.submit(state) ||
+        submit(state)
 
   defp on_event(%Event.Key{code: "enter"}, state) do
     ExRatatui.textarea_handle_key(state.input, "enter", [])
@@ -550,6 +555,19 @@ defmodule TinyAxe.TUI do
     cond do
       prompt == "" ->
         {:noreply, state}
+
+      state.local_only and String.starts_with?(prompt, "/") ->
+        ExRatatui.textarea_set_value(state.input, "")
+
+        {:noreply,
+         add_meta(
+           state,
+           "This is a local memory conversation. Use /memory or /new for ordinary app commands."
+         )}
+
+      state.local_only ->
+        ExRatatui.textarea_set_value(state.input, "")
+        {:noreply, MemoryChat.ask(state, prompt)}
 
       # cd, pwd, tools, /site, /remote, /account, /token, /look and /credit-card
       # are handled here, like shell built-ins: no model involved.
@@ -734,6 +752,9 @@ defmodule TinyAxe.TUI do
   end
 
   ## Pipeline events
+
+  defp on_info({:pipeline, id, {:memory_result, result}}, %{run: {id, _pid}} = state),
+    do: {:noreply, MemoryChat.event(state, result)}
 
   defp on_info({:pipeline, id, event}, %{run: {id, _pid}} = state) do
     {:noreply, apply_event(asked_by(event, id), state)}

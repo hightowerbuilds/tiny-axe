@@ -116,6 +116,7 @@ defmodule TinyAxe.Sync do
           String.ends_with?(file, ".json") and History.id?(id),
           {:ok, raw} <- [File.read(Path.join(history, file))],
           {:ok, %{} = doc} <- [JSON.decode(raw)],
+          doc["local_only"] != true,
           # What reopening it gives the model stays here.
           chat = Map.delete(doc, "context"),
           hash = sha256(JSON.encode!(chat)),
