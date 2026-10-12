@@ -360,6 +360,25 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" undo ", lines, state.plan_scroll, area)
   end
 
+  def render(%{pending_commands: %{kind: :appearance} = plan} = state, area) do
+    header = [
+      Span.new("tiny-axe will change these once you approve", style: %Style{modifiers: [:bold]})
+      |> then(
+        &Line.new([&1, Span.new(" · the reviewer wasn't sure", style: %Style{fg: :yellow})])
+      ),
+      styled("appearance settings; `/look undo` puts them back", :cyan),
+      styled("y change · n cancel · ↑/↓ scroll", :dark_gray),
+      styled("")
+    ]
+
+    changes =
+      Enum.map(plan.commands, fn c ->
+        Line.new([Span.new("🎨 " <> c.command, style: %Style{modifiers: [:bold]})])
+      end)
+
+    popup(" change the look? ", header ++ changes, state.plan_scroll, area)
+  end
+
   def render(%{pending_commands: plan} = state, area) when plan != nil do
     {review_text, review_color} = review_label(plan.review)
 

@@ -30,7 +30,10 @@ defmodule TinyAxe.TUI.Run do
 
     state =
       start(state, fn notify ->
-        TinyAxe.Pipeline.run(history, prompt, notify, remote: remote_mode(state))
+        TinyAxe.Pipeline.run(history, prompt, notify,
+          remote: remote_mode(state),
+          origin: if(state[:remote_chat], do: :site)
+        )
       end)
 
     %{

@@ -21,11 +21,22 @@ defmodule TinyAxe.TUI.CommandWorkflow do
              status: "ready",
              history: mark_proposal(state.history, "not run: you said no")
          }
-         |> add_meta("commands cancelled; nothing ran")}
+         |> add_meta(
+           if(plan[:kind] == :appearance,
+             do: "appearance changes cancelled; nothing changed",
+             else: "commands cancelled; nothing ran"
+           )
+         )}
 
       _ ->
         {:noreply, scroll_plan(code, state)}
     end
+  end
+
+  # An appearance plan the reviewer doubted waits in the same popup.
+  defp start_commands(state, %{kind: :appearance} = plan) do
+    state = Run.start(state, &TinyAxe.Appearance.execute(plan, &1))
+    %{state | status: "changing the look…", scroll: :bottom}
   end
 
   defp start_commands(state, plan) do
@@ -48,6 +59,22 @@ defmodule TinyAxe.TUI.CommandWorkflow do
 
   def event({:command_problems, problems}, state),
     do: add_meta(state, "commands sent back to the model: " <> Enum.join(problems, " "))
+
+  def event({:appearance_plan, plan}, state),
+    do: %{state | pending_commands: plan, plan_scroll: 0}
+
+  def event({:appearance_problems, problems}, state),
+    do: add_meta(state, "settings sent back to the model: " <> Enum.join(problems, " "))
+
+  def event({:appearance_done, text}, state) do
+    %{
+      state
+      | run: nil,
+        status: "ready",
+        transcript: state.transcript ++ [{:assistant, text}],
+        history: mark_proposal(state.history, "approved") |> append_to_last_answer("\n\n" <> text)
+    }
+  end
 
   def event({:cmd_start, _i, command}, state),
     do: %{

@@ -1,0 +1,425 @@
+defmodule TinyAxe.Appearance.Settings do
+  @moduledoc """
+  Every appearance setting tiny-axe can change, as data: what it is, what
+  values it takes, how to read it now and how to set it. Models never write
+  a command: they name a setting from this list and a value, and code checks
+  the value (against the computer's own lists where there is one, such as
+  `omarchy theme list`), sets it, and reads it back.
+
+  Value kinds:
+
+    * `{:choice, fun}`: one of the names `fun.()` returns (read from the
+      computer each time)
+    * `{:enum, names}`: one of a fixed list
+    * `{:int, min, max}` / `{:float, min, max}`: a number in range; `+2` or
+      `-2` is relative to the current value
+    * `:image`: an image file that exists
+    * `{:or, [words], kind}`: one of the words, or a value of `kind`
+    * `:action`: no value, it just happens (undone by doing it again)
+
+  Where they come from: Omarchy's own commands (theme, background, font,
+  text size, bar, night light, idle, display scaling and brightness),
+  Ghostty's config (the default terminal: font size, padding, opacity,
+  cursor, tabs) and Hyprland options set in tiny-axe's block of
+  `~/.config/hypr/looknfeel.lua` (gaps, borders, rounding, dimming, blur,
+  animations, layout, the tab bar on grouped windows).
+  """
+
+  alias TinyAxe.Appearance.{ConfigFiles, Runner}
+
+  @type setting :: %{
+          id: String.t(),
+          group: String.t(),
+          summary: String.t(),
+          kind: term(),
+          current: (-> String.t() | nil),
+          apply: (String.t() -> :ok | {:error, String.t()}),
+          file: (-> String.t()) | nil
+        }
+
+  @doc "All settings, in the order they're shown."
+  @spec all() :: [setting()]
+  def all do
+    omarchy() ++ ghostty() ++ hyprland()
+  end
+
+  @doc "The setting with this id, or nil."
+  @spec get(String.t()) :: setting() | nil
+  def get(id), do: Enum.find(all(), &(&1.id == id))
+
+  @doc "Setting ids, for the model's JSON schema."
+  @spec ids() :: [String.t()]
+  def ids, do: Enum.map(all(), & &1.id)
+
+  ## Omarchy
+
+  defp omarchy do
+    [
+      %{
+        id: "theme",
+        group: "desktop",
+        summary: "the colour theme for the whole desktop (windows, bar, terminal, editor)",
+        kind: {:choice, fn -> lines(["theme", "list"]) end},
+        current: fn -> out(["theme", "current"]) end,
+        apply: &omarchy(["theme", "set", &1])
+      },
+      %{
+        id: "background",
+        group: "desktop",
+        summary:
+          "the desktop background image: \"next\" for the theme's next one, or an image file",
+        kind: {:or, ["next"], :image},
+        current: &background/0,
+        apply: fn
+          "next" -> omarchy(["theme", "bg", "next"])
+          path -> omarchy(["theme", "bg", "set", path])
+        end
+      },
+      %{
+        id: "font",
+        group: "desktop",
+        summary: "the monospace font used by the terminal, bar and editors",
+        kind: {:choice, fn -> lines(["font", "list"]) end},
+        current: fn -> out(["font", "current"]) end,
+        apply: &omarchy(["font", "set", &1])
+      },
+      %{
+        id: "text_size",
+        group: "desktop",
+        summary:
+          "text size everywhere at once (bar, apps and terminals), in px; 12 is the default",
+        kind: {:or, ["reset"], {:int, 9, 20}},
+        current: fn ->
+          with text when is_binary(text) <- out(["display", "text", "size"]),
+               [_, n] <- Regex.run(~r/text size:\s*(\d+)/, text),
+               do: n
+        end,
+        apply: &omarchy(["display", "text", "size", &1])
+      },
+      %{
+        id: "display_scale",
+        group: "display",
+        summary:
+          "scaling of the focused monitor (1 = none, 2 = double); \"up\" or \"down\" steps",
+        kind: {:or, ["up", "down"], {:float, 0.5, 3.0}},
+        current: fn -> out(["hyprland", "monitor", "scaling"]) end,
+        apply: &omarchy(["hyprland", "monitor", "scaling", &1])
+      },
+      %{
+        id: "brightness",
+        group: "display",
+        summary: "brightness of the focused display, in percent",
+        kind: {:int, 1, 100},
+        current: fn -> out(["brightness", "display"]) end,
+        apply: &omarchy(["brightness", "display", "#{&1}%"])
+      },
+      %{
+        id: "nightlight",
+        group: "display",
+        summary: "night light (warmer screen colours)",
+        kind: {:enum, ~w(on off)},
+        current: fn -> json_flag(["toggle", "nightlight", "--status"]) end,
+        apply: fn want ->
+          flip(want, json_flag(["toggle", "nightlight", "--status"]), ["toggle", "nightlight"])
+        end
+      },
+      %{
+        id: "idle_lock",
+        group: "display",
+        summary: "locking and the screensaver when idle (off keeps the computer awake)",
+        kind: {:enum, ~w(on off)},
+        current: fn -> json_flag(["toggle", "idle", "status"]) end,
+        apply: fn
+          "on" -> omarchy(["toggle", "idle", "allow-idle"])
+          "off" -> omarchy(["toggle", "idle", "stay-awake"])
+        end
+      },
+      %{
+        id: "do_not_disturb",
+        group: "desktop",
+        summary: "switches notification do-not-disturb (silencing) on or off",
+        kind: :action,
+        current: fn -> nil end,
+        apply: fn _ -> omarchy(["toggle", "notification", "silencing"]) end
+      },
+      %{
+        id: "bar",
+        group: "bar",
+        summary: "whether the top bar is shown",
+        kind: {:enum, ~w(on off)},
+        current: fn ->
+          case Runner.cmd("omarchy", ["toggle", "enabled", "bar-off"]) do
+            {:error, _} -> nil
+            {_, 0} -> "off"
+            {_, _} -> "on"
+          end
+        end,
+        apply: &omarchy(["toggle", "bar", &1])
+      },
+      %{
+        id: "bar_position",
+        group: "bar",
+        summary: "which edge of the screen the bar sits on",
+        kind: {:enum, ~w(top bottom left right)},
+        current: fn -> shell_json(["bar", "position"]) end,
+        apply: &omarchy(["bar", "position", &1])
+      },
+      %{
+        id: "bar_transparent",
+        group: "bar",
+        summary: "whether the bar is see-through",
+        kind: {:enum, ~w(on off)},
+        current: fn ->
+          case shell_json(["bar", "transparent"]) do
+            "true" -> "on"
+            "false" -> "off"
+            other -> other
+          end
+        end,
+        apply: &omarchy(["bar", "transparent", if(&1 == "on", do: "true", else: "false")])
+      }
+    ]
+  end
+
+  ## Ghostty (the default terminal)
+
+  defp ghostty do
+    [
+      ghostty_setting("terminal_font_size", "font size in the terminal, in points", {:int, 6, 40},
+        key: "font-size"
+      ),
+      ghostty_setting(
+        "terminal_padding",
+        "space between the terminal's edge and its text, in pixels",
+        {:int, 0, 64},
+        key: "window-padding-x",
+        also: ["window-padding-y"]
+      ),
+      ghostty_setting(
+        "terminal_opacity",
+        "how opaque the terminal background is (1 = solid, 0.8 = a little see-through); new windows",
+        {:float, 0.3, 1.0},
+        key: "background-opacity",
+        default: "1"
+      ),
+      ghostty_setting(
+        "terminal_cursor",
+        "the terminal cursor's shape",
+        {:enum, ~w(block bar underline block_hollow)},
+        key: "cursor-style",
+        default: "block"
+      ),
+      ghostty_setting(
+        "terminal_cursor_blink",
+        "whether the terminal cursor blinks",
+        {:enum, ~w(on off)},
+        key: "cursor-style-blink",
+        default: "off",
+        map: %{"on" => "true", "off" => "false"}
+      ),
+      ghostty_setting(
+        "terminal_tab_bar",
+        "when the terminal shows its tab bar: always, auto (with 2+ tabs) or never",
+        {:enum, ~w(always auto never)},
+        key: "window-show-tab-bar",
+        default: "auto"
+      ),
+      ghostty_setting(
+        "terminal_tab_position",
+        "where the terminal's tabs sit: top or bottom",
+        {:enum, ~w(top bottom)},
+        key: "gtk-tabs-location",
+        default: "top"
+      )
+    ]
+  end
+
+  defp ghostty_setting(id, summary, kind, opts) do
+    key = Keyword.fetch!(opts, :key)
+    map = Keyword.get(opts, :map, %{})
+    back = Map.new(map, fn {k, v} -> {v, k} end)
+
+    %{
+      id: id,
+      group: "terminal",
+      summary: summary,
+      kind: kind,
+      current: fn ->
+        case ConfigFiles.ghostty_get(key) || Keyword.get(opts, :default) do
+          nil -> nil
+          v -> Map.get(back, v, v)
+        end
+      end,
+      apply: fn value ->
+        v = Map.get(map, value, value)
+        pairs = Enum.map([key | Keyword.get(opts, :also, [])], &{&1, v})
+        ConfigFiles.ghostty_set(pairs)
+      end,
+      file: &ConfigFiles.ghostty_path/0
+    }
+  end
+
+  ## Hyprland (windows)
+
+  defp hyprland do
+    [
+      hypr(
+        "window_gaps_inner",
+        "space between windows, in pixels",
+        {:int, 0, 40},
+        "general.gaps_in"
+      ),
+      hypr(
+        "window_gaps_outer",
+        "space between windows and the screen edge, in pixels",
+        {:int, 0, 80},
+        "general.gaps_out"
+      ),
+      hypr(
+        "window_border",
+        "window border width, in pixels",
+        {:int, 0, 10},
+        "general.border_size"
+      ),
+      hypr(
+        "window_rounding",
+        "how round window corners are, in pixels",
+        {:int, 0, 30},
+        "decoration.rounding"
+      ),
+      hypr(
+        "window_layout",
+        "how windows tile: dwindle (split in halves), master (one big, a stack beside it) " <>
+          "or scrolling (side by side columns that scroll)",
+        {:enum, ~w(dwindle master scrolling)},
+        "general.layout"
+      ),
+      hypr(
+        "window_dim_inactive",
+        "dim the windows that aren't focused",
+        {:enum, ~w(on off)},
+        "decoration.dim_inactive"
+      ),
+      hypr(
+        "window_inactive_opacity",
+        "opacity of windows that aren't focused (1 = solid)",
+        {:float, 0.5, 1.0},
+        "decoration.inactive_opacity"
+      ),
+      hypr(
+        "window_blur",
+        "blur behind see-through windows",
+        {:enum, ~w(on off)},
+        "decoration.blur.enabled"
+      ),
+      hypr("animations", "window animations", {:enum, ~w(on off)}, "animations.enabled"),
+      hypr(
+        "window_tab_bar",
+        "the tab bar on grouped (tabbed) windows; super+G groups windows into tabs",
+        {:enum, ~w(on off)},
+        "group.groupbar.enabled"
+      )
+    ]
+  end
+
+  defp hypr(id, summary, kind, option) do
+    %{
+      id: id,
+      group: "windows",
+      summary: summary,
+      kind: kind,
+      current: fn -> hypr_option(option, kind) end,
+      apply: fn value -> ConfigFiles.hypr_set(%{option => hypr_value(value, kind)}) end,
+      file: &ConfigFiles.hypr_path/0
+    }
+  end
+
+  defp hypr_value(v, {:enum, ~w(on off)}), do: v == "on"
+  defp hypr_value(v, {:int, _, _}), do: String.to_integer(v)
+  defp hypr_value(v, {:float, _, _}), do: elem(Float.parse(v), 0)
+  defp hypr_value(v, _), do: v
+
+  defp hypr_option(option, kind) do
+    name = String.replace(option, ".", ":")
+
+    with {:ok, text} <- Runner.ok("hyprctl", ["getoption", name, "-j"]),
+         {:ok, map} <- JSON.decode(text) do
+      cond do
+        is_boolean(map["bool"]) -> on_off(map["bool"])
+        is_integer(map["int"]) and kind == {:enum, ~w(on off)} -> on_off(map["int"] != 0)
+        is_integer(map["int"]) -> Integer.to_string(map["int"])
+        is_number(map["float"]) -> format_float(map["float"])
+        is_binary(map["css"]) -> map["css"] |> String.split() |> List.first()
+        is_binary(map["str"]) -> map["str"]
+        true -> nil
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  ## Helpers
+
+  defp omarchy(args) do
+    case Runner.ok("omarchy", args) do
+      {:ok, _} -> :ok
+      {:error, why} -> {:error, why}
+    end
+  end
+
+  defp out(args) do
+    case Runner.ok("omarchy", args) do
+      {:ok, text} -> text
+      {:error, _} -> nil
+    end
+  end
+
+  defp lines(args) do
+    case out(args) do
+      nil -> []
+      text -> text |> String.split("\n", trim: true) |> Enum.map(&String.trim/1)
+    end
+  end
+
+  defp json_flag(args) do
+    with text when is_binary(text) <- out(args),
+         {:ok, %{"enabled" => enabled}} when is_boolean(enabled) <- JSON.decode(text),
+         do: on_off(enabled),
+         else: (_ -> nil)
+  end
+
+  # For commands that only toggle: run once if it isn't already as wanted.
+  defp flip(want, now, args) do
+    if now == want, do: :ok, else: omarchy(args)
+  end
+
+  defp background do
+    link = Path.expand("~/.local/state/omarchy/current/background")
+
+    case File.read_link(link) do
+      {:ok, target} -> Path.expand(target, Path.dirname(link))
+      _ -> nil
+    end
+  end
+
+  defp shell_json(keys) do
+    with {:ok, text} <- File.read(Path.expand("~/.config/omarchy/shell.json")),
+         {:ok, map} <- JSON.decode(text),
+         v when not is_nil(v) <- get_in(map, keys) do
+      to_string(v)
+    else
+      _ -> nil
+    end
+  end
+
+  defp on_off(true), do: "on"
+  defp on_off(false), do: "off"
+  defp on_off(other), do: to_string(other)
+
+  @doc false
+  def format_float(f) when is_float(f) do
+    f |> Float.round(2) |> :erlang.float_to_binary([:compact, decimals: 2])
+  end
+
+  def format_float(n) when is_integer(n), do: Integer.to_string(n)
+end

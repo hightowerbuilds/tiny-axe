@@ -105,17 +105,29 @@ defmodule TinyAxe.Pipeline do
           "(e.g. \"in my tiny-app repo\", \"go to Downloads\", \"the web folder\")?"
     },
     # The command question comes from TinyAxe.Capabilities (route_questions/0).
-    command: %{type: :noul, instructions: ""}
+    command: %{type: :noul, instructions: ""},
+    appearance: %{
+      type: :noul,
+      instructions:
+        "Does the user want how their desktop or terminal looks changed, or ask how it's " <>
+          "set: the theme, background, fonts or text size; the terminal's font size, " <>
+          "padding, opacity, cursor or tabs; display scaling, brightness or night light; " <>
+          "window gaps, borders, rounded corners, dimming, blur, animations or tiling " <>
+          "layout; the bar (shown, position, see-through); do-not-disturb or idle lock? " <>
+          "No if they're asking how to do it themselves, or about code."
+    }
   }
 
   @doc """
   Handles one request. `opts`: `:remote` (`:ask`, `:allowed` or `:denied`,
   the default), whether a request that falls short may go to a model off this
-  machine (see `TinyAxe.Escalation`).
+  machine (see `TinyAxe.Escalation`); `:origin`, `:site` for a request from
+  the site's Chat tab (it can't change the computer's appearance).
   """
   @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
   def run(history, prompt, notify, opts \\ []) do
     remote = Keyword.get(opts, :remote, :denied)
+    origin = Keyword.get(opts, :origin)
 
     # The router sees the conversation and where tiny-axe is, so "now run it"
     # or "put those there" can be understood, and a request that means
@@ -135,6 +147,9 @@ defmodule TinyAxe.Pipeline do
       case task do
         :command ->
           TinyAxe.Commander.run(history, prompt, notify, remote: remote)
+
+        :appearance ->
+          TinyAxe.Appearance.run(history, prompt, notify, remote: remote, origin: origin)
 
         :organize ->
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
@@ -188,14 +203,16 @@ defmodule TinyAxe.Pipeline do
   defp describe_server(name), do: name
 
   # Commands go to the Commander, file tasks (moving, organising, writing
-  # documents) to the Organizer, and requests that need connected services to
-  # the agent; when several look likely, the likeliest wins.
+  # documents) to the Organizer, requests that need connected services to
+  # the agent, and changes to how the desktop looks to TinyAxe.Appearance;
+  # when several look likely, the likeliest wins.
   defp task(route) do
     command = if config(:commands, true), do: Decider.p(route, :command) || 0, else: 0
     organize = if config(:file_ops, true), do: Decider.p(route, :organize) || 0, else: 0
     agent = if TinyAxe.Agent.available?(), do: Decider.p(route, :tools) || 0, else: 0
+    appearance = if config(:appearance, true), do: Decider.p(route, :appearance) || 0, else: 0
 
-    [command: command, organize: organize, agent: agent]
+    [command: command, organize: organize, agent: agent, appearance: appearance]
     |> Enum.filter(fn {_task, p} -> p >= config(:route_threshold, 0.5) end)
     |> Enum.max_by(&elem(&1, 1), fn -> {:answer, 0} end)
     |> elem(0)
