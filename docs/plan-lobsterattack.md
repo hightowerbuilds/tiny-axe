@@ -66,8 +66,8 @@ tiny-axe (this computer)                      Vercel                Supabase
   (`buster_ta_keys`, the hashing LobsterAttack's old `auth.ts` already does),
   mapped to the owner's Supabase user. Every `/api/mcp` call needs
   `Authorization: Bearer <key>`; a wrong or missing key is 401.
-- **People → site: Supabase email + password**, as now. Sign-up is turned
-  off in the UI: the owner creates accounts in the Supabase dashboard. The
+- **People → site: username + password** (Supabase Auth underneath: a username stands for `<username>@users.tiny-axe.invalid`). Sign-up is turned
+  off: the owner makes accounts with `tinyaxe-key add-user`. The
   API checks the session's JWT (`auth.getUser`) on every `/api/*` read, and
   the user must be in `buster_ta_members`, which says whose site they see.
   Signing in alone isn't enough: the Supabase project is shared with other
