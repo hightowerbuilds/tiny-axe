@@ -1,0 +1,204 @@
+# Plan: changing this computer
+
+Status (2026-10-12): plan only, branch `os-control` (worktree ../tiny-axe-os).
+
+Goal: tiny-axe can change the computer it runs on (theme, display, audio,
+wifi, bluetooth, keybindings, installed apps, services, settings) when asked.
+Gemma tries first, along a fixed path that code checks at every step. Claude
+Haiku 5.5 takes over only when that path falls short.
+
+## What's there today
+
+- Commands run only in bubblewrap. Approved ones can change only their own
+  folder; the home folder is overlaid (other writes vanish), and `~/.config`
+  and the session sockets (Hyprland, D-Bus) are hidden. So nothing a command
+  does can change the desktop.
+- `sudo`, `su`, `doas` and system package managers are refused
+  (`Commander.Validation`).
+- Escalation already exists. The Commander climbs to Haiku after 4 failed
+  planning rounds (`Escalation.climb/5`), and Haiku agents get `shell_run`
+  through the gate.
+
+## Why this OS makes a fixed path possible
+
+Omarchy 4.0.4 publishes its own command catalog:
+`omarchy commands --json` lists 367 commands in 63 groups, each with
+`route`, `binary`, `summary`, `args`, `examples` and `requires_sudo`
+(83 need root). Many groups also have a `list` or `current` command
+(`omarchy theme list`, `omarchy font list`), so the valid arguments can come
+from the computer instead of the model. A small model doesn't have to write
+shell. It picks from a menu, and code fills in and checks the rest.
+
+## The user's choices (2026-10-12)
+
+- **sudo: passwordless for a short list.** A sudoers rule lets a small set of
+  named root actions run without a password. Everything else that needs root
+  is refused, and the user gets the exact command to run themselves.
+- **Approvals:** low-risk Omarchy commands run without asking: theme,
+  background, font, brightness, volume, toggles (nightlight, idle, etc.) and
+  restarting a component. Each can be undone. Everything else shows a y/n
+  first: config edits, services, installs, removals, wifi or bluetooth
+  changes, and any root action.
+- **Scope: any command, unsandboxed.** Approved OS commands run as the user
+  with the real home folder, no bwrap. Secrets are not hidden from them.
+
+## How a request flows
+
+1. **Route.** A new router question, `os`: *does the user want something
+   about this computer changed: its look, display, sound, network, devices,
+   keybindings, installed apps, services or settings?* It's separate from
+   `command`, which stays for running tools in a project.
+2. **Pick (Jev, no model writing).** Two choice questions over the real
+   catalog. First the group, out of 63 options; then the command within that
+   group (at most 38 options, under Jev's 255). Each option is the
+   command's summary. If either pick falls under `:os_pick_min`, the request
+   escalates.
+3. **Fill (Gemma, fixed JSON).** Gemma fills only the arguments, from the
+   command's `args` and `examples`. Wherever the group has a list command,
+   code checks each value against its output (a theme name must appear in
+   `omarchy theme list`) and sends mismatches back with the real choices.
+   After 2 failed rounds, the request escalates.
+4. **Check (code).**
+   - The command is classed as `:low_risk` (the allowlist above),
+     `:changes`, or `:root` (`requires_sudo`).
+   - `:root` must map to a verb on the sudo list, or it's refused with the
+     command for the user.
+   - Interactive commands are refused, since nothing can answer them. The
+     `menu`, `setup` and `*-switcher` commands and anything that opens a
+     picker go to the user as "run this yourself".
+5. **Run.**
+   - `:low_risk` runs at once.
+   - Anything else waits for the y/n popup (the unified permission popup
+     from the `panels` branch, once that's merged).
+   - Every OS run is journaled.
+6. **Confirm.**
+   - The output, plus a read-back command where one exists
+     (`omarchy theme current`), shows whether it worked.
+   - The decider judges the outcome from that output, not from the exit code.
+
+**Not in the catalog** (e.g. "bind super+B to open Brave", "turn off the
+second monitor"): Gemma proposes a whole-file edit of the right file under
+`~/.config/hypr/` (or another config), shown as a diff through the existing
+`Files` edit flow. It needs approval, gets a recovery point, and Hyprland
+gets checked (below).
+
+**Free-form commands** ("restart pipewire", "enable the bluetooth
+service"): Gemma plans them with the Commander's JSON shape in a new `:os`
+mode. They're approved every time, then run unsandboxed.
+
+## When Haiku takes over
+
+Escalation follows the existing rules (`Escalation.climb/5`, `without_asking`,
+quota stop at 90%), triggered by any of these:
+
+- a weak catalog pick: group or command under `:os_pick_min`
+- arguments still invalid after 2 rounds
+- a command that ran but failed its outcome check
+- a Hyprland edit reverted for config errors
+- a request that needs several steps (the router's `os` answer plus a
+  "needs more than one change" question)
+
+Haiku gets one new gate tool, `os_run {command | route+args}`. It goes
+through the same classification, approvals, sudo list and recovery points
+as Gemma's path, so escalation changes who plans, not what's allowed. Its
+system prompt gets the catalog's group summaries and
+`Capabilities.os/0`, so what it's told matches what the code does.
+
+Each successful pick (request → route + args), with the decider's
+confidence, goes into the journal. That's the raw material for
+Jev-approved recipes later, which would replay a repeated request with no
+model at all.
+
+## Recovery (before any of this runs for real)
+
+- **Config recovery points.** A git repository in tiny-axe's state folder
+  uses `~/.config` as its work tree and tracks only text config. It leaves
+  out browser profiles, caches, files over 1 MB, and the secret places in
+  `Shell.secret_places/0`. tiny-axe commits before and after every OS
+  change, catalog commands included (`omarchy theme set` rewrites files).
+  `ctrl+z` puts the changed files back from the "before" commit and runs the
+  matching reload (`hyprctl reload`, `omarchy restart <component>`). It
+  works after a restart because it's on disk, recorded in the same
+  `Ops.Journal`.
+- **Hyprland guard.** After any change under `~/.config/hypr`, tiny-axe
+  runs `hyprctl reload` and then `hyprctl configerrors`. Any error reverts
+  to the "before" commit and reloads again. The desktop is never left on a
+  broken config.
+- **Root changes.** `/` is btrfs with snapper and limine-snapper-sync. Every
+  root verb takes a snapper snapshot first (`snapper create`), inside the
+  same sudo helper, so there's no second password. Undo from tiny-axe isn't
+  automatic. It shows the snapshot number and how to roll back
+  (`omarchy snapshot restore`, or boot the snapshot from Limine).
+- **Interrupted runs.** The journal entry is written before the run. At the
+  next start, an unfinished OS run offers to restore the "before" commit,
+  the same way an interrupted file plan does today.
+
+## The sudo list (a root helper, not raw sudo)
+
+A sudoers wildcard like `pacman -S *` also lets in extra flags. So the
+sudoers rule allows only one root-owned script,
+`/usr/local/bin/tiny-axe-root`. It takes a fixed verb and checks its
+arguments itself:
+
+| verb | runs | argument check |
+|---|---|---|
+| `install <pkg>` | snapshot, then `pacman -S --needed --noconfirm -- <pkg>` | package name regex; must exist in a sync repo (`pacman -Si`) |
+| `remove <pkg>` | snapshot, then `pacman -Rns --noconfirm -- <pkg>` | installed, explicitly installed, not in a protected list (base, linux*, omarchy*, hyprland, sddm, limine, btrfs-progs, sudo) |
+| `update` | snapshot, then `pacman -Syu --noconfirm` | none |
+| `service <start\|stop\|restart\|enable\|disable> <unit>` | `systemctl …` | unit must exist; not in the protected list (sddm, systemd-*, NetworkManager stop/disable) |
+| `snapshot` | `snapper create` | none |
+
+- AUR packages (yay) stay off the list: yay installs built files with
+  `pacman -U` as root, and that can't be bounded the same way. tiny-axe hands
+  over the `yay` command instead.
+- The user installs the helper and the sudoers file themselves, once
+  (`! sudo install …`, shown by `mix tiny_axe.os_setup`). tiny-axe never
+  edits `/etc`.
+- **To confirm:** the user's final list of verbs.
+
+## Safety rules that still hold
+
+- Approval every time for anything that isn't `:low_risk`. Never "for the
+  session".
+- Requests from the site's Chat tab (remote) can't run OS changes. The
+  security pass for remote approvals hasn't happened.
+- Never touch tiny-axe's own processes (`Shell.Processes.guard/2`).
+- Unsandboxed output can contain secrets, and Haiku's tool results leave
+  the machine. The gate's redaction applies to `os_run` results like any
+  other.
+- `curl … | sh`, `rm -rf` on `~`, `/` or `~/.config`, and writes to tiny-axe's
+  own state are refused by pattern, even unsandboxed.
+
+## Phases
+
+- **O0 Experiments.**
+  - Run 10 catalog commands from tiny-axe's BEAM (theme set, toggle
+    nightlight, brightness, `restart waybar`, `hyprctl reload`) to confirm the
+    environment they need: `HYPRLAND_INSTANCE_SIGNATURE`, `WAYLAND_DISPLAY`,
+    D-Bus.
+  - Mark which commands are interactive, and time the git snapshot of
+    `~/.config`.
+- **O1 Catalog path.**
+  - Build `TinyAxe.OS.Catalog` (load, cache by Omarchy version, classify),
+    the router's `os` question, the Jev group/command pick, Gemma's argument
+    fill checked against list commands, `:low_risk` runs, and y/n for the
+    rest.
+  - No root, no config edits yet.
+- **O2 Recovery points.**
+  - Build `TinyAxe.OS.Snapshot` (git in the state folder), `ctrl+z` for OS
+    changes, the Hyprland guard, and journal recovery at start.
+  - Turn on config edits and free-form `:os` commands.
+- **O3 Haiku.**
+  - Build the `os_run` gate tool, `Capabilities.os/0`, and the escalation
+    triggers.
+  - Live-check that a weak pick climbs to Haiku and that Haiku's change
+    still goes through the popup.
+- **O4 Root helper.**
+  - Write `tiny-axe-root`, the sudoers file and `mix tiny_axe.os_setup`.
+  - Map `requires_sudo` catalog commands to the verbs (`omarchy pkg install
+    x` → `install x`).
+- **O5 Eval.**
+  - Add about 30 OS tasks to `eval/tasks.exs` against a fake catalog and a
+    dry-run runner (nothing changes), split dev/holdout.
+  - Measure Gemma's pick and fill accuracy and how often it escalates.
+  - Real runs are capped like earlier evals.
