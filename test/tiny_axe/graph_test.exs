@@ -53,6 +53,8 @@ defmodule TinyAxe.GraphTest do
       for tool <- ~w(graph_overview graph_search graph_note graph_link),
           do: assert(Policy.classify(%{"name" => tool}, config["policy"]) == :read)
 
+      assert Policy.classify(%{"name" => "graph_add_note"}, config["policy"]) == :outward
+
       assert config["policy"]["hidden"] == ["vault_push", "chat_push"]
     end
 
@@ -114,6 +116,28 @@ defmodule TinyAxe.GraphTest do
       refute result["isError"]
       assert_received {:site_call, "graph_search", %{"q" => "cart"}}
       refute_received {:gate, {:tool_approval, _}}
+
+      # Saving a note asks the user first: a no sends nothing, a yes sends it.
+      note = %{
+        name: "graph__graph_add_note",
+        arguments: %{title: "How to check out", body: "Cart, then pay."}
+      }
+
+      for {answer, sent?} <- [{:deny, false}, {:once, true}] do
+        caller = Task.async(fn -> rpc.("tools/call", note) end)
+        assert_receive {:gate, {:tool_approval, ask}}, 5_000
+        send(ask.reply_to, {:tool_answer, ask.ref, answer})
+        result = Task.await(caller)
+        assert result["isError"] != true == sent?
+
+        if sent?,
+          do:
+            assert_receive(
+              {:site_call, "graph_add_note", %{"title" => "How to check out"}},
+              5_000
+            ),
+          else: refute_received({:site_call, "graph_add_note", _})
+      end
     end
 
     test "a link anywhere but the site is refused" do

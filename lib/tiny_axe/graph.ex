@@ -9,7 +9,8 @@ defmodule TinyAxe.Graph do
 
   Agents reach it through the gate like any other server. Its read tools
   (`graph_overview`, `graph_search`, `graph_note`, `graph_link`) only read
-  the user's own page, so they run without asking. `vault_push` and
+  the user's own page, so they run without asking. `graph_add_note` (the
+  model saving a note there) is outward: the user is asked each time. `vault_push` and
   `chat_push` are hidden from agents: only tiny-axe's own code sends notes and
   chats (`TinyAxe.Sync`), and `/graph` in the TUI calls `graph_link` directly.
 
@@ -20,6 +21,7 @@ defmodule TinyAxe.Graph do
 
   @name "graph"
   @read ["graph_overview", "graph_search", "graph_note", "graph_link"]
+  @outward ["graph_add_note"]
   @hidden ["vault_push", "chat_push"]
 
   def name, do: @name
@@ -50,7 +52,7 @@ defmodule TinyAxe.Graph do
         "type" => "http",
         "url" => Account.site_url() <> "/api/mcp",
         "headers" => %{"authorization" => "Bearer " <> key},
-        "policy" => %{"read" => @read, "hidden" => @hidden}
+        "policy" => %{"read" => @read, "outward" => @outward, "hidden" => @hidden}
       }
     else
       _ -> nil

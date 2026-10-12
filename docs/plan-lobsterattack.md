@@ -211,8 +211,14 @@ go-ahead.
    MCP client over HTTP), through the gate as an agent sees it, and end to end
    against the real site API (memory store): 28 notes and a chat sent, read
    back through the viewer API, nothing sent twice.
-4. **L4, the model writes.** `graph_add_note`, gate policy, live test with
-   Haiku.
+4. **L4, the model writes.** Done 2026-10-11. `graph_add_note {title, body}`
+   saves a note in a Notes folder on the site (kind `note`, `source: "agent"`,
+   named slug + hash8 of the title, so the same title replaces the model's
+   earlier note; `[[id]]` links join it to the graph; titles escaped, cards
+   removed, sizes capped; migration 0008). In tiny-axe it's `outward`: the
+   gate asks each time (y once, a for the session, n). The viewer shows Notes
+   in their own colour. Tested through the gate (no sends nothing, yes sends
+   it) and end to end against the real site API.
 5. **L5, local site removed.** Delete `graph/`'s server, MCP and install
    step once L2 has every page.
 
