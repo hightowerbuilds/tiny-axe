@@ -691,9 +691,15 @@ defmodule TinyAxe.TUI do
   # The site is always up; there's no page on this computer to close.
   defp graph(:close, _copy), do: :closed
 
+  # The link, shown and copied; and the page opened in the user's browser,
+  # signed in, when there's a desktop to open it on.
   defp graph(action, copy) do
     opts = if action == :chats, do: [page: "chats"], else: []
-    with {:ok, url} <- TinyAxe.Graph.open(nil, opts), do: {:opened, url, copy.(url) == :ok}
+
+    with {:ok, url} <- TinyAxe.Graph.open(nil, opts) do
+      browser = TinyAxe.Graph.open_in_browser(nil, opts)
+      {:opened, url, copy.(url) == :ok, browser}
+    end
   end
 
   ## Pipeline events
@@ -714,14 +720,24 @@ defmodule TinyAxe.TUI do
 
   # The URL gets a line of its own, as code so Markdown leaves it as it is, for
   # the terminal to make clickable (the transcript can't hold OSC 8 links).
-  defp on_info({:graph, {:opened, url, copied?}}, state) do
+  defp on_info({:graph, {:opened, url, copied?, browser}}, state) do
     copied = if copied?, do: "; the link is copied", else: ""
+
+    shown =
+      case browser do
+        {:ok, _} ->
+          who = with %{username: name} <- TinyAxe.Account.current(), do: " as #{name}"
+
+          "🧠 opened your page of tiny-axe's website in your browser, signed in#{who || ""}#{copied}:"
+
+        {:error, why} ->
+          "🧠 what tiny-axe knows, on your page of its website (sign in to see it; " <>
+            "couldn't open your browser: #{why})#{copied}:"
+      end
 
     state =
       state
-      |> add_meta(
-        "🧠 what tiny-axe knows, on your page of its website (sign in to see it)#{copied}:"
-      )
+      |> add_meta(shown)
       |> add_meta("`#{url}`")
 
     {:noreply, %{state | status: "ready"}}

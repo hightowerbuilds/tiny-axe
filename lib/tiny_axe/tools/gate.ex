@@ -68,7 +68,7 @@ defmodule TinyAxe.Tools.Gate do
   require Logger
 
   alias TinyAxe.{Browser, MCP, Ops, Purchases, Tools}
-  alias TinyAxe.Agent.{Dispatch, ShellTool}
+  alias TinyAxe.Agent.{Dispatch, ShellTool, SiteTool}
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
@@ -266,7 +266,8 @@ defmodule TinyAxe.Tools.Gate do
 
     listed = if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
     listed = if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
-    if shells?(task), do: listed ++ [ShellTool.definition()], else: listed
+    listed = if shells?(task), do: listed ++ [ShellTool.definition()], else: listed
+    if SiteTool.offered?(task.servers), do: listed ++ [SiteTool.definition()], else: listed
   end
 
   @doc "Runs one tool call through the gate. Returns an MCP result."
@@ -555,6 +556,15 @@ defmodule TinyAxe.Tools.Gate do
           policy: %{"gate" => true, "shell" => true}
         }
 
+      own == SiteTool.name() and SiteTool.offered?(task.servers) ->
+        %{
+          name: own,
+          server: nil,
+          tool: own,
+          definition: SiteTool.definition(),
+          policy: %{"gate" => true, "site" => true}
+        }
+
       Decisions.owns?(own) and Enum.any?(tools, &browser?/1) ->
         [definition] = for d <- Decisions.definitions(), d["name"] == own, do: d
         %{name: own, server: nil, tool: own, definition: definition, policy: %{"gate" => true}}
@@ -568,6 +578,7 @@ defmodule TinyAxe.Tools.Gate do
   defp gate?(tool), do: tool.policy["gate"] == true
   defp dispatch?(tool), do: tool.policy["dispatch"] == true
   defp shell?(tool), do: tool.policy["shell"] == true
+  defp site?(tool), do: tool.policy["site"] == true
 
   # Browser actions are assessed by what they'd do on the page (the gate
   # looks first, with browser_inspect); other tools are classed by their
@@ -585,6 +596,10 @@ defmodule TinyAxe.Tools.Gate do
           {:ok, parts} -> {:local, "starts #{length(parts)} sub-agent(s) here", task}
           {:error, why} -> {:refused, why, task}
         end
+
+      # A window on this computer, on the user's own page: runs without asking.
+      site?(tool) ->
+        {:local, "opens the user's page of tiny-axe's website in their browser", task}
 
       # Read-only runs at once; anything else asks (decide/5).
       shell?(tool) ->
@@ -1112,6 +1127,9 @@ defmodule TinyAxe.Tools.Gate do
 
   defp decide(_task, _tool, _args, {:refused, reason}, _allowed),
     do: {:refused, refusal(reason || "tiny-axe doesn't allow this tool")}
+
+  defp decide(_task, %{policy: %{"site" => true}}, args, _class, _allowed),
+    do: {:ran, SiteTool.run(args)}
 
   # Waits here, in the HTTP request, for the sub-agents' results.
   defp decide(task, %{policy: %{"dispatch" => true}}, args, _class, _allowed),
