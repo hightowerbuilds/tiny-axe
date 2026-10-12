@@ -46,7 +46,7 @@ defmodule TinyAxe.TUI.Welcome do
       state.recovery == nil and state.pending_plan == nil and state.pending_commands == nil and
       state.pending_edits == [] and state.confirm_undo == nil and state.asking == nil and
       state.tool_ask == nil and state.purchase_ask == nil and
-      Map.get(state, :token_dash) == nil and
+      Map.get(state, :panel) == nil and
       Enum.all?(state.transcript, &match?({:meta, _}, &1))
   end
 

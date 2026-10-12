@@ -417,26 +417,6 @@ defmodule TinyAxe.TUI.Overlays do
   # Below everything that asks the user something.
   def render(%{pending_edits: [_ | _]} = state, area), do: edit_popup(state, area)
 
-  # Its columns line up only unwrapped, so it's sized to fit its lines.
-  def render(%{token_dash: dash}, area) when dash != nil do
-    lines = TinyAxe.TUI.TokenDash.lines(dash)
-
-    [
-      {%Popup{
-         content: %Paragraph{text: lines, wrap: false},
-         block: %Block{
-           title: " token use ",
-           borders: [:all],
-           border_type: :rounded,
-           border_style: %Style{fg: :cyan},
-           padding: {1, 1, 0, 0}
-         },
-         fixed_width: min(TinyAxe.TUI.TokenDash.width() + 4, area.width),
-         fixed_height: min(length(lines) + 2, area.height)
-       }, area}
-    ]
-  end
-
   def render(_state, _area), do: []
 
   defp plan_step_lines(op) do

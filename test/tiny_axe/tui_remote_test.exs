@@ -197,7 +197,9 @@ defmodule TinyAxe.TUIRemoteTest do
 
   test "/remote on, off, and how it stands; the status bar shows 🌐" do
     state = type(mount(), "/remote")
-    assert List.last(state.transcript) == {:meta, "🌐 remote chat: off (/remote on)"}
+    assert state.panel.tab == :remote
+    assert draw(state) =~ "Remote chat: off"
+    state = key(state, "esc")
     refute status_bar(state) =~ "🌐"
 
     state = type(state, "/remote on")
@@ -208,10 +210,22 @@ defmodule TinyAxe.TUIRemoteTest do
     assert state.status == "🌐 the site can reach this tiny-axe"
     assert status_bar(state) =~ "🌐"
     state = type(state, "/remote")
-    assert List.last(state.transcript) == {:meta, "🌐 remote chat: on, online"}
+    assert draw(state) =~ "Remote chat: on, online"
+    state = key(state, "esc")
 
     state = type(state, "/remote off")
     assert_received {:remote_out, {:switch, false}}
     assert {:meta, "🌐 remote chat off" <> _} = List.last(state.transcript)
+  end
+
+  test "the panel's Remote tab: enter turns it on, and off again" do
+    state = type(mount(), "/remote")
+    state = key(state, "enter")
+    assert_received {:remote_out, {:switch, true}}
+    assert state.panel.tab == :remote
+
+    state = info(state, {:remote, {:status, :online}})
+    key(state, "enter")
+    assert_received {:remote_out, {:switch, false}}
   end
 end

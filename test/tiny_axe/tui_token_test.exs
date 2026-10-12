@@ -1,5 +1,5 @@
 defmodule TinyAxe.TUITokenTest do
-  @moduledoc "/token's popup (`TinyAxe.TUI.TokenDash`): each part, the empty state, keys."
+  @moduledoc "/token, the panel's Token tab (`TinyAxe.TUI.TokenDash`): each part, the empty state, keys."
 
   use ExUnit.Case, async: false
 
@@ -65,7 +65,8 @@ defmodule TinyAxe.TUITokenTest do
     )
   end
 
-  defp with_summary(state, s), do: %{state | token_dash: %{state.token_dash | summary: s}}
+  defp with_summary(state, s),
+    do: %{state | panel: %{state.panel | token: %{state.panel.token | summary: s}}}
 
   defp busy do
     claude = fn n ->
@@ -103,22 +104,22 @@ defmodule TinyAxe.TUITokenTest do
     })
   end
 
-  test "/token opens the popup without asking a model; esc closes it" do
+  test "/token opens the panel on its tab without asking a model; esc closes it" do
     state = mounted() |> type("/token")
-    assert state.token_dash
+    assert state.panel.tab == :token
     assert state.run == nil
     assert state.transcript == []
     assert ExRatatui.textarea_get_value(state.input) == ""
-    assert draw(state) =~ "token use"
+    assert draw(state) =~ "updates as calls finish"
 
     # Keys don't reach the prompt while it's open.
     state = key(state, "x")
-    assert state.token_dash
+    assert state.panel.tab == :token
     assert ExRatatui.textarea_get_value(state.input) == ""
 
     state = key(state, "esc")
-    assert state.token_dash == nil
-    refute draw(state) =~ "token use"
+    assert state.panel == nil
+    refute draw(state) =~ "updates as calls finish"
   end
 
   test "each part: Haiku, its windows, Jev, Gemma, today by hour" do
@@ -182,23 +183,23 @@ defmodule TinyAxe.TUITokenTest do
 
   test "it updates while open: a call recorded shows on the next refresh" do
     state = mounted() |> type("/token")
-    %{ref: ref} = state.token_dash
-    before = state.token_dash.summary.session.jev.calls
+    %{ref: ref} = state.panel.token
+    before = state.panel.token.summary.session.jev.calls
 
     TinyAxe.Usage.emit(:jev, :decision, "jev-token-dash", %{input: 5, output: 1}, true, 3)
 
     # The refresh it scheduled for itself, which schedules the next.
     assert_receive {:token_dash, ^ref}, 2_000
     {:noreply, state} = TUI.handle_info({:token_dash, ref}, state)
-    assert state.token_dash.summary.session.jev.calls == before + 1
-    assert state.token_dash.ref != ref
+    assert state.panel.token.summary.session.jev.calls == before + 1
+    assert state.panel.token.ref != ref
 
     # An old refresh, or one after it's closed, does nothing.
     {:noreply, same} = TUI.handle_info({:token_dash, ref}, state)
-    assert same.token_dash == state.token_dash
+    assert same.panel.token == state.panel.token
 
     closed = key(state, "esc")
-    assert {:noreply, ^closed, _} = TUI.handle_info({:token_dash, state.token_dash.ref}, closed)
+    assert {:noreply, ^closed, _} = TUI.handle_info({:token_dash, state.panel.token.ref}, closed)
   end
 
   test "a question that comes up while it's open goes on top and gets the keys" do
@@ -220,7 +221,7 @@ defmodule TinyAxe.TUITokenTest do
     state = key(state, "y")
     assert_receive {:tool_answer, _, :once}
     assert state.tool_ask == nil
-    assert draw(state) =~ "token use"
+    assert draw(state) =~ "updates as calls finish"
   end
 
   test "short counts" do

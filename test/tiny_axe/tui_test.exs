@@ -16,7 +16,7 @@ defmodule TinyAxe.TUITest do
   defp key(code, mods \\ []), do: %Event.Key{code: code, kind: "press", modifiers: mods}
 
   test "renders pipeline progress and the accepted answer" do
-    {:ok, state} = TUI.mount(test_mode: @size)
+    {:ok, state} = TUI.mount(test_mode: @size, route_line: true)
     id = make_ref()
 
     state = %{
