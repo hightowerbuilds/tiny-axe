@@ -34,7 +34,13 @@ defmodule TinyAxe.SyncTest do
     %{site: site, vault: vault, history: history}
   end
 
-  defp run(ctx), do: Sync.run(vault: ctx.vault, history: ctx.history)
+  defp run(ctx),
+    do:
+      Sync.run(
+        vault: ctx.vault,
+        history: ctx.history,
+        reviews: Path.join(ctx.history, "none.jsonl")
+      )
 
   defp chat(ctx, id, title) do
     doc = %{
@@ -66,7 +72,7 @@ defmodule TinyAxe.SyncTest do
 
   test "sends every note and chat once, without the chat's context", ctx do
     chat(ctx, "20261011-153012-a1b2", "what's using port 4000?")
-    assert run(ctx) == {:ok, %{notes: 28, chats: 1}}
+    assert run(ctx) == {:ok, %{notes: 28, chats: 1, reviews: 0}}
 
     [{"vault_push", notes}, {"chat_push", %{"chat" => sent_chat}}] = pushes()
     assert notes["manifest"]["schema"] == "tiny-axe-vault/1"
@@ -79,7 +85,7 @@ defmodule TinyAxe.SyncTest do
     assert sent_chat["title"] == "what's using port 4000?"
 
     # Nothing changed, nothing sent.
-    assert run(ctx) == {:ok, %{notes: 0, chats: 0}}
+    assert run(ctx) == {:ok, %{notes: 0, chats: 0, reviews: 0}}
     assert pushes() == []
   end
 
@@ -91,7 +97,7 @@ defmodule TinyAxe.SyncTest do
     File.write!(path, File.read!(path) <> "\nMore.\n")
     chat(ctx, "20261011-160000-beef", "a new chat")
 
-    assert run(ctx) == {:ok, %{notes: 1, chats: 1}}
+    assert run(ctx) == {:ok, %{notes: 1, chats: 1, reviews: 0}}
 
     assert [{"vault_push", %{"notes" => [%{"id" => "shop.example"}]}}, {"chat_push", _}] =
              pushes()
@@ -128,7 +134,7 @@ defmodule TinyAxe.SyncTest do
     MCP.stop_server("graph")
     Application.put_env(:tiny_axe, :site, url: ctx.site.url)
     GraphTest.sign_in(ctx.site)
-    assert run(ctx) == {:ok, %{notes: 28, chats: 0}}
+    assert run(ctx) == {:ok, %{notes: 28, chats: 0, reviews: 0}}
   end
 
   test "another account starts afresh", ctx do
@@ -139,7 +145,7 @@ defmodule TinyAxe.SyncTest do
       JSON.encode!(%{username: "someone-else", site: ctx.site.url})
     )
 
-    assert run(ctx) == {:ok, %{notes: 28, chats: 0}}
+    assert run(ctx) == {:ok, %{notes: 28, chats: 0, reviews: 0}}
   end
 
   test "no account, nothing sent", ctx do

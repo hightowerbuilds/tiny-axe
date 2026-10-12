@@ -11,7 +11,7 @@ defmodule TinyAxe.Graph do
   (`graph_overview`, `graph_search`, `graph_note`, `graph_link`) only read
   the user's own page, so they run without asking. `graph_add_note` (the
   model saving a note there) is outward: the user is asked each time. `vault_push`,
-  `chat_push` and `signin_link` are hidden from agents: only tiny-axe's own
+  `chat_push`, `review_push` and `signin_link` are hidden from agents: only tiny-axe's own
   code sends notes and chats (`TinyAxe.Sync`) and opens the site signed in
   (`open_in_browser/2`, for `/graph` and the agent's `site_open`).
 
@@ -25,7 +25,7 @@ defmodule TinyAxe.Graph do
   @name "graph"
   @read ["graph_overview", "graph_search", "graph_note", "graph_link"]
   @outward ["graph_add_note"]
-  @hidden ["vault_push", "chat_push", "signin_link"]
+  @hidden ["vault_push", "chat_push", "review_push", "signin_link"]
 
   def name, do: @name
 

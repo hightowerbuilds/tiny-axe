@@ -59,7 +59,7 @@ defmodule TinyAxe.FakeSite do
   defp answer(%{"method" => "tools/list"}, _test, _base) do
     tools =
       for name <-
-            ~w(graph_overview graph_search graph_note graph_link graph_add_note signin_link vault_push chat_push),
+            ~w(graph_overview graph_search graph_note graph_link graph_add_note signin_link vault_push chat_push review_push),
           do: %{name: name, description: name, inputSchema: %{type: "object"}}
 
     %{tools: tools}
@@ -81,6 +81,9 @@ defmodule TinyAxe.FakeSite do
 
       "chat_push" ->
         text(%{id: args["chat"]["id"], written: true})
+
+      "review_push" ->
+        text(%{chat_id: args["review"]["chat_id"], written: true})
 
       "signin_link" ->
         path =

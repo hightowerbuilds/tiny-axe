@@ -57,7 +57,12 @@ defmodule TinyAxe.GraphTest do
 
       assert Policy.classify(%{"name" => "graph_add_note"}, config["policy"]) == :outward
 
-      assert config["policy"]["hidden"] == ["vault_push", "chat_push", "signin_link"]
+      assert config["policy"]["hidden"] == [
+               "vault_push",
+               "chat_push",
+               "review_push",
+               "signin_link"
+             ]
     end
 
     test "no account, no connection" do
@@ -149,7 +154,7 @@ defmodule TinyAxe.GraphTest do
 
       assert Graph.open_in_browser() == {:ok, site.url <> "/graph"}
       assert_received {:opened, link}
-      assert link == site.url <> "/#signin=one-time-token"
+      assert link == site.url <> "/graph#signin=one-time-token"
 
       assert Graph.open_in_browser("shop.example") == {:ok, site.url <> "/note/shop.example"}
       assert Graph.open_in_browser(nil, page: "chats") == {:ok, site.url <> "/chats"}

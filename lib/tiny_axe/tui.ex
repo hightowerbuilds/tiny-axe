@@ -538,7 +538,7 @@ defmodule TinyAxe.TUI do
 
       # cd, pwd, tools, /graph, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account", "/token"] or prompt =~ ~r/\Acd(\s|\z)/ or
+      prompt in ["pwd", "tools", "/account", "/token", "/review"] or prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -593,6 +593,17 @@ defmodule TinyAxe.TUI do
     else
       add_meta(state, "/graph · /graph chats")
     end
+  end
+
+  # Reads every chat for the site's session graph (TinyAxe.Review), aside.
+  defp builtin(state, "/review") do
+    tui = self()
+
+    Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+      send(tui, {:review, TinyAxe.Review.run()})
+    end)
+
+    %{state | status: "reading the chats…"}
   end
 
   defp builtin(state, "/account") do
@@ -759,6 +770,15 @@ defmodule TinyAxe.TUI do
       |> add_meta("`#{url}`")
 
     {:noreply, %{state | status: "ready"}}
+  end
+
+  defp on_info({:review, {:ok, c}}, state) do
+    shown =
+      "🔎 reviewed #{c.reviewed} chats for the session graph" <>
+        if(c.skipped > 0, do: " (#{c.skipped} unchanged)", else: "") <>
+        if(c.failed > 0, do: "; #{c.failed} couldn't be read", else: "")
+
+    {:noreply, %{add_meta(state, shown) | status: "ready"}}
   end
 
   defp on_info({:graph, :closed}, state),
