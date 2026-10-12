@@ -39,6 +39,8 @@ defmodule TinyAxe.MixProject do
       # Supabase Realtime (TinyAxe.Remote): a websocket tiny-axe dials out on.
       {:mint_web_socket, "~> 1.0"},
       {:floki, "~> 0.38"},
+      # Rebuildable local chat search; SQLite is bundled with FTS5 enabled.
+      {:exqlite, "~> 0.42"},
       # Timings and call counts for `mix tiny_axe.eval` (already a dependency of Req).
       {:telemetry, "~> 1.0"},
       # The tool gate's MCP endpoint on 127.0.0.1 (TinyAxe.Tools.Gate).

@@ -58,6 +58,16 @@ defmodule TinyAxe.SyncTest do
     end
   end
 
+  test "local-only conversations are never uploaded, even on explicit sync", ctx do
+    id = "20261011-153012-a1b2"
+    chat(ctx, id, "private memory answer")
+    path = Path.join(ctx.history, id <> ".json")
+    doc = path |> File.read!() |> JSON.decode!() |> Map.put("local_only", true)
+    File.write!(path, JSON.encode!(doc))
+    assert run(ctx) == {:ok, %{chats: 0}}
+    assert pushes() == []
+  end
+
   test "sends every chat once, without its context", ctx do
     chat(ctx, "20261011-153012-a1b2", "what's using port 4000?")
     assert run(ctx) == {:ok, %{chats: 1}}

@@ -166,8 +166,19 @@ config :tiny_axe, :jev, model: "jev-latest"
 config :tiny_axe, cursor_pulse: true
 
 # tiny-axe's website (TinyAxe.Account, docs/plan-lobsterattack.md): the user's
-# account is made there the first time tiny-axe opens, and tiny-axe won't go
+# account can be made when the user enables the optional website; tiny-axe can go
 # on without one. TINY_AXE_SITE_URL points it elsewhere (a local dev API).
-config :tiny_axe, :site, url: "https://www.lobsterattack.yachts", required: true
+config :tiny_axe, :site, url: "https://www.lobsterattack.yachts", required: false
+
+# Memory has its own local inference configuration; global agent/decider choices
+# (including a hosted Jev key) never apply to this workflow.
+config :tiny_axe, :memory,
+  review_enabled: false,
+  model: "gemma4:e4b-it-qat",
+  ollama_url: "http://127.0.0.1:11434",
+  num_ctx: 8192
+
+# Chat archiving is optional. Local memory does not require a site account.
+config :tiny_axe, :sync, enabled: false
 
 import_config "#{config_env()}.exs"

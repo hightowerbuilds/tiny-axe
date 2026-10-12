@@ -44,6 +44,11 @@ defmodule TinyAxe.TUI.ChatHistory do
   defp list(state, query) do
     chats = History.list(query: query, limit: @shown)
 
+    state =
+      if Enum.any?(chats, & &1.local_only),
+        do: TinyAxe.TUI.MemoryChat.ensure_local(state),
+        else: state
+
     cond do
       chats == [] and query == "" ->
         add_meta(state, "no chats kept yet: each chat is kept once you've asked something")

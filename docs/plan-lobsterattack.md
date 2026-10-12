@@ -1,5 +1,8 @@
 # Plan: LobsterAttack, tiny-axe's hosted home
 
+**Local memory update, 2026-10-12:** account setup is now optional and automatic chat sync defaults to off. Local memory conversations carry `local_only: true` and are excluded even from explicit sync. `/memory` uses a local SQLite index and local Gemma, independently of the remote site tools. See [the local memory plan](plan-local-memory.md). These defaults supersede the mandatory account and automatic upload behavior described below.
+
+
 **2026-10-12: the know-how graph is gone.** Per the 2026-10-12 review
 (section 07), a graph of activity isn't evidence of learning, and it did
 nothing to make tiny-axe's actions more deterministic. The vault, the chat
