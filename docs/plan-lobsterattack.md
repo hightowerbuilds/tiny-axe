@@ -1,0 +1,192 @@
+# Plan: LobsterAttack, tiny-axe's hosted home
+
+Status (2026-10-11): L1 built (lobsterattack branch `tiny-axe-home`, not
+pushed or deployed; the migration isn't applied yet). Site work in
+`../lobsterattack` (repo hightowerbuilds/lobsterattack, deployed by Vercel);
+tiny-axe work on branch `lobsterattack` (worktree `../tiny-axe-lobster`).
+
+## What the user asked for
+
+LobsterAttack is rebuilt as the place where everything tiny-axe does is
+shown. The local website (`tiny-axe graph` on 127.0.0.1) goes away; the
+hosted site replaces it. Because the site is on the internet, it needs a way
+in: an MCP lets tiny-axe's model reach the site, log in, and add to the
+graph. Security starts very simple and is strengthened as we go.
+
+The user's choices (2026-10-11):
+
+- **Login to view.** Nothing on the site is visible without signing in.
+- **Graph and chats.** Both go up: the know-how notes (`docs/vault-format.md`)
+  and every chat's messages and activity (`docs/plan-history.md`).
+- **The posts feed goes.** The BusterClaws feed UI and its API are removed.
+  The `buster_posts` and `buster_profiles` tables stay in Supabase, untouched.
+- **Built in the lobsterattack repo**, which Vercel already deploys.
+
+## What's there now
+
+- LobsterAttack: React 19 + Vite Plus + TanStack Router; a Hono API on
+  Vercel Edge (`api/index.ts`, every route under `/api`); Supabase project
+  `gbnizxzurmbzeelacztr`, **shared production**, so every new table is
+  prefixed `buster_`. Email + password sign-in already works. `/notes`,
+  `/board`, `/comments`, `/media`, `/agents` are dead (their tables don't
+  exist).
+- tiny-axe's viewer (`graph/`): SolidJS + Three.js pages (graph, note,
+  search, chats) served by a Node server that reads the vault and
+  `<state_dir>/history/` from disk. `TinyAxe.Graph` runs it as the MCP
+  server `graph` (`graph_open`/`graph_close`).
+- Size today: 321 notes (1.4 MB, the largest 1.5 KB) and 3 chats (44 KB).
+  Small enough to upload whole on first sync.
+
+## The shape
+
+```
+tiny-axe (this computer)                      Vercel                Supabase
+  TinyAxe.Vault ──┐                      ┌── /api/mcp  (agent key)
+  TinyAxe.History ├─ MCP over HTTP ──────┤                         buster_ta_* tables
+  agent (gate) ───┘  key from keyring    ├── /api/*    (viewer login)  (RLS: deny anon)
+                                         └── /  the site (Solid)
+```
+
+- **One way in for tiny-axe: MCP over HTTP** at `/api/mcp`. tiny-axe's MCP
+  client already speaks streamable HTTP with headers (`TinyAxe.MCP.Client`),
+  so the site is connected as the reserved server `graph`, like the local
+  one today. Both tiny-axe's own code (pushing notes and chats) and the
+  model (adding to the graph) go through it.
+- **The model never holds the credential.** The key lives in the keyring
+  (`secret-tool`, like other MCP secrets) and is sent as a header by
+  tiny-axe. "Logging in" happens inside the connection.
+- **Redaction stays in Elixir**, before anything leaves the machine (the
+  vault writer's escaping and `Tools.Redact.secrets/1` on chats). The site
+  runs the same card/token pattern again as a second net.
+
+## Security, version 1 (simple)
+
+- **tiny-axe → site: one API key.** 32 random bytes, made once by a script,
+  shown once, stored in the keyring. The site keeps only its SHA-256
+  (`buster_ta_keys`, the hashing LobsterAttack's old `auth.ts` already does),
+  mapped to the owner's Supabase user. Every `/api/mcp` call needs
+  `Authorization: Bearer <key>`; a wrong or missing key is 401.
+- **People → site: Supabase email + password**, as now. Sign-up is turned
+  off in the UI: the owner creates accounts in the Supabase dashboard. The
+  API checks the session's JWT (`auth.getUser`) on every `/api/*` read, and
+  the user must be in `buster_ta_members`, which says whose site they see.
+  Signing in alone isn't enough: the Supabase project is shared with other
+  apps, and their users are in `auth.users` too.
+- **Data: one owner.** Every row carries `owner_id`. The API uses the
+  service-role key (server-side only, never in the bundle) after checking the
+  key or JWT, and filters by owner. RLS is on with no policies for `anon` or
+  `authenticated`, so the browser can't read tables directly even with the
+  public anon key.
+- Rate limit stays (the existing in-memory bucket: per instance, not global;
+  fine for v1). CORS limited to the site's own origin.
+
+Later, in rough order: per-device keys with names, last-used and revoke
+(UI); scopes (push-only vs. model-write); viewer roles (read-only guests);
+audit log of every write; durable rate limit (Upstash/Supabase); key
+rotation from the TUI; email confirmation via Resend.
+
+## Data (Supabase, migration `0006_buster_ta.sql`)
+
+| Table | Holds | Key |
+|---|---|---|
+| `buster_ta_keys` | key hash, owner, label, created, last used, revoked | id |
+| `buster_ta_members` | who may see whose site (owner or viewer) | user |
+| `buster_ta_notes` | basename, folder, kind, title, the note's whole text, content hash, source (push/agent), updated | (owner, basename) |
+| `buster_ta_chats` | chat id, session, started, updated, title, the chat JSON (jsonb, as in `plan-history.md`, without `context`) | (owner, chat id) |
+| `buster_ta_vault` | the manifest (schema, templates, writer, generated_at) | owner |
+
+- Notes are stored as the vault's own text, so the site builds the graph
+  exactly as `graph/src/vault.ts` + `graph.ts` do now (ported into
+  `api/_lib/vault/`; a test checks the fixture still gives `graph.json`). Upserts skip a note whose hash didn't
+  change.
+- Nothing is ever deleted by tiny-axe (matching the vault writer, which
+  never deletes a note). A model-added note is an ordinary note with
+  `trust: "observed"` and `source: "agent"`.
+
+## The MCP tools (`/api/mcp`)
+
+Stateless JSON-RPC over HTTP (no sessions, so it suits Edge functions).
+
+| Tool | Who | Class in tiny-axe's gate |
+|---|---|---|
+| `graph_search {q}` / `graph_note {id}` | model | read |
+| `graph_link {focus?, page?}`: the site URL to give the user | model | read |
+| `graph_add_note {folder, title, body, links}` | model | outward (asks, v1) |
+| `graph_overview` | model | read |
+| `vault_push {manifest, notes[]}` (≤ 200 notes / call) | tiny-axe code only | not offered to models |
+| `chat_push {chat}` | tiny-axe code only | not offered to models |
+
+The push tools are called by `TinyAxe.Vault` and `TinyAxe.History`
+directly, as `/graph` calls `graph_open` now, and the gate hides them from
+agents. Whether `graph_add_note` should run without asking (it only writes
+to the user's own private site) is the first thing to revisit once it works.
+
+## tiny-axe's side
+
+- `TinyAxe.Graph` connects to `<site>/api/mcp` over HTTP instead of
+  starting `graph/dist/server.js`. Config: `config :tiny_axe, :graph, url:`;
+  the key from the keyring (`mix tiny_axe.graph_key set` stores it).
+- **Pushing, crash-safe.** After each closed task the vault writer pushes the
+  notes whose text changed; History pushes a chat whenever it rewrites its
+  file. What's not yet up is recorded in `<state_dir>/outbox.json` (written
+  before the push, cleared after it), so a crash or no network loses
+  nothing: the outbox is retried at start and every few minutes. First sync
+  backfills everything.
+- `/graph` prints the site's link (no local port); `/graph close` goes.
+  `graph_open`'s 127.0.0.1 server, its token cookie and SSE are removed;
+  `mix tiny_axe.install` stops installing `graph/`. `graph/` itself stays
+  in the repo until the site has the same pages, then is deleted.
+
+## The site
+
+- **Switch React → Solid**, so `graph/web` (app, graph-page, views, chats,
+  store, filter, layout, the Three.js renderer and its d3-force worker) moves
+  over almost unchanged. TanStack Router has a Solid build; or keep the
+  viewer's own small router. Vite stays (`vite-plugin-solid`).
+- Pages: sign in, overview, graph (2D, 3D switch), note, search, chats, chat.
+  The coral-reef look and the ASCII hero can frame the sign-in page.
+- Live updates: polling every 15 s (`/api/changes?since=`) in v1, in place of
+  SSE (Edge functions can't hold connections open cheaply). Supabase
+  Realtime later.
+- Removed: the posts feed, `src/lib/posts.ts`, `api/_routes/posts.ts`,
+  `profile.ts`, and the dead `/notes`, `/board`, `/comments`, `/media`,
+  `/agents` routes and their middleware.
+
+## Phases
+
+Each phase is one commit; nothing is pushed or deployed without the user's
+go-ahead.
+
+1. **L1, data and auth.** Done 2026-10-11: migration `0006_buster_ta.sql`,
+   `scripts/tinyaxe-key.ts` (key, let-in, list, revoke), `/api/mcp`, the
+   viewer reads (`/api/me`, `vault`, `graph`, `note`, `search`, `chats`,
+   `chat`, `changes`, the local viewer's JSON shapes). `bun test api/test`
+   runs against an in-memory store; tiny-axe's own `TinyAxe.MCP.Client`
+   connected, listed the tools and pushed the fixture.
+2. **L2, the site.** Solid rebuild with the viewer's pages, sign in, posts
+   feed removed. Checked in headless Chrome against fixture data
+   (`test/fixtures/vault`).
+3. **L3, tiny-axe pushes.** `TinyAxe.Graph` over HTTP, outbox, backfill,
+   `/graph` link, keyring key. Tested with a fake MCP server, then live.
+4. **L4, the model writes.** `graph_add_note`, gate policy, live test with
+   Haiku.
+5. **L5, local site removed.** Delete `graph/`'s server, MCP and install
+   step once L2 has every page.
+
+## What the user has to do
+
+- **Supabase access:** apply the migration (dashboard SQL editor, or the
+  Supabase CLI logged in), and create the viewer account(s) with "Auto
+  Confirm". The service-role key is needed in Vercel's env (it's already
+  there for the posts API).
+- **Vercel:** env vars for the deploy (`SUPABASE_URL`,
+  `SUPABASE_SERVICE_ROLE_KEY`, `CORS_ORIGIN`); approving each deploy. For
+  local development, the same values in `../lobsterattack/.env` (not in the
+  fresh clone: the old one was on the Mac).
+- Neither the `vercel` nor the `supabase` CLI is installed here.
+
+## Open questions
+
+- Site URL / domain (the current Vercel one, or a new name).
+- Should model-added notes run without asking? (v1: ask.)
+- Keep the LobsterAttack name and look, or rename the site for tiny-axe?
