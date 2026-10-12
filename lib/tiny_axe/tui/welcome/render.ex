@@ -36,16 +36,16 @@ defmodule TinyAxe.TUI.Welcome.Render do
   # bits, each ground thin towards its edge.
   defp head(x, y, z) do
     ax = abs(x)
-    t = min(ax / 3.6, 1.0)
+    t = min(ax / 3.9, 1.0)
     # The bits sweep out and curve back in at the top and bottom corners.
-    flare = 0.75 * t * t
-    top = 3.1 + flare
-    bottom = 1.7 - flare
+    flare = 0.95 * t * t
+    top = 2.85 + flare
+    bottom = 0.95 - flare
     # The blade's thickness: full at the eye, a fine edge at the bit.
     thick = 0.08 + 0.34 * (1 - t) * (1 - t)
     # Each bit's edge is a shallow arc, fullest at the middle of the head.
-    mid = (y - 2.4) / 1.5
-    dx = ax - (3.6 - 0.5 * mid * mid)
+    mid = (y - 1.9) / 1.9
+    dx = ax - (3.9 - 0.6 * mid * mid)
     dy = max(bottom - y, y - top)
     dz = abs(z) - thick
     max(dx, max(dy, dz))
@@ -55,7 +55,7 @@ defmodule TinyAxe.TUI.Welcome.Render do
   defp handle(x, y, z) do
     r = :math.sqrt(x * x + z * z)
     radius = 0.52 + 0.1 * max(0.0, -y / 3.4)
-    body = max(r - radius, max(-3.4 - y, y - 3.45))
+    body = max(r - radius, max(-3.4 - y, y - 3.2))
     knob = :math.sqrt(x * x + (y + 3.3) * (y + 3.3) + z * z) - 0.7
     min(body, knob)
   end
@@ -171,7 +171,7 @@ defmodule TinyAxe.TUI.Welcome.Render do
   # The bits, where the head is ground thin, take the brand's green.
   defp edge?(point, rot) do
     {x, _y, _z} = to_model(point, rot)
-    abs(x) > 2.9
+    abs(x) > 3.1
   end
 
   @doc "One frame as lines of spans, runs of a colour joined."
