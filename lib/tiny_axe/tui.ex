@@ -25,6 +25,9 @@ defmodule TinyAxe.TUI do
   `/token` shows token use by Claude Haiku, Jev and the local model
   (`TUI.TokenDash`).
 
+  `/remote on|off` lets the site's /remote page reach this tiny-axe: its
+  messages are answered in a 🌐 chat of their own (`TUI.RemoteChat`).
+
   History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
   `/history` lists the recent ones, `/history N` reopens one, `/history words`
   finds them. Your page of tiny-axe's website shows all of them under Chats.
@@ -40,6 +43,7 @@ defmodule TinyAxe.TUI do
   alias TinyAxe.TUI.{
     ChatHistory,
     Chats,
+    RemoteChat,
     CommandWorkflow,
     CompactionWorkflow,
     FileWorkflow,
@@ -141,6 +145,11 @@ defmodule TinyAxe.TUI do
        account_job: nil,
        # /token's popup (TinyAxe.TUI.TokenDash), while it's open.
        token_dash: nil,
+       # The site's /remote page (TinyAxe.TUI.RemoteChat): its connection, the
+       # message being answered in the 🌐 chat and those queued.
+       remote_link: RemoteChat.new(opts),
+       # Whether the chat on screen is the 🌐 one (a chat's own field, TUI.Chats).
+       remote_chat: false,
        # Whether this request is an agent run: its answer goes after its tool lines.
        agent_run: false,
        status: "ready",
@@ -172,7 +181,8 @@ defmodule TinyAxe.TUI do
        # Tests swap in a function that doesn't touch the real clipboard.
        clipboard: Keyword.get(opts, :clipboard, &TinyAxe.Clipboard.copy/1)
      }
-     |> Welcome.sync()}
+     |> Welcome.sync()
+     |> then(&if(session?, do: RemoteChat.subscribe(&1), else: &1))}
   end
 
   @impl true
@@ -188,6 +198,7 @@ defmodule TinyAxe.TUI do
   def handle_event(event, state) do
     state
     |> Chats.within(Chats.asker(state, event), &on_event(event, &1))
+    |> RemoteChat.sync()
     |> next_question()
     |> Chats.relabeled()
     |> saved(state)
@@ -197,6 +208,7 @@ defmodule TinyAxe.TUI do
   def handle_info(msg, state) do
     state
     |> Chats.within(Chats.owner(state, msg), &on_info(msg, &1))
+    |> RemoteChat.sync()
     |> next_question()
     |> Chats.relabeled()
     |> saved(state)
@@ -536,11 +548,11 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /graph, /account, /token and /credit-card are handled
+      # cd, pwd, tools, /graph, /remote, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
       prompt in ["pwd", "tools", "/account", "/token", "/review", "/review all"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
-        prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
+        prompt =~ ~r/\A\/(graph|remote)(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
@@ -617,6 +629,8 @@ defmodule TinyAxe.TUI do
         %{state | account_flow: TinyAxe.TUI.AccountFlow.new(), status: "setting up your account…"}
     end
   end
+
+  defp builtin(state, "/remote" <> rest), do: RemoteChat.command(state, String.trim(rest))
 
   defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
 
@@ -801,6 +815,9 @@ defmodule TinyAxe.TUI do
     do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
 
   defp on_info({:token_dash, _closed}, state), do: {:noreply, state, render?: false}
+
+  # The site's /remote page (TinyAxe.Remote).
+  defp on_info({:remote, event}, state), do: {:noreply, RemoteChat.event(state, event)}
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
 

@@ -41,6 +41,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Sync,
         # Reads each chat for the site's session graph (Gemma, judged by Jev).
         TinyAxe.Review,
+        # Remote chat: a websocket out to Supabase Realtime, for the site's Chat tab.
+        TinyAxe.Remote,
         # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
         TinyAxe.Tools.Gate,
         {Bandit,
