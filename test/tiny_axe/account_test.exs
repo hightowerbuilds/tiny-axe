@@ -231,7 +231,8 @@ defmodule TinyAxe.AccountTest do
       ExRatatui.get_buffer_content(terminal)
     end
 
-    defp press(state, code), do: elem(TUI.handle_event(%Event.Key{code: code, kind: "press", modifiers: []}, state), 1)
+    defp press(state, code),
+      do: elem(TUI.handle_event(%Event.Key{code: code, kind: "press", modifiers: []}, state), 1)
 
     # The job runs in a task; its answer comes back as a message.
     defp answer(state) do
@@ -242,7 +243,10 @@ defmodule TinyAxe.AccountTest do
 
     test "opens on the account, and the password shows only as dots" do
       site()
-      {:ok, state} = TUI.mount(test_mode: {100, 30}, account_flow: AccountFlow.new(required: true))
+
+      {:ok, state} =
+        TUI.mount(test_mode: {100, 30}, account_flow: AccountFlow.new(required: true))
+
       assert draw(state) =~ "your tiny-axe account"
       assert draw(state) =~ "Make a new account"
 
@@ -264,5 +268,4 @@ defmodule TinyAxe.AccountTest do
       refute inspect(state) =~ "horse"
     end
   end
-
 end

@@ -560,6 +560,7 @@ defmodule TinyAxe.TUI do
     action =
       case String.trim(rest) do
         "" -> :open
+        "chats" -> :chats
         "close" -> :close
         _ -> nil
       end
@@ -572,9 +573,9 @@ defmodule TinyAxe.TUI do
         send(tui, {:graph, graph(action, copy)})
       end)
 
-      %{state | status: if(action == :open, do: "opening the graph…", else: "closing the graph…")}
+      %{state | status: "asking the site…"}
     else
-      add_meta(state, "/graph · /graph close")
+      add_meta(state, "/graph · /graph chats")
     end
   end
 
@@ -687,12 +688,12 @@ defmodule TinyAxe.TUI do
     end
   end
 
-  defp graph(:close, _copy) do
-    with :ok <- TinyAxe.Graph.close(), do: :closed
-  end
+  # The site is always up; there's no page on this computer to close.
+  defp graph(:close, _copy), do: :closed
 
-  defp graph(:open, copy) do
-    with {:ok, url} <- TinyAxe.Graph.open(), do: {:opened, url, copy.(url) == :ok}
+  defp graph(action, copy) do
+    opts = if action == :chats, do: [page: "chats"], else: []
+    with {:ok, url} <- TinyAxe.Graph.open(nil, opts), do: {:opened, url, copy.(url) == :ok}
   end
 
   ## Pipeline events
@@ -718,14 +719,24 @@ defmodule TinyAxe.TUI do
 
     state =
       state
-      |> add_meta("🧠 what tiny-axe knows, served on this computer only#{copied}:")
+      |> add_meta(
+        "🧠 what tiny-axe knows, on your page of its website (sign in to see it)#{copied}:"
+      )
       |> add_meta("`#{url}`")
 
     {:noreply, %{state | status: "ready"}}
   end
 
   defp on_info({:graph, :closed}, state),
-    do: {:noreply, %{add_meta(state, "🧠 closed the graph page") | status: "ready"}}
+    do:
+      {:noreply,
+       %{
+         add_meta(
+           state,
+           "🧠 the graph lives on tiny-axe's website now; there's nothing here to close"
+         )
+         | status: "ready"
+       }}
 
   defp on_info({:graph, {:error, message}}, state),
     do: {:noreply, %{add_meta(state, "✗ graph: #{message}") | status: "ready"}}
@@ -1221,8 +1232,12 @@ defmodule TinyAxe.TUI do
     %{state | account_flow: flow, account_job: ref, status: flow.busy || "working…"}
   end
 
-  defp account_step(state, {:done, message}),
-    do: %{state | account_flow: nil, account_job: nil, status: "ready"} |> add_meta(message)
+  # A new account: connect to the site and send it everything so far.
+  defp account_step(state, {:done, message}) do
+    Task.start(fn -> if TinyAxe.Graph.available?(), do: TinyAxe.Graph.start() end)
+    TinyAxe.Sync.soon()
+    %{state | account_flow: nil, account_job: nil, status: "ready"} |> add_meta(message)
+  end
 
   defp account_step(state, {:cancel, message}) do
     TinyAxe.Account.discard_entry()

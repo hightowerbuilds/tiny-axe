@@ -1,109 +1,89 @@
 defmodule TinyAxe.Graph do
   @moduledoc """
-  The know-how graph viewer (`graph/`, a small Node server): a page showing
-  what tiny-axe has learned, served on 127.0.0.1 only. It runs as an MCP
-  server (`server.js --mcp`) under the reserved name `graph`, so agents reach
-  it through the gate like any other, and `/graph` in the TUI calls it
-  directly.
+  tiny-axe's website (`docs/plan-lobsterattack.md`) as an MCP server: what
+  tiny-axe has learned, and every chat, on the user's own page of the site,
+  for them (and whoever they let in) to see after signing in. It's connected
+  under the reserved name `graph`, over HTTP to `<site>/api/mcp`, with the
+  account's key from the keyring (`TinyAxe.Account`); so it's there once
+  there's an account.
 
-  `graph_open` starts the page's HTTP server (once, then reuses it) and gives
-  back a link carrying a token; `graph_close` stops it. Neither opens a
-  browser: the user gets the link. Both are `local`: they open or close a port
-  on this machine and send nothing anywhere, so they run without asking.
+  Agents reach it through the gate like any other server. Its read tools
+  (`graph_overview`, `graph_search`, `graph_note`, `graph_link`) only read
+  the user's own page, so they run without asking. `vault_push` and
+  `chat_push` are hidden from agents: only tiny-axe's own code sends notes and
+  chats (`TinyAxe.Sync`), and `/graph` in the TUI calls `graph_link` directly.
 
-  `server.js` is the installed copy (`~/.local/share/tiny-axe/graph`, from
-  `mix tiny_axe.install`) or, failing that, this repo's `graph/dist` (`npm run
-  build` in `graph/`).
-
-  `config :tiny_axe, :graph`: `enabled`, `server_js`, `vault` (the viewer's
-  default is `~/.local/share/tiny-axe/vault`) and `port`. The chat history
-  it shows under Chats is always tiny-axe's own (`TinyAxe.History.dir/0`).
+  `config :tiny_axe, :graph, enabled: false` leaves it unconnected.
   """
 
-  alias TinyAxe.MCP
+  alias TinyAxe.{Account, MCP}
 
   @name "graph"
-
-  # The source tree's build, found at compile time (graph/dist is gitignored,
-  # so it's only there once built).
-  @repo_server Path.expand("../../graph/dist/server.js", __DIR__)
+  @read ["graph_overview", "graph_search", "graph_note", "graph_link"]
+  @hidden ["vault_push", "chat_push"]
 
   def name, do: @name
 
-  @doc "Whether the viewer can run here: switched on, with Node and its server.js found."
+  @doc "Whether the site can be connected: switched on, with an account and its key."
   @spec available?() :: boolean()
-  def available?,
-    do: settings()[:enabled] != false and node_exe() != nil and server_js() != nil
+  def available?, do: settings()[:enabled] != false and Account.current() != nil
 
-  @doc "Whether the graph server is running."
+  @doc "Whether the site's MCP connection is up."
   @spec running?() :: boolean()
   def running?, do: @name in MCP.running()
 
-  @doc "Starts the graph server (its HTTP page opens only when `graph_open` is called)."
+  @doc "Connects to the site."
   @spec start() :: {:ok, pid()} | {:error, term()}
   def start do
-    if available?(),
-      do: MCP.start_server(@name, config()),
-      else: {:error, :graph_unavailable}
+    case config() do
+      nil -> {:error, :no_account}
+      config -> MCP.start_server(@name, config)
+    end
   end
 
-  @doc "The viewer's server: the installed one, else this repo's build, else nil."
-  @spec server_js() :: String.t() | nil
-  def server_js do
-    installed =
-      Path.join(
-        System.get_env("XDG_DATA_HOME") || Path.expand("~/.local/share"),
-        "tiny-axe/graph/server.js"
-      )
-
-    Enum.find([settings()[:server_js], installed, @repo_server], &(&1 && File.regular?(&1)))
-  end
-
-  @doc "The MCP server config for the viewer."
-  @spec config() :: map()
+  @doc "The MCP server config for the site, with the account's key; nil without one."
+  @spec config() :: map() | nil
   def config do
-    settings = settings()
-
-    %{
-      "type" => "stdio",
-      "command" => node_exe(),
-      "args" =>
-        [server_js(), "--mcp", "--history", TinyAxe.History.dir()] ++
-          if(settings[:vault], do: ["--vault", settings[:vault]], else: []) ++
-          if(settings[:port], do: ["--port", to_string(settings[:port])], else: []),
-      "policy" => %{"local" => ["graph_open", "graph_close"]}
-    }
+    with true <- settings()[:enabled] != false,
+         {:ok, key} <- Account.key() do
+      %{
+        "type" => "http",
+        "url" => Account.site_url() <> "/api/mcp",
+        "headers" => %{"authorization" => "Bearer " <> key},
+        "policy" => %{"read" => @read, "hidden" => @hidden}
+      }
+    else
+      _ -> nil
+    end
   end
 
   @doc """
-  Opens the graph page (starting the server first if it isn't running) and
-  returns its link, optionally focused on one note. Never opens a browser.
+  Calls one of the site's tools from tiny-axe's own code (connecting first if
+  need be). `{:ok, text}` with what it said, or `{:error, why}`.
   """
-  @spec open(String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
-  def open(focus \\ nil) do
-    args = if focus in [nil, ""], do: %{}, else: %{"focus" => focus}
-
+  @spec call(String.t(), map(), timeout()) :: {:ok, String.t()} | {:error, String.t()}
+  def call(tool, args, timeout \\ 60_000) do
     with :ok <- ensure_started(),
-         {:ok, result} <- MCP.call(@name, "graph_open", args, 30_000) do
-      if result["isError"] == true, do: {:error, failure(result)}, else: url(text(result))
+         {:ok, result} <- MCP.call(@name, tool, args, timeout) do
+      if result["isError"] == true, do: {:error, failure(result)}, else: {:ok, text(result)}
     else
       {:error, reason} when is_binary(reason) -> {:error, reason}
-      {:error, reason} -> {:error, "the graph viewer didn't answer (#{inspect(reason)})"}
+      {:error, reason} -> {:error, "the site didn't answer (#{inspect(reason)})"}
     end
   end
 
-  @doc "Stops the graph page's HTTP server (the MCP server keeps running)."
-  @spec close() :: :ok | {:error, String.t()}
-  def close do
-    if running?() do
-      case MCP.call(@name, "graph_close", %{}, 15_000) do
-        {:ok, %{"isError" => true} = result} -> {:error, failure(result)}
-        {:ok, _} -> :ok
-        {:error, reason} -> {:error, "the graph viewer didn't answer (#{inspect(reason)})"}
-      end
-    else
-      :ok
-    end
+  @doc """
+  The link to the user's page of the site, optionally one note (`focus`) or
+  the chats (`page: "chats"`). Never opens a browser.
+  """
+  @spec open(String.t() | nil, keyword()) :: {:ok, String.t()} | {:error, String.t()}
+  def open(focus \\ nil, opts \\ []) do
+    args =
+      %{}
+      |> then(&if(focus in [nil, ""], do: &1, else: Map.put(&1, "focus", focus)))
+      |> then(&if(opts[:page], do: Map.put(&1, "page", opts[:page]), else: &1))
+
+    with {:ok, text} <- call("graph_link", args, 30_000), do: url(text)
   end
 
   defp ensure_started do
@@ -112,26 +92,26 @@ defmodule TinyAxe.Graph do
         :ok
 
       not available?() ->
-        {:error,
-         "the graph viewer isn't here: it needs Node and graph/ built " <>
-           "(`mix tiny_axe.install`, or `npm run build` in graph/)"}
+        {:error, "there's no tiny-axe account on this computer yet; /account sets one up"}
 
       true ->
         case start() do
-          {:ok, _pid} -> :ok
-          {:error, reason} -> {:error, "the graph viewer couldn't start (#{inspect(reason)})"}
+          {:ok, _pid} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, "couldn't connect to #{Account.site_url()} (#{inspect(reason)})"}
         end
     end
   end
 
-  # The link is the first line; only one on this computer is taken.
+  # Only a link to the site itself is taken.
   defp url(text) do
     link = text |> String.split("\n", parts: 2) |> hd() |> String.trim()
 
-    case URI.parse(link) do
-      %URI{scheme: "http", host: host} when host in ["127.0.0.1", "localhost"] -> {:ok, link}
-      _ -> {:error, "the graph viewer didn't give a link on this computer"}
-    end
+    if link == Account.site_url() or String.starts_with?(link, Account.site_url() <> "/"),
+      do: {:ok, link},
+      else: {:error, "the site didn't give a link to itself"}
   end
 
   defp text(%{"content" => content}),
@@ -141,12 +121,10 @@ defmodule TinyAxe.Graph do
 
   defp failure(result) do
     case text(result) do
-      "" -> "the graph viewer said no, without saying why"
+      "" -> "the site said no, without saying why"
       why -> why
     end
   end
 
   defp settings, do: Application.get_env(:tiny_axe, :graph, [])
-
-  defp node_exe, do: System.find_executable("node")
 end

@@ -297,8 +297,10 @@ defmodule TinyAxe.History do
     with :ok <- File.mkdir_p(dir),
          :ok <- File.chmod(dir, 0o700),
          :ok <- File.write(tmp, JSON.encode!(doc)),
-         :ok <- File.chmod(tmp, 0o600) do
-      File.rename(tmp, path)
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- File.rename(tmp, path) do
+      # And on to the user's page of the site (TinyAxe.Sync).
+      TinyAxe.Sync.soon()
     end
   end
 

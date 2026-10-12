@@ -51,6 +51,26 @@ defmodule TinyAxe.MCP.Client do
 
   ## Server
 
+  # Headers and env can hold keys (the site's, a server's token): never in a
+  # crash report or :sys.get_status.
+  @impl true
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      %{config: %{} = config} = state ->
+        redacted =
+          for {k, v} <- config, into: %{} do
+            if k in ["headers", "env"] and is_map(v),
+              do: {k, Map.new(v, fn {n, _} -> {n, "[redacted]"} end)},
+              else: {k, v}
+          end
+
+        %{state | config: redacted}
+
+      other ->
+        other
+    end)
+  end
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)

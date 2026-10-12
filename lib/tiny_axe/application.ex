@@ -35,6 +35,8 @@ defmodule TinyAxe.Application do
         {DynamicSupervisor, name: TinyAxe.MCP.Supervisor, strategy: :one_for_one},
         # The know-how vault's writer: backfills in the background, then each closed task.
         TinyAxe.Vault,
+        # Sends the vault and the chats to the user's page of the site.
+        TinyAxe.Sync,
         # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
         TinyAxe.Tools.Gate,
         {Bandit,

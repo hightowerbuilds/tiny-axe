@@ -159,7 +159,9 @@ defmodule TinyAxe.Vault do
 
   defp run(fun, what) do
     case fun.() do
-      {:ok, _} = ok ->
+      {:ok, result} = ok ->
+        # New notes go on to the user's page of the site (TinyAxe.Sync).
+        if is_map(result) and Map.get(result, :written, 0) > 0, do: TinyAxe.Sync.soon()
         ok
 
       {:error, reason} = error ->

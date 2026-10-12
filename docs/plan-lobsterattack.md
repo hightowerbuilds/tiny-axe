@@ -153,12 +153,8 @@ to the user's own private site) is the first thing to revisit once it works.
 - `TinyAxe.Graph` connects to `<site>/api/mcp` over HTTP instead of
   starting `graph/dist/server.js`. Config: `config :tiny_axe, :graph, url:`;
   the key from the keyring (`mix tiny_axe.graph_key set` stores it).
-- **Pushing, crash-safe.** After each closed task the vault writer pushes the
-  notes whose text changed; History pushes a chat whenever it rewrites its
-  file. What's not yet up is recorded in `<state_dir>/outbox.json` (written
-  before the push, cleared after it), so a crash or no network loses
-  nothing: the outbox is retried at start and every few minutes. First sync
-  backfills everything.
+- **Pushing, crash-safe.** `TinyAxe.Sync` (L3, above): the record of what was
+  last sent, compared with the disk, is the outbox.
 - `/graph` prints the site's link (no local port); `/graph close` goes.
   `graph_open`'s 127.0.0.1 server, its token cookie and SSE are removed;
   `mix tiny_axe.install` stops installing `graph/`. `graph/` itself stays
@@ -202,8 +198,19 @@ go-ahead.
    open appearing, sign out, an account not let in, phone width; no CSP
    errors. The coral-reef images and ASCII hero went with the feed (in git
    history if wanted back).
-3. **L3, tiny-axe pushes.** `TinyAxe.Graph` over HTTP, outbox, backfill,
-   `/graph` link, keyring key. Tested with a fake MCP server, then live.
+3. **L3, tiny-axe pushes.** Done 2026-10-11. `TinyAxe.Graph` connects to
+   `<site>/api/mcp` over HTTP with the account's key; agents get the read
+   tools (they run without asking) and the gate hides `vault_push` /
+   `chat_push`. `TinyAxe.Sync` sends what changed: `<state_dir>/site-sync.json`
+   records each note's and chat's hash as last sent, so the difference between
+   it and the disk is the outbox (crash- and offline-safe, no separate queue);
+   runs a moment after the vault writer or the history writes, at start, after
+   an account is made, and every 5 minutes after a failure. A chat's `context`
+   never leaves. `/graph` and `/graph chats` print the site's link. The MCP
+   client's status redacts headers and env. Tested against a fake site (real
+   MCP client over HTTP), through the gate as an agent sees it, and end to end
+   against the real site API (memory store): 28 notes and a chat sent, read
+   back through the viewer API, nothing sent twice.
 4. **L4, the model writes.** `graph_add_note`, gate policy, live test with
    Haiku.
 5. **L5, local site removed.** Delete `graph/`'s server, MCP and install
