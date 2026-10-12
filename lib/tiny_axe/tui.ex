@@ -25,6 +25,9 @@ defmodule TinyAxe.TUI do
   `/token` shows token use by Claude Haiku, Jev and the local model
   (`TUI.TokenDash`).
 
+  `/look` lists the desktop's appearance settings as they are now, and
+  `/look undo` puts back the newest appearance change (`TinyAxe.Appearance`).
+
   `/remote on|off` lets the site's /remote page reach this tiny-axe: its
   messages are answered in a 🌐 chat of their own (`TUI.RemoteChat`).
 
@@ -548,9 +551,9 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /site, /remote, /account, /token and /credit-card are handled
-      # here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account", "/token", "/site"] or
+      # cd, pwd, tools, /site, /remote, /account, /token, /look and /credit-card
+      # are handled here, like shell built-ins: no model involved.
+      prompt in ["pwd", "tools", "/account", "/token", "/site", "/look", "/look undo"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/remote(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
@@ -610,6 +613,20 @@ defmodule TinyAxe.TUI do
   defp builtin(state, "/remote" <> rest), do: RemoteChat.command(state, String.trim(rest))
 
   defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
+
+  # Reading every setting runs a few dozen small programs, and undo runs
+  # some too, so both run aside.
+  defp builtin(state, "/look" <> rest) do
+    tui = self()
+
+    work =
+      if String.trim(rest) == "undo",
+        do: &TinyAxe.Appearance.undo/0,
+        else: fn -> "🎨 " <> TinyAxe.Appearance.describe_current() end
+
+    Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn -> send(tui, {:look, work.()}) end)
+    %{state | status: "reading the desktop's settings…"}
+  end
 
   defp builtin(state, "/credit-card" <> rest) do
     case String.split(String.trim(rest), " ", parts: 2) do
@@ -760,6 +777,9 @@ defmodule TinyAxe.TUI do
   defp on_info({:site, {:error, message}}, state),
     do: {:noreply, %{add_meta(state, "✗ site: #{message}") | status: "ready"}}
 
+  defp on_info({:look, text}, state),
+    do: {:noreply, %{add_meta(state, text) | status: "ready"}}
+
   defp on_info({:token_dash, ref}, %{token_dash: dash} = state) when dash != nil,
     do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
 
@@ -863,6 +883,9 @@ defmodule TinyAxe.TUI do
        when elem(event, 0) in [
               :command_plan,
               :command_problems,
+              :appearance_plan,
+              :appearance_problems,
+              :appearance_done,
               :cmd_start,
               :cmd_os_pid,
               :cmd_output,

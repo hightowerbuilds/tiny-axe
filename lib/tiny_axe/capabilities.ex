@@ -93,6 +93,17 @@ defmodule TinyAxe.Capabilities do
       "#{minutes()}."
   end
 
+  @doc "One paragraph on changing the desktop's look (`TinyAxe.Appearance`)."
+  @spec appearance() :: String.t()
+  def appearance do
+    "It changes how the desktop and terminal look when asked: the theme, background, " <>
+      "font and text size; the terminal's (Ghostty's) font size, padding, opacity, cursor " <>
+      "and tabs; display scaling, brightness and night light; window gaps, borders, " <>
+      "rounded corners, dimming, blur, animations and tiling layout; the bar. Those run " <>
+      "without asking, and `/look undo` puts the last change back; `/look` lists the " <>
+      "settings as they are now."
+  end
+
   @doc """
   The user's tiny-axe account and website, for every model that talks with
   them (the answer route and the agent), so "the site", "my page" or "my

@@ -1,6 +1,6 @@
 # Plan: changing this computer
 
-Status (2026-10-12): plan only, branch `os-control` (worktree ../tiny-axe-os).
+Status (2026-10-12): the appearance slice is built (below, "Appearance as built"); the rest is plan. Branch `os-control` (worktree ../tiny-axe-os).
 
 Goal: tiny-axe can change the computer it runs on (theme, display, audio,
 wifi, bluetooth, keybindings, installed apps, services, settings) when asked.
@@ -202,3 +202,83 @@ arguments itself:
     dry-run runner (nothing changes), split dev/holdout.
   - Measure Gemma's pick and fill accuracy and how often it escalates.
   - Real runs are capped like earlier evals.
+
+## Appearance as built (2026-10-12)
+
+The user asked for Omarchy's appearance tools first: terminal font size,
+tab arrangements, and anything else in that area the model can reach. This
+is O1's first slice, and it doesn't wait on the sudo list (none of it needs
+root). It's a typed setting list, not the whole catalog, which makes the
+path even narrower for Gemma.
+
+- **`TinyAxe.Appearance.Settings`** has 29 settings, each with a kind, a
+  reader and a setter.
+  - Omarchy commands: theme, background, font, text_size, display_scale,
+    brightness, nightlight, idle_lock, do_not_disturb, bar, bar_position,
+    bar_transparent.
+  - Ghostty config lines: terminal_font_size, terminal_padding,
+    terminal_opacity, terminal_cursor, terminal_cursor_blink,
+    terminal_tab_bar, terminal_tab_position.
+  - Hyprland options in tiny-axe's block of `looknfeel.lua`:
+    window_gaps_inner and window_gaps_outer, window_border,
+    window_rounding, window_layout (dwindle, master or scrolling),
+    window_dim_inactive, window_inactive_opacity, window_blur, animations,
+    and window_tab_bar (groupbar).
+  - All 29 were read live on this machine.
+- **`Appearance.Value`** checks values.
+  - Choices come from the computer and ignore case and spacing.
+  - Numbers must be in range. `+2` or `-2` is relative to the current
+    value, and "bigger" or "smaller" is one step.
+  - Booleans accept on/off words. An image must be a real file.
+- **Flow (`Appearance.run/4`):**
+  1. A snapshot reads every setting in parallel.
+  2. Gemma fills `{changes: [{setting, value}], reply}`. The setting is a
+     JSON-schema enum, and the value can be a string, number or boolean.
+  3. Code checks the values. Problems go back with the real choices, for
+     up to 3 rounds; the temperature rises each retry, and broken JSON
+     counts as a failed round.
+  4. Jev reviews each change (with its description and current value) and
+     whether the changes together do everything asked. A doubtful plan
+     goes back once.
+  5. If it's still doubtful, or never passed the checks, the request
+     escalates to Haiku with the same shape.
+  6. A plan that passed the review runs without asking. A plan that's
+     still doubtful after Haiku waits for a y/n in the commands popup
+     (`{:appearance_plan, …}`, `Appearance.execute/2` checks again before
+     running).
+- **Running** goes through `Appearance.Runner`, unsandboxed, with argv
+  instead of a shell. Secret env vars are removed, except the D-Bus
+  address. Each run has a 30 s timeout.
+- **`Appearance.ConfigFiles`** writes the config files.
+  - Ghostty lines are replaced in place, then terminals reload
+    (`omarchy restart terminal`).
+  - The Hyprland block is followed by `hyprctl reload` and `hyprctl
+    configerrors`, and any new error reverts the file. This was verified
+    live with a no-op value and with a bad key.
+  - Writes are atomic.
+- **`Appearance.Undo`** keeps the last 20 requests on disk.
+  - Undo restores the whole file when it still holds what tiny-axe wrote.
+  - Otherwise it sets the value from before again, and actions are run
+    again.
+  - `/look undo`, and `/look` lists the current values.
+- **Routing:** the router question is `appearance`. An `origin: :site`
+  request (the Chat tab) only describes the changes.
+  `Capabilities.appearance/0` tells the answer route.
+- **Live dry run** (real Gemma and Jev, nothing applied), about 15 prompts:
+  - These passed on Gemma alone: font bigger or smaller, theme plus bar
+    position, no gaps plus square corners, tabs at the bottom always,
+    see-through terminal, scrolling layout, hide the bar, night light
+    plus dimming, blinking bar cursor, next background, and "what font
+    am I using?".
+  - Jev doubted "put the terminal tabs at the bottom" and "bigger text
+    everywhere", both correct plans. Haiku made the same tabs change, so
+    in the TUI that one ends at the popup.
+  - A vague "make everything easier to read" (theme, text size, padding)
+    split the reviewer.
+- **Tests:** `test/tiny_axe/appearance_test.exs` (fake desktop,
+  `test/support/fake_desktop.ex`; tests never reach the real desktop) and
+  `tui_appearance_test.exs`.
+
+**Next:** Jev's review is noisy on correct single-setting plans. Options are
+tuning the questions, or skipping the review when the change is one setting
+the request names outright.
