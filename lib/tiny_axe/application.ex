@@ -40,6 +40,8 @@ defmodule TinyAxe.Application do
         # Remote chat: a websocket out to Supabase Realtime, for the site's Chat tab.
         TinyAxe.Remote,
         # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
+        # Paths that didn't work, per site (TinyAxe.Browser.DeadEnds).
+        TinyAxe.Browser.DeadEnds,
         TinyAxe.Tools.Gate,
         {Bandit,
          plug: TinyAxe.Tools.GatePlug,

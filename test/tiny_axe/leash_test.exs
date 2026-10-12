@@ -216,4 +216,55 @@ defmodule TinyAxe.LeashTest do
       assert {:ok, "you named no maximum, so the per-order limit is it"} in checks
     end
   end
+
+  describe "dead ends" do
+    # Opens the note form, types a note and clicks "Send note"; the click's result.
+    defp send_note(ctx, task) do
+      page = text(call(task, "#{ctx.server}__browser_navigate", %{url: ctx.site <> "/note"}))
+      call(task, "#{ctx.server}__browser_type", %{ref: ref(page, "textbox", "Note"), text: "hi"})
+      {page, call(task, "#{ctx.server}__browser_click", %{ref: ref(page, "button", "Send note")})}
+    end
+
+    # The answer's check verifies the click: the site said it failed.
+    defp fail_note(ctx, task) do
+      {page, _} = send_note(ctx, task)
+      Gate.complete(task.id, "Sent.")
+      :sys.get_state(TinyAxe.Browser.DeadEnds)
+      page
+    end
+
+    test "kept per site; twice is a dead end; the agent is warned; a repeat is refused", ctx do
+      Leash.set(true)
+      # Jev, verifying: the page shows an error and nothing took effect.
+      Decider.Script.script(fn
+        :shows_error, _, _ -> 0.9
+        :took_effect, _, _ -> 0.1
+        _, _, _ -> nil
+      end)
+
+      FixtureSite.set_outcome(:refused)
+      on_exit(fn -> FixtureSite.set_outcome(:ok) end)
+
+      first = fail_note(ctx, open_task(ctx, leash: true, objective: "send the note hi"))
+      refute first =~ "Known dead ends"
+      assert TinyAxe.Browser.DeadEnds.known("127.0.0.1") == []
+
+      fail_note(ctx, open_task(ctx, leash: true, objective: "send the note hi"))
+
+      assert [%{"action" => "click", "label" => "Send note", "failures" => 2}] =
+               TinyAxe.Browser.DeadEnds.known("127.0.0.1")
+
+      # A new task is told when it reaches the site, once.
+      task = open_task(ctx, leash: true, objective: "send the note hi")
+      page = fail_note(ctx, task)
+      assert page =~ ~s(Known dead ends on 127.0.0.1)
+      assert page =~ ~s(- click "Send note" on /note: didn't work 2 times)
+
+      # It failed again here, so trying it once more is refused.
+      {again, result} = send_note(ctx, task)
+      refute again =~ "Known dead ends"
+      assert text(result) =~ "dead_end: this didn't work on this site"
+      assert length(for({"/note", _} <- FixtureSite.submissions(), do: :sent)) == 3
+    end
+  end
 end

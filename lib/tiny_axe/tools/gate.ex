@@ -78,7 +78,7 @@ defmodule TinyAxe.Tools.Gate do
 
   alias TinyAxe.{Browser, Chrome, Leash, MCP, Ops, Purchases, Tools}
   alias TinyAxe.Agent.{Dispatch, ShellTool, SiteTool}
-  alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
+  alias TinyAxe.Browser.{Choices, DeadEnds, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
   @http TinyAxe.Tools.GateHTTP
@@ -120,6 +120,8 @@ defmodule TinyAxe.Tools.Gate do
         intent: Keyword.get(opts, :intent),
         # Whether it may run on the leash (TinyAxe.Leash): the TUI's own chats.
         leash: Keyword.get(opts, :leash, false),
+        # The sites whose known dead ends it has been told (DeadEnds.warning/1).
+        warned: MapSet.new(),
         objective: opts |> Keyword.get(:objective) |> then(&(&1 && Redact.text(&1))),
         # 0 for an agent's own task, 1 for a sub-agent's; and who drives it
         # (driven_by/2): together they say whether dispatch_agents is offered.
@@ -350,7 +352,7 @@ defmodule TinyAxe.Tools.Gate do
     choice = judged[:choice]
     {result, report} = take_report(result)
     action = settle(task, tool, args, assessment, decision, result, report)
-    result = result |> note(action) |> Redact.result()
+    result = result |> note(action) |> Redact.result() |> warn_dead_ends(task, tool)
 
     {result, examples} =
       advise(task, tool, %{
@@ -550,6 +552,24 @@ defmodule TinyAxe.Tools.Gate do
     record
   end
 
+  # The first time a task reaches a site, its known dead ends (DeadEnds).
+  defp warn_dead_ends(%{"content" => content} = result, task, tool) when is_list(content) do
+    with true <- tool != nil and browser?(tool),
+         [_, url] <- Regex.run(~r/^Page: (\S+)/m, summary_text(content)),
+         %URI{host: host} when is_binary(host) <- URI.parse(url),
+         true <- GenServer.call(__MODULE__, {:warned, task.id, host}),
+         text when is_binary(text) <- DeadEnds.warning(host) do
+      %{result | "content" => content ++ [%{"type" => "text", "text" => text}]}
+    else
+      _ -> result
+    end
+  end
+
+  defp warn_dead_ends(result, _task, _tool), do: result
+
+  defp summary_text(content),
+    do: content |> Enum.filter(&(&1["type"] == "text")) |> Enum.map_join("\n", & &1["text"])
+
   defp note(result, nil), do: result
 
   defp note(%{"content" => content} = result, action) when is_list(content) do
@@ -718,7 +738,17 @@ defmodule TinyAxe.Tools.Gate do
           |> Map.put(:choice, choice)
           |> Map.put(:hint, hint)
 
-        {assessment.class, assessment.reason, task}
+        # A known dead end that has already failed here too: another way.
+        dead_end = assessment.action_id && DeadEnds.key(assessment.effect.target, tool.tool)
+
+        if DeadEnds.blocked?(dead_end, GenServer.call(__MODULE__, {:actions, task.id})) do
+          {:refused,
+           "dead_end: this didn't work on this site in earlier tasks, and it didn't work again " <>
+             "in this one, so tiny-axe won't try it a third way the same: find another way " <>
+             "(another control, another page), or tell the user", task}
+        else
+          {assessment.class, assessment.reason, task}
+        end
 
       true ->
         {Policy.classify(tool.definition, tool.policy), nil, task}
@@ -2102,6 +2132,13 @@ defmodule TinyAxe.Tools.Gate do
   def handle_call({:action, id, record}, _from, tasks) do
     sync_hold(id, record)
 
+    # A path that didn't work, kept for this site (DeadEnds): once, when
+    # the record first comes to a failure (as it's made, or when verified).
+    before = tasks[id] && Enum.find(tasks[id].actions, &(&1.id == record.id))
+
+    if DeadEnds.failure?(record) and not (before != nil and DeadEnds.failure?(before)),
+      do: DeadEnds.add(record)
+
     {:reply, :ok,
      update_task(tasks, id, fn t ->
        all =
@@ -2161,6 +2198,19 @@ defmodule TinyAxe.Tools.Gate do
          permit = if permit, do: Map.put_new(permit, :seq, task.chrome_seen.seq), else: nil
          %{task | chrome_purchase: permit}
        end)}
+
+  # Whether this is the first time the task reaches this site.
+  def handle_call({:warned, id, host}, _from, tasks) do
+    case tasks[id] do
+      %{warned: warned} ->
+        if MapSet.member?(warned, host),
+          do: {:reply, false, tasks},
+          else: {:reply, true, update_task(tasks, id, &%{&1 | warned: MapSet.put(warned, host)})}
+
+      _ ->
+        {:reply, false, tasks}
+    end
+  end
 
   def handle_call({:chrome_site, id, host}, _from, tasks),
     do:
