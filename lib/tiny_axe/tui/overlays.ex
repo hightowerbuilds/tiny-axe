@@ -84,7 +84,7 @@ defmodule TinyAxe.TUI.Overlays do
       [art, _gap, text] =
         Layout.split(inner, :horizontal, [{:length, Welcome.width()}, {:length, 3}, {:fill, 1}])
 
-      [art] = Layout.split(art, :vertical, [{:length, Welcome.height() - 1}], flex: :center)
+      [art] = Layout.split(art, :vertical, [{:length, Welcome.height()}], flex: :center)
 
       [
         {%{panel | content: %Paragraph{}, fixed_width: width, fixed_height: height}, area},

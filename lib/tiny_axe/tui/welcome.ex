@@ -23,7 +23,7 @@ defmodule TinyAxe.TUI.Welcome do
   @orange {245, 163, 78}
 
   @width Render.cols()
-  @height Render.rows() + 3
+  @height Render.rows() + 2
   @frame_ms 70
   @frame_count Render.frame_count()
 
@@ -100,15 +100,7 @@ defmodule TinyAxe.TUI.Welcome do
           height: @height
         }
 
-        lines =
-          logo(state) ++
-            [
-              Line.new([Span.new("What shall we build?", style: %Style{fg: :dark_gray})],
-                alignment: :center
-              )
-            ]
-
-        [{%Paragraph{text: lines}, rect}]
+        [{%Paragraph{text: logo(state)}, rect}]
       else
         []
       end
