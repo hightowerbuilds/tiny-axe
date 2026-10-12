@@ -1,7 +1,15 @@
 defmodule TinyAxe.TUI.Welcome do
   @moduledoc """
-  A small ASCII axe that turns in the unused part of a new chat.
-  Its timer stops during conversations and other workflows, independently of the cursor.
+  A double-bit axe, modelled in 3D and turning in the unused part of a new
+  chat. Each frame is ray-cast at compile time: for every cell a ray goes in
+  along the view axis until it meets the axe (a signed-distance field for the
+  handle and the head), the surface's normal is taken there, and the cell
+  gets a character and a colour from how much light it catches. So the
+  handle is round, the head is thin at the edges and thick at the eye, and
+  the near side is bright while the far side falls into shadow.
+
+  Its timer stops during conversations and other workflows, independently of
+  the cursor.
   """
 
   alias ExRatatui.Layout.Rect
@@ -9,65 +17,25 @@ defmodule TinyAxe.TUI.Welcome do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.Paragraph
   alias TinyAxe.TUI.Transcript
+  alias TinyAxe.TUI.Welcome.Render
 
-  @green {:rgb, 126, 211, 115}
-  @orange {:rgb, 245, 163, 78}
-  @width 21
-  @height 12
-  @frame_ms 120
-  @frame_count 16
+  @green {126, 211, 115}
+  @orange {245, 163, 78}
 
-  # Rasterize the blade and handle once, at compile time. Terminal cells are
-  # about twice as tall as they are wide, so rotate in physical coordinates.
-  @frames (for frame <- 0..(@frame_count - 1) do
-             angle = frame * 2 * :math.pi() / @frame_count
-             cos = :math.cos(angle)
-             sin = :math.sin(angle)
+  @width Render.cols()
+  @height Render.rows() + 3
+  @frame_ms 70
+  @frame_count Render.frame_count()
 
-             for y <- -4..4 do
-               cells =
-                 for col <- -10..10 do
-                   x = col / 2
-                   u = x * cos + y * sin
-                   v = -x * sin + y * cos
+  @doc "How big the picture is, in cells, with the name under it."
+  def width, do: @width
+  def height, do: @height
 
-                   cond do
-                     u >= -0.5 and u <= 2.65 and
-                       v >= -2.65 - max(u - 0.3, 0) * 0.4 and
-                         v <= -1.5 + max(u - 0.3, 0) * 0.3 ->
-                       {"x", @green}
-
-                     abs(u) <= 0.48 and v >= -2.6 and v <= 3.2 ->
-                       char =
-                         cond do
-                           abs(cos) > 0.85 -> "|"
-                           abs(sin) > 0.85 -> "="
-                           sin * cos > 0 -> "/"
-                           true -> "\\"
-                         end
-
-                       {char, @orange}
-
-                     true ->
-                       {" ", nil}
-                   end
-                 end
-
-               cells
-               |> Enum.chunk_by(&elem(&1, 1))
-               |> Enum.map(fn [{_, color} | _] = run ->
-                 Span.new(Enum.map_join(run, &elem(&1, 0)),
-                   style: %Style{fg: color, modifiers: [:bold]}
-                 )
-               end)
-               |> Line.new()
-             end
-           end)
-          |> List.to_tuple()
+  @frames 0..(@frame_count - 1) |> Enum.map(&Render.frame/1) |> List.to_tuple()
 
   def new(opts), do: %{frame: 0, timer: nil, animate?: opts[:test_mode] == nil}
 
-  def account?(%{account_flow: %{step: :welcome}, size: {w, h}}), do: w >= 80 and h >= 24
+  def account?(%{account_flow: %{step: :welcome}, size: {w, h}}), do: w >= 100 and h >= 26
   def account?(_state), do: false
 
   # Keep startup notices above the welcome, and give the conversation all
@@ -78,6 +46,7 @@ defmodule TinyAxe.TUI.Welcome do
       state.recovery == nil and state.pending_plan == nil and state.pending_commands == nil and
       state.pending_edits == [] and state.confirm_undo == nil and state.asking == nil and
       state.tool_ask == nil and state.purchase_ask == nil and
+      Map.get(state, :token_dash) == nil and
       Enum.all?(state.transcript, &match?({:meta, _}, &1))
   end
 
@@ -102,13 +71,16 @@ defmodule TinyAxe.TUI.Welcome do
   end
 
   def logo(state) do
+    {r, g, b} = @green
+    {r2, g2, b2} = @orange
+
     elem(@frames, state.welcome.frame) ++
       [
         Line.new([]),
         Line.new(
           [
-            Span.new("tiny", style: %Style{fg: @green, modifiers: [:bold]}),
-            Span.new("-axe", style: %Style{fg: @orange, modifiers: [:bold]})
+            Span.new("tiny", style: %Style{fg: {:rgb, r, g, b}, modifiers: [:bold]}),
+            Span.new("-axe", style: %Style{fg: {:rgb, r2, g2, b2}, modifiers: [:bold]})
           ],
           alignment: :center
         )
