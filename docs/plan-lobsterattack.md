@@ -1,7 +1,7 @@
 # Plan: LobsterAttack, tiny-axe's hosted home
 
 Status (2026-10-11): L1 and L2 built (lobsterattack branch `tiny-axe-home`,
-not pushed or deployed; the migration isn't in the Supabase project yet). Site work in
+not pushed or deployed; migration 0006 applied to the Supabase project 2026-10-11). Site work in
 `../lobsterattack` (repo hightowerbuilds/lobsterattack, deployed by Vercel);
 tiny-axe work on branch `lobsterattack` (worktree `../tiny-axe-lobster`).
 
