@@ -85,6 +85,33 @@ Later, in rough order: per-device keys with names, last-used and revoke
 audit log of every write; durable rate limit (Upstash/Supabase); key
 rotation from the TUI; email confirmation via Resend.
 
+## Accounts, made in tiny-axe (2026-10-11)
+
+The user's choices: the model helps the user make a username in tiny-axe
+itself, the first time it opens; **every tiny-axe user owns their own space**
+on the site (their graph and chats, seen by them and whoever they let in);
+the step is **required** (tiny-axe doesn't go on without an account). The
+account is the identity later things (card settings, ...) hang on.
+
+- `TinyAxe.TUI.AccountFlow`, a popup like `/credit-card`: make a new account
+  or sign in to one. For a new one, the user says what they'd like to be
+  called and the local model suggests usernames (`TinyAxe.Account.suggest/2`),
+  of which the site's free ones are offered; or they type their own (checked;
+  a taken one brings suggestions close to it). The password is typed twice.
+- The password is typed into `TinyAxe.Account` a keystroke at a time (as a
+  card goes into `TinyAxe.Cards`); the TUI holds only how many dots to show.
+  It's sent once to the site and forgotten. tiny-axe's key comes back and goes
+  into the keyring (`service tiny-axe key site`); the username and site go in
+  `<state_dir>/account.json`.
+- Site: `POST /api/signup` (makes the account, confirmed at once so Supabase
+  never mails the `.invalid` address, makes it the owner of its own space and
+  returns a key once; undone if any part fails), `POST /api/device` (a new key
+  for an existing account), `GET /api/username`. Usernames are kept in
+  `buster_ta_accounts` (migration 0007). Each is rate limited per address.
+- `config :tiny_axe, :site, url: "https://lobsterattack.yachts", required:
+  true`; `TINY_AXE_SITE_URL` points tiny-axe at a local API in development.
+  `/account` shows the account (or starts the flow if there's none).
+
 ## Data (Supabase, migration `0006_buster_ta.sql`)
 
 | Table | Holds | Key |

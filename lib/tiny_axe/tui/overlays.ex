@@ -11,6 +11,65 @@ defmodule TinyAxe.TUI.Overlays do
   import TinyAxe.TUI.Presentation
 
   # At most one popup at a time, most urgent first.
+  def render(%{account_flow: flow}, area) when flow != nil do
+    alias TinyAxe.TUI.AccountFlow
+    {question, kind} = AccountFlow.step(flow)
+    typing = %Style{fg: :yellow, modifiers: [:bold]}
+
+    input =
+      case kind do
+        :secret ->
+          [Line.new([Span.new("> " <> String.duplicate("•", flow.mask) <> "▌", style: typing)])]
+
+        :text ->
+          [Line.new([Span.new("> " <> flow.buffer <> "▌", style: typing)])]
+
+        :choice ->
+          Enum.map(AccountFlow.choices(flow), fn {k, label} -> styled("  #{k}  #{label}") end)
+      end
+
+    suggestions =
+      if flow.step == :pick and flow.suggestions != [] do
+        flow.suggestions
+        |> Enum.with_index(1)
+        |> Enum.map(fn {name, i} -> styled("  #{i}  #{name}", :green) end)
+        |> Kernel.++([styled("")])
+      else
+        []
+      end
+
+    hint =
+      case flow.step do
+        :welcome -> if flow.required, do: "1 or 2 · ctrl+c quits", else: "1 or 2 · esc not now"
+        :pick -> "a number, or type a username and enter · esc back"
+        _ -> "enter next · esc back"
+      end
+
+    lines =
+      [
+        styled(
+          "Your username and password are for tiny-axe's website, #{TinyAxe.Account.site_url()}. " <>
+            "The password goes only to the site: never to a model, the transcript or a log.",
+          :dark_gray
+        ),
+        styled(""),
+        flow.username && flow.step in [:password, :again, :signin_password] &&
+          styled("✓ Username: #{flow.username}", :green),
+        flow.note && styled(flow.note, :yellow),
+        styled(question, nil, [:bold])
+      ] ++
+        suggestions ++
+        input ++
+        [
+          flow.busy && styled("… " <> flow.busy, :dark_gray),
+          flow.error && styled("✗ " <> flow.error, :red),
+          styled(""),
+          styled(hint, :dark_gray)
+        ]
+
+    popup(" your tiny-axe account ", Enum.filter(lines, & &1), 0, area)
+  end
+
   def render(%{card_flow: flow}, area) when flow != nil do
     alias TinyAxe.TUI.CardFlow
     {name, kind, question} = CardFlow.step(flow)

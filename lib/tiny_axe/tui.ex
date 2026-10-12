@@ -130,6 +130,11 @@ defmodule TinyAxe.TUI do
        waiting: [],
        # /credit-card in progress (TinyAxe.TUI.CardFlow): nothing secret in it.
        card_flow: nil,
+       # Making or signing in to the account (TinyAxe.TUI.AccountFlow): on
+       # screen from the start while one is required and there's none. Its
+       # running job's ref, so a stale answer is dropped.
+       account_flow: first_account_flow(opts),
+       account_job: nil,
        # Whether this request is an agent run: its answer goes after its tool lines.
        agent_run: false,
        status: "ready",
@@ -235,8 +240,16 @@ defmodule TinyAxe.TUI do
 
   defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state) do
     if state.card_flow, do: TinyAxe.Cards.discard_entry()
+    if state.account_flow, do: TinyAxe.Account.discard_entry()
     {:stop, state |> Chats.cancel_all() |> Run.cancel()}
   end
+
+  # The account: every key goes to the flow (and the password to TinyAxe.Account).
+  defp on_event(%Event.Key{code: code}, %{account_flow: flow} = state) when flow != nil,
+    do: {:noreply, account_step(state, TinyAxe.TUI.AccountFlow.key(flow, code))}
+
+  defp on_event(%Event.Paste{content: content}, %{account_flow: flow} = state) when flow != nil,
+    do: {:noreply, %{state | account_flow: TinyAxe.TUI.AccountFlow.paste(flow, content)}}
 
   # /credit-card: every key goes to the flow (and its secrets to the vault).
   defp on_event(%Event.Key{code: code}, %{card_flow: flow} = state) when flow != nil do
@@ -507,9 +520,9 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /graph and /credit-card are handled here, like shell
-      # built-ins: no model involved.
-      prompt in ["pwd", "tools"] or prompt =~ ~r/\Acd(\s|\z)/ or
+      # cd, pwd, tools, /graph, /account and /credit-card are handled here,
+      # like shell built-ins: no model involved.
+      prompt in ["pwd", "tools", "/account"] or prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -562,6 +575,16 @@ defmodule TinyAxe.TUI do
       %{state | status: if(action == :open, do: "opening the graph…", else: "closing the graph…")}
     else
       add_meta(state, "/graph · /graph close")
+    end
+  end
+
+  defp builtin(state, "/account") do
+    case TinyAxe.Account.current() do
+      %{username: name, site: site} ->
+        add_meta(state, "Your account is #{name} on #{site}.")
+
+      nil ->
+        %{state | account_flow: TinyAxe.TUI.AccountFlow.new(), status: "setting up your account…"}
     end
   end
 
@@ -679,6 +702,14 @@ defmodule TinyAxe.TUI do
   end
 
   defp on_info({:pipeline, _stale_id, _event}, state), do: {:noreply, state, render?: false}
+
+  defp on_info({:account_flow, ref, answer}, %{account_job: ref, account_flow: flow} = state)
+       when flow != nil,
+       do:
+         {:noreply,
+          account_step(%{state | account_job: nil}, TinyAxe.TUI.AccountFlow.result(flow, answer))}
+
+  defp on_info({:account_flow, _stale, _answer}, state), do: {:noreply, state, render?: false}
 
   # The URL gets a line of its own, as code so Markdown leaves it as it is, for
   # the terminal to make clickable (the transcript can't hold OSC 8 links).
@@ -1148,5 +1179,53 @@ defmodule TinyAxe.TUI do
 
   defp crash_summary(reason) do
     reason |> Exception.format_exit() |> String.split("\n") |> hd() |> String.slice(0, 120)
+  end
+
+  ## The account (TinyAxe.TUI.AccountFlow)
+
+  defp first_account_flow(opts) do
+    cond do
+      Keyword.has_key?(opts, :account_flow) ->
+        opts[:account_flow]
+
+      opts[:test_mode] != nil ->
+        nil
+
+      TinyAxe.Account.required?() and TinyAxe.Account.current() == nil ->
+        TinyAxe.TUI.AccountFlow.new()
+
+      true ->
+        nil
+    end
+  end
+
+  defp account_step(state, {:cont, flow}), do: %{state | account_flow: flow}
+
+  # A job (the model's suggestions, the site) runs in a task; its answer comes
+  # back as {:account_flow, ref, answer}.
+  defp account_step(state, {:run, flow, job}) do
+    tui = self()
+    ref = make_ref()
+
+    Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+      answer =
+        try do
+          TinyAxe.TUI.AccountFlow.perform(job)
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
+
+      send(tui, {:account_flow, ref, answer})
+    end)
+
+    %{state | account_flow: flow, account_job: ref, status: flow.busy || "working…"}
+  end
+
+  defp account_step(state, {:done, message}),
+    do: %{state | account_flow: nil, account_job: nil, status: "ready"} |> add_meta(message)
+
+  defp account_step(state, {:cancel, message}) do
+    TinyAxe.Account.discard_entry()
+    %{state | account_flow: nil, account_job: nil, status: "ready"} |> add_meta(message)
   end
 end

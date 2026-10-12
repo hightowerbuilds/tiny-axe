@@ -37,3 +37,9 @@ config :tiny_axe, browser_choose: :off
 # No example retrieval unless a test turns it on (TinyAxe.Browser.Examples),
 # so other tests' journals and results are as before.
 config :tiny_axe, browser_examples: :off, browser_examples_persist: false
+
+# No account step in tests; tests reach the site through Req.Test (TinyAxe.Account).
+config :tiny_axe, :site,
+  url: "http://site.test",
+  required: false,
+  req_options: [plug: {Req.Test, TinyAxe.Account}]
