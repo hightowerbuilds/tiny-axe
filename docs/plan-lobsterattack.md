@@ -108,7 +108,7 @@ account is the identity later things (card settings, ...) hang on.
   returns a key once; undone if any part fails), `POST /api/device` (a new key
   for an existing account), `GET /api/username`. Usernames are kept in
   `buster_ta_accounts` (migration 0007). Each is rate limited per address.
-- `config :tiny_axe, :site, url: "https://lobsterattack.yachts", required:
+- `config :tiny_axe, :site, url: "https://www.lobsterattack.yachts", required:
   true`; `TINY_AXE_SITE_URL` points tiny-axe at a local API in development.
   `/account` shows the account (or starts the flow if there's none).
 

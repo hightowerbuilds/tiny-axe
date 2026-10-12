@@ -47,7 +47,7 @@ defmodule TinyAxe.Account do
   @doc "The site's address, without a trailing slash."
   @spec site_url() :: String.t()
   def site_url do
-    (System.get_env("TINY_AXE_SITE_URL") || settings()[:url] || "https://lobsterattack.yachts")
+    (System.get_env("TINY_AXE_SITE_URL") || settings()[:url] || "https://www.lobsterattack.yachts")
     |> String.trim_trailing("/")
   end
 

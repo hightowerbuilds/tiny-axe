@@ -168,6 +168,6 @@ config :tiny_axe, cursor_pulse: true
 # tiny-axe's website (TinyAxe.Account, docs/plan-lobsterattack.md): the user's
 # account is made there the first time tiny-axe opens, and tiny-axe won't go
 # on without one. TINY_AXE_SITE_URL points it elsewhere (a local dev API).
-config :tiny_axe, :site, url: "https://lobsterattack.yachts", required: true
+config :tiny_axe, :site, url: "https://www.lobsterattack.yachts", required: true
 
 import_config "#{config_env()}.exs"
