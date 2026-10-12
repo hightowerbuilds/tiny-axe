@@ -10,7 +10,7 @@ defmodule TinyAxe.TUI.ChatHistory do
       transcript and context; or shows it, if it's open already
 
   A reopened chat goes on in the same history. Every chat is on the website
-  too (your page of tiny-axe's website, under Chats; `/graph chats`).
+  too (your page of tiny-axe's website, under Chats; `/site`).
   """
 
   alias TinyAxe.History
@@ -57,7 +57,7 @@ defmodule TinyAxe.TUI.ChatHistory do
         state =
           add_meta(
             state,
-            "#{which}, newest first · /history N reopens one · every chat: /graph chats"
+            "#{which}, newest first · /history N reopens one · every chat: /site"
           )
 
         state =

@@ -1,21 +1,21 @@
 defmodule TinyAxe.Sync do
   @moduledoc """
-  Sends the know-how vault (`TinyAxe.Vault`), the chat history
-  (`TinyAxe.History`) and the chats' reviews (`TinyAxe.Review`) to the user's page of tiny-axe's website
-  (`TinyAxe.Graph`, `docs/plan-lobsterattack.md`), as they change.
+  Sends the chat history (`TinyAxe.History`) to the user's page of
+  tiny-axe's website (`TinyAxe.Site`, `docs/plan-lobsterattack.md`), as it
+  changes.
 
-  What has gone up is recorded in `<state_dir>/site-sync.json`: each note's
-  and chat's SHA-256 as last sent. A run sends whatever on disk differs from
+  What has gone up is recorded in `<state_dir>/site-sync.json`: each chat's
+  SHA-256 as last sent. A run sends whatever on disk differs from
   that, and records each batch once the site has it. So the difference *is*
   the outbox: a run cut short by a crash, a closed laptop or no network loses
   nothing, and the next sends it. Sending again is harmless (the site skips
   what it already has). A different account or site starts the record afresh.
 
-  Runs come from `soon/0` (the vault writer after it writes, the history
-  after it saves, an account just made), a couple of seconds later so a burst
+  Runs come from `soon/0` (the history after it saves, an account just
+  made), a couple of seconds later so a burst
   of writes goes as one; at start; and every few minutes after a failure.
-  What's sent is redacted already (the vault's escaping and the history's
-  `Tools.Redact.secrets/1`); a chat's `context` (what reopening it gives the
+  What's sent is redacted already (the history's `Tools.Redact.secrets/1`);
+  a chat's `context` (what reopening it gives the
   model) is never sent.
 
   `config :tiny_axe, :sync, enabled:` (by default only when the TUI runs, so
@@ -26,12 +26,10 @@ defmodule TinyAxe.Sync do
 
   require Logger
 
-  alias TinyAxe.{Account, Graph, History, Review, Vault}
+  alias TinyAxe.{Account, History, Site}
 
   @delay 2_000
   @retry 5 * 60_000
-  @batch 200
-  @folders ~w(Sites Pages Controls Paths Tools Tasks Workflows)
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -50,28 +48,20 @@ defmodule TinyAxe.Sync do
 
   @doc """
   Sends what changed now, and waits. Options: `:call` (how a site tool is
-  called, for tests), `:vault` and `:history` (the folders).
+  called, for tests) and `:history` (the folder).
   """
-  @spec run(keyword()) ::
-          {:ok, %{notes: integer(), chats: integer(), reviews: integer()}} | {:error, String.t()}
+  @spec run(keyword()) :: {:ok, %{chats: integer()}} | {:error, String.t()}
   def run(opts \\ []) do
-    call = Keyword.get(opts, :call, &Graph.call/2)
-    vault = Keyword.get(opts, :vault, Vault.dir())
+    call = Keyword.get(opts, :call, &Site.call/2)
     history = Keyword.get(opts, :history, History.dir())
-    reviews = Keyword.get(opts, :reviews, Review.path())
 
     case Account.current() do
       nil ->
         {:error, "no account yet"}
 
       account ->
-        sent = read_sent(account)
-
-        with {:ok, sent, notes} <- push_notes(vault, sent, call),
-             {:ok, sent, chats} <- push_chats(history, sent, call),
-             {:ok, _sent, pushed} <- push_reviews(reviews, sent, call) do
-          {:ok, %{notes: notes, chats: chats, reviews: pushed}}
-        end
+        with {:ok, _sent, chats} <- push_chats(history, read_sent(account), call),
+             do: {:ok, %{chats: chats}}
     end
   end
 
@@ -96,13 +86,11 @@ defmodule TinyAxe.Sync do
     if s.timer, do: Process.cancel_timer(s.timer)
 
     case safely(&run/0) do
-      {:ok, %{notes: 0, chats: 0, reviews: 0}} ->
+      {:ok, %{chats: 0}} ->
         {:noreply, %{s | timer: nil}}
 
-      {:ok, counts} ->
-        Logger.info(
-          "tiny-axe site: sent #{counts.notes} notes, #{counts.chats} chats and #{counts.reviews} reviews"
-        )
+      {:ok, %{chats: chats}} ->
+        Logger.info("tiny-axe site: sent #{chats} chats")
 
         {:noreply, %{s | timer: nil}}
 
@@ -120,63 +108,6 @@ defmodule TinyAxe.Sync do
   catch
     kind, reason -> {:error, Exception.format(kind, reason)}
   end
-
-  ## Notes
-
-  defp push_notes(vault, sent, call) do
-    manifest =
-      with {:ok, raw} <- File.read(Path.join([vault, ".tiny-axe", "vault.json"])),
-           {:ok, %{} = manifest} <- JSON.decode(raw),
-           do: manifest,
-           else: (_ -> nil)
-
-    changed =
-      for folder <- @folders,
-          file <- ls(Path.join(vault, folder)),
-          String.ends_with?(file, ".md"),
-          rel = folder <> "/" <> file,
-          {:ok, text} <- [File.read(Path.join(vault, rel))],
-          hash = sha256(text),
-          sent["notes"][rel] != hash,
-          do:
-            {rel, hash,
-             %{"folder" => folder, "id" => String.trim_trailing(file, ".md"), "text" => text}}
-
-    cond do
-      changed == [] ->
-        {:ok, sent, 0}
-
-      manifest == nil ->
-        {:error, "the vault has notes but no manifest yet"}
-
-      true ->
-        changed
-        |> Enum.chunk_every(@batch)
-        |> Enum.reduce_while({:ok, sent, 0}, fn batch, {:ok, sent, count} ->
-          args = %{"manifest" => manifest, "notes" => Enum.map(batch, &elem(&1, 2))}
-
-          with {:ok, text} <- call.("vault_push", args),
-               {:ok, %{"refused" => refused}} <- JSON.decode(text) do
-            no = MapSet.new(refused, & &1["id"])
-
-            for r <- refused,
-                do: Logger.warning("tiny-axe site: note #{r["id"]} refused: #{r["reason"]}")
-
-            taken =
-              for {rel, hash, note} <- batch, note["id"] not in no, into: %{}, do: {rel, hash}
-
-            sent = update_in(sent, ["notes"], &Map.merge(&1, taken))
-            write_sent(sent)
-            {:cont, {:ok, sent, count + map_size(taken)}}
-          else
-            {:error, reason} -> {:halt, {:error, reason}}
-            _ -> {:halt, {:error, "the site's answer to vault_push didn't make sense"}}
-          end
-        end)
-    end
-  end
-
-  ## Chats
 
   defp push_chats(history, sent, call) do
     changed =
@@ -209,44 +140,15 @@ defmodule TinyAxe.Sync do
     end)
   end
 
-  ## Reviews
-
-  # The latest review of each chat, if it isn't the one the site has.
-  defp push_reviews(path, sent, call) do
-    changed =
-      for {id, review} <- Review.latest(path),
-          hash = sha256(JSON.encode!(review)),
-          sent["reviews"][id] != hash,
-          do: {id, hash, Map.delete(review, "hash")}
-
-    Enum.reduce_while(changed, {:ok, sent, 0}, fn {id, hash, review}, {:ok, sent, count} ->
-      case call.("review_push", %{"review" => review}) do
-        {:ok, _text} ->
-          sent = put_in(sent, ["reviews", id], hash)
-          write_sent(sent)
-          {:cont, {:ok, sent, count + 1}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-  end
-
   ## The record
 
   defp read_sent(account) do
-    fresh = %{
-      "site" => account.site,
-      "username" => account.username,
-      "notes" => %{},
-      "chats" => %{},
-      "reviews" => %{}
-    }
+    fresh = %{"site" => account.site, "username" => account.username, "chats" => %{}}
 
     with {:ok, raw} <- File.read(path()),
          {:ok, %{"site" => site, "username" => name} = sent} <- JSON.decode(raw),
          true <- site == account.site and name == account.username do
-      Map.merge(fresh, Map.take(sent, ["notes", "chats", "reviews"]))
+      Map.merge(fresh, Map.take(sent, ["chats"]))
     else
       _ -> fresh
     end

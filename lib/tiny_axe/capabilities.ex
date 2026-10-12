@@ -105,10 +105,10 @@ defmodule TinyAxe.Capabilities do
       %{username: name, site: site} ->
         "The user's tiny-axe account is #{name}, on tiny-axe's website #{site}: " <>
           "\"the site\", \"the website\", \"my page\" or \"lobsterattack\" mean this. tiny-axe " <>
-          "sends what it learns (the know-how graph) and every chat there, for the user (and " <>
-          "anyone they let in) to see after signing in. Their username (#{name}) isn't secret; " <>
+          "sends every chat there, searchable, for the user (and anyone they let in) to see " <>
+          "after signing in. Their username (#{name}) isn't secret; " <>
           "their password is, and only they ever type it. To show them the site, open it in their " <>
-          "own browser, already signed in (`/graph`, or site_open for an agent; no password is " <>
+          "own browser, already signed in (`/site`, or site_open for an agent; no password is " <>
           "needed), or give them the link. Never type into the site's sign-in form."
 
       nil ->
@@ -167,8 +167,8 @@ defmodule TinyAxe.Capabilities do
       "credentials" => "cloud, git and package-registry credentials",
       "browser profiles" => "browser profiles",
       "shell histories" => "shell histories",
-      "tiny-axe's own settings, state, purchases and vault" =>
-        "tiny-axe's own settings, state, purchases, card data and vault",
+      "tiny-axe's own settings, state and purchases" =>
+        "tiny-axe's own settings, state, purchases and card data",
       "session sockets" => "the desktop session's sockets (keyring, SSH and GPG agents, D-Bus)"
     }
 

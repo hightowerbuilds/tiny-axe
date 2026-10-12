@@ -548,11 +548,11 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /graph, /remote, /chrome, /account, /token and /credit-card are handled
+      # cd, pwd, tools, /site, /remote, /chrome, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account", "/token", "/review", "/review all"] or
+      prompt in ["pwd", "tools", "/account", "/token", "/site"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
-        prompt =~ ~r/\A\/(graph|remote|chrome)(\s|\z)/ or
+        prompt =~ ~r/\A\/(remote|chrome)(\s|\z)/ or
           String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -584,41 +584,18 @@ defmodule TinyAxe.TUI do
   defp builtin(state, "pwd"),
     do: add_meta(state, "📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())}")
 
-  # The know-how graph: the viewer (TinyAxe.Graph) gives a link, which is shown
-  # and copied, never opened. Starting it can take a moment, so it runs aside.
-  defp builtin(state, "/graph" <> rest) do
-    action =
-      case String.trim(rest) do
-        "" -> :open
-        "chats" -> :chats
-        "close" -> :close
-        _ -> nil
-      end
-
-    if action do
-      tui = self()
-      copy = state.clipboard
-
-      Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
-        send(tui, {:graph, graph(action, copy)})
-      end)
-
-      %{state | status: "asking the site…"}
-    else
-      add_meta(state, "/graph · /graph chats")
-    end
-  end
-
-  # Reads every chat for the site's session graph (TinyAxe.Review), aside.
-  defp builtin(state, "/review" <> rest) do
+  # The chats on the site (TinyAxe.Site): the link, shown and copied; and the
+  # page opened in the user's browser, signed in, when there's a desktop to
+  # open it on. Asking the site can take a moment, so it runs aside.
+  defp builtin(state, "/site") do
     tui = self()
-    opts = if String.trim(rest) == "all", do: [all: true], else: []
+    copy = state.clipboard
 
     Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
-      send(tui, {:review, TinyAxe.Review.run(opts)})
+      send(tui, {:site, site(copy)})
     end)
 
-    %{state | status: "reading the chats…"}
+    %{state | status: "asking the site…"}
   end
 
   defp builtin(state, "/account") do
@@ -762,17 +739,9 @@ defmodule TinyAxe.TUI do
     end
   end
 
-  # The site is always up; there's no page on this computer to close.
-  defp graph(:close, _copy), do: :closed
-
-  # The link, shown and copied; and the page opened in the user's browser,
-  # signed in, when there's a desktop to open it on.
-  defp graph(action, copy) do
-    opts = if action == :chats, do: [page: "chats"], else: []
-
-    with {:ok, url} <- TinyAxe.Graph.open(nil, opts) do
-      browser = TinyAxe.Graph.open_in_browser(nil, opts)
-      {:opened, url, copy.(url) == :ok, browser}
+  defp site(copy) do
+    with {:ok, url} <- TinyAxe.Site.open() do
+      {:opened, url, copy.(url) == :ok, TinyAxe.Site.open_in_browser()}
     end
   end
 
@@ -794,7 +763,7 @@ defmodule TinyAxe.TUI do
 
   # The URL gets a line of its own, as code so Markdown leaves it as it is, for
   # the terminal to make clickable (the transcript can't hold OSC 8 links).
-  defp on_info({:graph, {:opened, url, copied?, browser}}, state) do
+  defp on_info({:site, {:opened, url, copied?, browser}}, state) do
     copied = if copied?, do: "; the link is copied", else: ""
 
     shown =
@@ -802,10 +771,10 @@ defmodule TinyAxe.TUI do
         {:ok, _} ->
           who = with %{username: name} <- TinyAxe.Account.current(), do: " as #{name}"
 
-          "🧠 opened your page of tiny-axe's website in your browser, signed in#{who || ""}#{copied}:"
+          "💬 opened your chats on tiny-axe's website in your browser, signed in#{who || ""}#{copied}:"
 
         {:error, why} ->
-          "🧠 what tiny-axe knows, on your page of its website (sign in to see it; " <>
+          "💬 your chats, on your page of tiny-axe's website (sign in to see them; " <>
             "couldn't open your browser: #{why})#{copied}:"
       end
 
@@ -817,28 +786,8 @@ defmodule TinyAxe.TUI do
     {:noreply, %{state | status: "ready"}}
   end
 
-  defp on_info({:review, {:ok, c}}, state) do
-    shown =
-      "🔎 reviewed #{c.reviewed} chats for the session graph" <>
-        if(c.skipped > 0, do: " (#{c.skipped} unchanged)", else: "") <>
-        if(c.failed > 0, do: "; #{c.failed} couldn't be read", else: "")
-
-    {:noreply, %{add_meta(state, shown) | status: "ready"}}
-  end
-
-  defp on_info({:graph, :closed}, state),
-    do:
-      {:noreply,
-       %{
-         add_meta(
-           state,
-           "🧠 the graph lives on tiny-axe's website now; there's nothing here to close"
-         )
-         | status: "ready"
-       }}
-
-  defp on_info({:graph, {:error, message}}, state),
-    do: {:noreply, %{add_meta(state, "✗ graph: #{message}") | status: "ready"}}
+  defp on_info({:site, {:error, message}}, state),
+    do: {:noreply, %{add_meta(state, "✗ site: #{message}") | status: "ready"}}
 
   defp on_info({:token_dash, ref}, %{token_dash: dash} = state) when dash != nil,
     do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
@@ -1346,7 +1295,7 @@ defmodule TinyAxe.TUI do
 
   # A new account: connect to the site and send it everything so far.
   defp account_step(state, {:done, message}) do
-    Task.start(fn -> if TinyAxe.Graph.available?(), do: TinyAxe.Graph.start() end)
+    Task.start(fn -> if TinyAxe.Site.available?(), do: TinyAxe.Site.start() end)
     TinyAxe.Sync.soon()
     %{state | account_flow: nil, account_job: nil, status: "ready"} |> add_meta(message)
   end

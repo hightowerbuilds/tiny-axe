@@ -21,7 +21,7 @@ defmodule TinyAxe.Shell do
       mounted over SSH and GPG keys, password stores and keyrings, cloud and
       package-registry credentials, browser profiles, shell histories, the
       session's sockets (keyring, agents, D-Bus), and tiny-axe's own settings,
-      state, purchases, browser profile and vault; environment variables that
+      state, purchases and browser profile; environment variables that
       look like secrets are removed (`secret_env?/1`)
     * commands run in a user namespace, so they can list your processes but
       not look inside them (open files, environment): `lsof` and `ss -p` show
@@ -125,11 +125,10 @@ defmodule TinyAxe.Shell do
         TinyAxe.Ops.Journal.state_dir(),
         TinyAxe.Purchases.config_path(),
         TinyAxe.MCP.config_path(),
-        TinyAxe.Vault.dir(),
         browser
       ]
       |> Enum.filter(& &1)
-      |> Enum.map(&{Path.expand(&1), "tiny-axe's own settings, state, purchases and vault"})
+      |> Enum.map(&{Path.expand(&1), "tiny-axe's own settings, state and purchases"})
 
     under.(home, ~w(.ssh .gnupg .password-store .erlang.cookie .ollama/id_ed25519), "keys") ++
       [{Path.join(data, "keyrings"), "keys"}] ++

@@ -44,5 +44,5 @@ config :tiny_axe, :site,
   required: false,
   req_options: [plug: {Req.Test, TinyAxe.Account}]
 
-# Never open the real browser from a test (TinyAxe.Graph.open_in_browser/2).
-config :tiny_axe, :graph, opener: false
+# Never open the real browser from a test (TinyAxe.Site.open_in_browser/1).
+config :tiny_axe, :site, opener: false

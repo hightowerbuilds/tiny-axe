@@ -47,14 +47,11 @@ defmodule TinyAxe.Tools.Journal do
   @spec append(String.t(), map()) :: :ok
   def append(id, entry) do
     line = entry |> Map.put(:at, DateTime.utc_now() |> DateTime.to_iso8601()) |> JSON.encode!()
-    written = write(id, "calls.jsonl", line <> "\n")
-    # The know-how graph shows it while the task is still running.
-    TinyAxe.Vault.task_progress(id)
-    written
+    write(id, "calls.jsonl", line <> "\n")
   end
 
   @doc """
-  Adds to the task's `task.json` (`docs/vault-format.md`): what the agent
+  Adds to the task's `task.json`: what the agent
   knows about the task (`driver`, the already redacted `objective`, and for
   a sub-agent its `parent` task and `part`). Never raises, like the rest.
   """

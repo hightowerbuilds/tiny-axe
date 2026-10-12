@@ -1,5 +1,13 @@
 # Plan: LobsterAttack, tiny-axe's hosted home
 
+**2026-10-12: the know-how graph is gone.** Per the 2026-10-12 review
+(section 07), a graph of activity isn't evidence of learning, and it did
+nothing to make tiny-axe's actions more deterministic. The vault, the chat
+reviews and the graph pages were deleted. The site is now the searchable chat
+history and the remote chat; the MCP server is `site` (`chat_search`,
+`chat_read`, `site_link`, plus the hidden `chat_push` and `signin_link`), and
+`/site` replaces `/graph`. What follows about the graph is history.
+
 Status (2026-10-11): L1 and L2 built (lobsterattack branch `tiny-axe-home`,
 not pushed or deployed; migration 0006 applied to the Supabase project 2026-10-11). Site work in
 `../lobsterattack` (repo hightowerbuilds/lobsterattack, deployed by Vercel);

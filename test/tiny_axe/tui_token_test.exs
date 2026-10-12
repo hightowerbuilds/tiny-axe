@@ -205,8 +205,8 @@ defmodule TinyAxe.TUITokenTest do
     state = mounted() |> type("/token")
 
     ask = %{
-      tool: "graph_add_note",
-      server: "graph",
+      tool: "create_issue",
+      server: "github",
       class: :outward,
       args: %{},
       description: nil,
