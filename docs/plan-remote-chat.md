@@ -1,6 +1,6 @@
 # Plan: chat with tiny-axe from lobsterattack.yachts
 
-Status (2026-10-12): R1 done: migration 0009 applied, ta-remote-* deployed from lobsterattack branch `remote-chat` (de60511), scripts/remote-check.ts passes 23/23 against the real project. R2 next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
+Status (2026-10-12): R1 done (migration 0009 applied, ta-remote-* deployed, scripts/remote-check.ts 23/23). R2 done: `TinyAxe.Remote` (own Phoenix-channels client on `mint_web_socket`), 15 tests on a fake Realtime, live-checked against the real project. R3 next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
 
 ## What the user asked for
 
@@ -74,9 +74,14 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
 
 ## tiny-axe side
 
-- **`TinyAxe.Remote`**, supervised next to `TinyAxe.Sync`: a Phoenix-channels
-  client over `mint_web_socket` (or `slipstream`, which wraps it and handles
-  heartbeats and rejoin; to be decided in R2). It gets a token, joins the
+- **`TinyAxe.Remote`**, supervised next to `TinyAxe.Sync`: a small
+  Phoenix-channels client (vsn 1.0.0) over `mint_web_socket`
+  (`TinyAxe.Remote.Socket`), with the edge functions in `TinyAxe.Remote.Api`.
+  Decided in R2: our own client rather than `slipstream`, so the session
+  renewal (`access_token` pushes), presence and catch-up stay in one place.
+  It also asks `ta-remote-pending` every minute while online: on the first
+  live run one message sent right after the join never came down the channel
+  (Realtime's database broadcasts warming up); kept rows make that safe. It gets a token, joins the
   channel, tracks presence, sends a heartbeat every 25 s, reconnects with
   backoff, and renews the token.
 - **Where a remote message runs:** in a chat of its own in the running TUI,
@@ -116,6 +121,4 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
 
 ## Open questions
 
-- HS256 JWT minting vs a machine Auth user (R1 decides).
-- `slipstream` vs plain `mint_web_socket` (R2).
 - Headless mode, so remote chat works without the TUI open (after R4).

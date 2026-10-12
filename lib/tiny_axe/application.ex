@@ -39,6 +39,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Vault,
         # Sends the vault and the chats to the user's page of the site.
         TinyAxe.Sync,
+        # Remote chat: a websocket out to Supabase Realtime, for the site's /remote page.
+        TinyAxe.Remote,
         # The tool gate, and its MCP endpoint on 127.0.0.1 (a port the OS picks).
         TinyAxe.Tools.Gate,
         {Bandit,

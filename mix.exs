@@ -36,6 +36,8 @@ defmodule TinyAxe.MixProject do
     [
       {:ex_ratatui, "~> 0.16"},
       {:req, "~> 0.5"},
+      # Supabase Realtime (TinyAxe.Remote): a websocket tiny-axe dials out on.
+      {:mint_web_socket, "~> 1.0"},
       {:floki, "~> 0.38"},
       # Timings and call counts for `mix tiny_axe.eval` (already a dependency of Req).
       {:telemetry, "~> 1.0"},
