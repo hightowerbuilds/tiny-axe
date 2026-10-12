@@ -28,6 +28,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Escalation,
         # The card vault (/credit-card): card details live only here and in the keyring.
         TinyAxe.Cards,
+        # Token use by Haiku, Jev and the local model, for /token.
+        TinyAxe.Usage,
         # The site account: its password, while it's being typed, lives only here.
         TinyAxe.Account,
         # The user's MCP servers, one supervised connection each (TinyAxe.MCP).

@@ -278,7 +278,8 @@ defmodule TinyAxe.AccountTest do
       text = TinyAxe.Capabilities.account()
       assert text =~ "account is axeman, on tiny-axe's website http://site.test"
       assert text =~ "\"the site\""
-      assert text =~ "Never sign in for them"
+      assert text =~ "Never type into the site's sign-in form"
+      assert text =~ "site_open"
       refute text =~ "correct horse"
 
       prompt = TinyAxe.Agent.system_prompt([], "")

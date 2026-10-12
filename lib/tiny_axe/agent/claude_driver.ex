@@ -42,7 +42,18 @@ defmodule TinyAxe.Agent.ClaudeDriver do
           env: [{"MCP_TOOL_TIMEOUT", "900000"}]
         )
 
-      telemetry(System.monotonic_time(:millisecond) - t0, result)
+      ms = System.monotonic_time(:millisecond) - t0
+      telemetry(ms, result)
+
+      # Its tokens, for /token: a sub-agent's run is told apart from the agent's.
+      with {:exited, status, acc, _noise} <- result,
+           do:
+             ClaudeCLI.count(
+               acc,
+               if(request[:subagent], do: :subagent, else: :agent),
+               status == 0,
+               ms
+             )
 
       case result do
         {:stopped, %{error: error}} ->

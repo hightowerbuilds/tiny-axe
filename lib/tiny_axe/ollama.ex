@@ -15,12 +15,35 @@ defmodule TinyAxe.Ollama do
   @spec chat([message()], keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts \\ []) do
     body = build_body(messages, false, opts)
+    t0 = System.monotonic_time(:millisecond)
 
     case Req.post(req(), url: "/api/chat", json: body) do
-      {:ok, %Req.Response{status: 200, body: body}} -> {:ok, body}
-      {:ok, %Req.Response{status: status, body: body}} -> {:error, {:http, status, body}}
-      {:error, reason} -> {:error, reason}
+      {:ok, %Req.Response{status: 200, body: reply}} ->
+        count(reply, body.model, true, t0)
+        {:ok, reply}
+
+      {:ok, %Req.Response{status: status, body: reply}} ->
+        count(%{}, body.model, false, t0)
+        {:error, {:http, status, reply}}
+
+      {:error, reason} ->
+        count(%{}, body.model, false, t0)
+        {:error, reason}
     end
+  end
+
+  # Every call's tokens, for /token (TinyAxe.Usage).
+  defp count(reply, model, ok, t0) do
+    reply = if is_map(reply), do: reply, else: %{}
+
+    TinyAxe.Usage.emit(
+      :ollama,
+      :local,
+      reply["model"] || model,
+      %{input: reply["prompt_eval_count"], output: reply["eval_count"]},
+      ok,
+      System.monotonic_time(:millisecond) - t0
+    )
   end
 
   @doc """
@@ -35,6 +58,7 @@ defmodule TinyAxe.Ollama do
           {:ok, String.t()} | {:error, term()}
   def stream_chat(messages, on_delta, opts \\ []) do
     body = build_body(messages, true, opts)
+    t0 = System.monotonic_time(:millisecond)
 
     into = fn {:data, data}, {req, resp} ->
       buffer = Req.Response.get_private(resp, :ndjson_buffer, "") <> data
@@ -49,6 +73,7 @@ defmodule TinyAxe.Ollama do
             # The last chunk carries token counts, for the context meter.
             {:ok, %{"done" => true} = final} ->
               report_usage(final, messages, opts)
+              count(final, body.model, true, t0)
               acc
 
             {:ok, %{"message" => %{"content" => delta}}} when delta != "" ->
@@ -74,13 +99,17 @@ defmodule TinyAxe.Ollama do
           {:ok, resp |> Req.Response.get_private(:text, []) |> IO.iodata_to_binary()}
 
         {:ok, %Req.Response{status: status}} ->
+          count(%{}, body.model, false, t0)
           {:error, {:http, status}}
 
         {:error, reason} ->
+          count(%{}, body.model, false, t0)
           {:error, reason}
       end
     catch
-      {:ollama_error, error} -> {:error, {:ollama, error}}
+      {:ollama_error, error} ->
+        count(%{}, body.model, false, t0)
+        {:error, {:ollama, error}}
     end
   end
 
@@ -129,7 +158,11 @@ defmodule TinyAxe.Ollama do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp req do
-    Req.new(base_url: config(:ollama_url), receive_timeout: :timer.minutes(5), retry: false)
+    # :ollama_req_options lets tests stand in for Ollama (Req.Test).
+    Req.new(
+      [base_url: config(:ollama_url), receive_timeout: :timer.minutes(5), retry: false] ++
+        config(:ollama_req_options, [])
+    )
   end
 
   defp config(key, default \\ nil), do: Application.get_env(:tiny_axe, key, default)

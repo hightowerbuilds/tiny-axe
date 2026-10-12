@@ -107,9 +107,9 @@ defmodule TinyAxe.Capabilities do
           "\"the site\", \"the website\", \"my page\" or \"lobsterattack\" mean this. tiny-axe " <>
           "sends what it learns (the know-how graph) and every chat there, for the user (and " <>
           "anyone they let in) to see after signing in. Their username (#{name}) isn't secret; " <>
-          "their password is, and only they ever type it. To show them the site, give them the " <>
-          "link (`/graph`, or graph__graph_link for an agent): they open it in their own browser " <>
-          "and sign in themselves. Never sign in for them or fill in its sign-in form."
+          "their password is, and only they ever type it. To show them the site, open it in their " <>
+          "own browser, already signed in (`/graph`, or site_open for an agent; no password is " <>
+          "needed), or give them the link. Never type into the site's sign-in form."
 
       nil ->
         ""

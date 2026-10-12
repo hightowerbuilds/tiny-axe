@@ -414,7 +414,30 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" carry out this plan? ", header ++ body, state.plan_scroll, area)
   end
 
-  def render(state, area), do: edit_popup(state, area)
+  # Below everything that asks the user something.
+  def render(%{pending_edits: [_ | _]} = state, area), do: edit_popup(state, area)
+
+  # Its columns line up only unwrapped, so it's sized to fit its lines.
+  def render(%{token_dash: dash}, area) when dash != nil do
+    lines = TinyAxe.TUI.TokenDash.lines(dash)
+
+    [
+      {%Popup{
+         content: %Paragraph{text: lines, wrap: false},
+         block: %Block{
+           title: " token use ",
+           borders: [:all],
+           border_type: :rounded,
+           border_style: %Style{fg: :cyan},
+           padding: {1, 1, 0, 0}
+         },
+         fixed_width: min(TinyAxe.TUI.TokenDash.width() + 4, area.width),
+         fixed_height: min(length(lines) + 2, area.height)
+       }, area}
+    ]
+  end
+
+  def render(_state, _area), do: []
 
   defp plan_step_lines(op) do
     review_threshold = TinyAxe.Decider.review_threshold()
@@ -487,8 +510,6 @@ defmodule TinyAxe.TUI.Overlays do
        }, area}
     ]
   end
-
-  defp edit_popup(%{pending_edits: []}, _area), do: []
 
   defp edit_popup(%{pending_edits: [edit | rest]} = state, area) do
     {lines, added, removed} = edit.diff

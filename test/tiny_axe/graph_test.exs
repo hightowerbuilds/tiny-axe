@@ -17,6 +17,7 @@ defmodule TinyAxe.GraphTest do
   setup do
     site = FakeSite.start()
     previous = Application.get_env(:tiny_axe, :site)
+    graph = Application.get_env(:tiny_axe, :graph)
     Application.put_env(:tiny_axe, :site, Keyword.put(previous, :url, site.url))
     MCP.stop_server("graph")
     sign_in(site)
@@ -24,6 +25,7 @@ defmodule TinyAxe.GraphTest do
     on_exit(fn ->
       MCP.stop_server("graph")
       Application.put_env(:tiny_axe, :site, previous)
+      Application.put_env(:tiny_axe, :graph, graph)
       File.rm(Account.path())
       File.rm(Path.join(@keyring, "site"))
     end)
@@ -55,7 +57,7 @@ defmodule TinyAxe.GraphTest do
 
       assert Policy.classify(%{"name" => "graph_add_note"}, config["policy"]) == :outward
 
-      assert config["policy"]["hidden"] == ["vault_push", "chat_push"]
+      assert config["policy"]["hidden"] == ["vault_push", "chat_push", "signin_link"]
     end
 
     test "no account, no connection" do
@@ -140,6 +142,65 @@ defmodule TinyAxe.GraphTest do
       end
     end
 
+    test "open_in_browser: the browser gets the one-time sign-in link; tiny-axe keeps the plain one",
+         %{site: site} do
+      me = self()
+      Application.put_env(:tiny_axe, :graph, opener: &(send(me, {:opened, &1}) && :ok))
+
+      assert Graph.open_in_browser() == {:ok, site.url <> "/"}
+      assert_received {:opened, link}
+      assert link == site.url <> "/#signin=one-time-token"
+
+      assert Graph.open_in_browser("shop.example") == {:ok, site.url <> "/note/shop.example"}
+      assert Graph.open_in_browser(nil, page: "chats") == {:ok, site.url <> "/chats"}
+    end
+
+    test "open_in_browser: switched off (as in tests), or no desktop, says so" do
+      assert Graph.open_in_browser() == {:error, "opening the browser is switched off"}
+      refute_received {:site_call, "signin_link", _}
+    end
+
+    test "open_in_browser: a sign-in link for another site is never opened" do
+      odd = FakeSite.start(link: "https://elsewhere.example")
+      Application.put_env(:tiny_axe, :site, url: odd.url)
+      sign_in(odd)
+      Application.put_env(:tiny_axe, :graph, opener: fn _ -> flunk("opened another site") end)
+      assert {:error, "the site didn't give a link to itself"} = Graph.open_in_browser()
+    end
+
+    test "site_open: agents get it, it runs without asking, and opens the browser signed in" do
+      me = self()
+      Application.put_env(:tiny_axe, :graph, opener: &(send(me, {:opened, &1}) && :ok))
+      {:ok, _} = Graph.start()
+      {:ok, task} = TinyAxe.Tools.Gate.open_task(&send(me, {:gate, &1}), servers: ["graph"])
+      on_exit(fn -> TinyAxe.Tools.Gate.close_task(task.id) end)
+
+      rpc = fn method, params ->
+        Req.post!(task.url,
+          json: %{jsonrpc: "2.0", id: 1, method: method, params: params},
+          headers: %{"authorization" => "Bearer #{task.token}"},
+          retry: false
+        ).body["result"]
+      end
+
+      names = rpc.("tools/list", %{})["tools"] |> Enum.map(& &1["name"])
+      assert "site_open" in names
+      refute "graph__signin_link" in names
+
+      result = rpc.("tools/call", %{name: "site_open", arguments: %{page: "chats"}})
+      refute result["isError"]
+      [%{"text" => said}] = result["content"]
+      assert said =~ "Opened"
+      # The model never sees the sign-in token.
+      refute said =~ "signin"
+      assert_received {:opened, link}
+      assert link =~ "/chats#signin="
+      refute_received {:gate, {:tool_approval, _}}
+
+      # And it can't get a sign-in link itself.
+      assert rpc.("tools/call", %{name: "graph__signin_link", arguments: %{}})["isError"]
+    end
+
     test "a link anywhere but the site is refused" do
       odd = FakeSite.start(link: "https://elsewhere.example")
       Application.put_env(:tiny_axe, :site, url: odd.url)
@@ -179,6 +240,24 @@ defmodule TinyAxe.GraphTest do
 
     defp metas(state), do: for({:meta, m} <- state.transcript, do: m)
 
+    test "opens the page in the browser, signed in, and shows the plain link", %{site: site} do
+      me = self()
+      Application.put_env(:tiny_axe, :graph, opener: &(send(me, {:opened, &1}) && :ok))
+
+      {:ok, state} =
+        TUI.mount(test_mode: {110, 30}, clipboard: fn url -> send(me, {:copied, url}) && :ok end)
+
+      state = state |> type("/graph") |> settle()
+      assert_received {:opened, link}
+      assert link =~ "#signin="
+      url = site.url <> "/"
+      assert_received {:copied, ^url}
+      assert [shown, shown_link] = Enum.take(metas(state), -2)
+      assert shown =~ "opened your page of tiny-axe's website in your browser, signed in as sam"
+      assert shown_link == "`#{url}`"
+      refute Enum.any?(metas(state), &(&1 =~ "signin"))
+    end
+
     test "shows the site's link on its own line and copies it, without a model", %{site: site} do
       me = self()
       copy = fn url -> send(me, {:copied, url}) && :ok end
@@ -191,7 +270,8 @@ defmodule TinyAxe.GraphTest do
       url = site.url <> "/"
       assert_received {:copied, ^url}
       assert [shown, link] = Enum.take(metas(state), -2)
-      assert shown =~ "on your page of its website (sign in to see it); the link is copied"
+      assert shown =~ "on your page of its website (sign in to see it; couldn't open your browser"
+      assert shown =~ "the link is copied"
       assert link == "`#{url}`"
       assert state.status == "ready"
     end

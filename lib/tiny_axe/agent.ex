@@ -126,7 +126,9 @@ defmodule TinyAxe.Agent do
 
     case Escalation.permit(choice, why, :allowed, notify) do
       {:ok, _mode} ->
-        case start(choice, request(task, part_prompt(part), [], servers), task, held(notify)) do
+        request = request(task, part_prompt(part), [], servers) |> Map.put(:subagent, true)
+
+        case start(choice, request, task, held(notify)) do
           {:ok, text} -> {:ok, Gate.complete(task.id, text)}
           other -> other
         end
@@ -320,8 +322,9 @@ defmodule TinyAxe.Agent do
         do:
           "\nWhat tiny-axe has learned is on the user's page of its website. To answer from it, " <>
             "use graph__graph_search and graph__graph_note (graph__graph_overview for the numbers). " <>
-            "When the user wants to see it, or the graph, call graph__graph_link and give them the " <>
-            "link; for their chat history, call it with page \"chats\". They sign in to see it. " <>
+            "When the user wants to see it, go to the site, or see the graph, call site_open: it " <>
+            "opens their page in their own browser, already signed in (page \"chats\" for their " <>
+            "chat history). If it can't, give them graph__graph_link's link. " <>
             "When they ask you to remember or write down something worth keeping, save it with " <>
             "graph__graph_add_note (they're asked first). " <>
             "You can't open a browser for them, so never say you did.\n",

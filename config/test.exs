@@ -43,3 +43,6 @@ config :tiny_axe, :site,
   url: "http://site.test",
   required: false,
   req_options: [plug: {Req.Test, TinyAxe.Account}]
+
+# Never open the real browser from a test (TinyAxe.Graph.open_in_browser/2).
+config :tiny_axe, :graph, opener: false
