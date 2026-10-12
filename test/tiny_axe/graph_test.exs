@@ -71,7 +71,7 @@ defmodule TinyAxe.GraphTest do
       site: site
     } do
       refute Graph.running?()
-      assert Graph.open() == {:ok, site.url <> "/"}
+      assert Graph.open() == {:ok, site.url <> "/graph"}
       assert Graph.running?()
       assert_received {:site_call, "graph_link", %{}}
 
@@ -147,7 +147,7 @@ defmodule TinyAxe.GraphTest do
       me = self()
       Application.put_env(:tiny_axe, :graph, opener: &(send(me, {:opened, &1}) && :ok))
 
-      assert Graph.open_in_browser() == {:ok, site.url <> "/"}
+      assert Graph.open_in_browser() == {:ok, site.url <> "/graph"}
       assert_received {:opened, link}
       assert link == site.url <> "/#signin=one-time-token"
 
@@ -250,7 +250,7 @@ defmodule TinyAxe.GraphTest do
       state = state |> type("/graph") |> settle()
       assert_received {:opened, link}
       assert link =~ "#signin="
-      url = site.url <> "/"
+      url = site.url <> "/graph"
       assert_received {:copied, ^url}
       assert [shown, shown_link] = Enum.take(metas(state), -2)
       assert shown =~ "opened your page of tiny-axe's website in your browser, signed in as sam"
@@ -267,7 +267,7 @@ defmodule TinyAxe.GraphTest do
       assert state.run == nil
       state = settle(state)
 
-      url = site.url <> "/"
+      url = site.url <> "/graph"
       assert_received {:copied, ^url}
       assert [shown, link] = Enum.take(metas(state), -2)
       assert shown =~ "on your page of its website (sign in to see it; couldn't open your browser"

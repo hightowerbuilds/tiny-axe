@@ -87,7 +87,7 @@ defmodule TinyAxe.FakeSite do
           cond do
             args["page"] == "chats" -> "/chats"
             args["focus"] -> "/note/" <> URI.encode(args["focus"], &URI.char_unreserved?/1)
-            true -> "/"
+            true -> "/graph"
           end
 
         text(base <> path <> "#signin=one-time-token")
@@ -101,7 +101,7 @@ defmodule TinyAxe.FakeSite do
             text(base <> "/note/" <> URI.encode(args["focus"], &URI.char_unreserved?/1))
 
           true ->
-            text(base <> "/")
+            text(base <> "/graph")
         end
 
       _ ->
