@@ -131,9 +131,13 @@ defmodule TinyAxe.TUIChatsTest do
     assert screen =~ "chat 1 of 2"
     assert state.run != nil
 
-    # The sidebar lists them, the one on screen marked.
-    assert screen =~ "▸ 1 alpha question · working"
-    assert screen =~ "  2 beta question · idle"
+    # The persistent tab strip lists both chats and marks the working one.
+    assert screen =~ "1 ● alpha question"
+    assert screen =~ "2 beta question"
+
+    assert %{active?: true} =
+             TinyAxe.TUI.TabBar.layout(state, elem(@size, 0))
+             |> Enum.find(&(&1.action == {:chat, state.chats.active}))
 
     # ctrl+o goes round to the next one.
     state = key(state, "o", ["ctrl"])

@@ -10,7 +10,19 @@ defmodule TinyAxe.TUI.View do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea, Throbber}
   alias TinyAxe.Context
-  alias TinyAxe.TUI.{Chats, Overlays, Pulse, Transcript, Welcome}
+
+  alias TinyAxe.TUI.{
+    Chats,
+    FeaturePanels,
+    MainTabs,
+    Overlays,
+    Pulse,
+    SearchWorkspace,
+    TabBar,
+    Transcript,
+    Welcome
+  }
+
   import TinyAxe.TUI.Presentation, only: [styled: 1, styled: 2, review_label: 1]
   import TinyAxe.TUI.Conversation, only: [context_tokens: 1]
 
@@ -21,18 +33,43 @@ defmodule TinyAxe.TUI.View do
 
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
-    [transcript_area, status_area, input_area] = split(area)
+
+    [main_area, body_area] =
+      Layout.split(area, :vertical, [{:length, MainTabs.height()}, {:fill, 1}])
+
+    content =
+      case Map.get(state, :section, :chat) do
+        :chat ->
+          [tabs_area, conversation_area] =
+            Layout.split(body_area, :vertical, [{:length, TabBar.height()}, {:fill, 1}])
+
+          TabBar.widgets(state, tabs_area) ++ conversation_widgets(state, conversation_area)
+
+        :search ->
+          SearchWorkspace.widgets(state, body_area)
+
+        _ ->
+          FeaturePanels.widgets(state, body_area)
+      end
+
+    MainTabs.widgets(state, main_area) ++ content ++ Overlays.render(state, body_area)
+  end
+
+  @doc "Conversation body shared by Chat and Gemma Search, without navigation or overlays."
+  def conversation_widgets(state, body_area) do
+    search? = Map.get(state, :section, :chat) == :search
+
+    [transcript_area, status_area, input_area] = split(body_area)
     {transcript_area, sidebar} = split_sidebar(state, transcript_area)
 
-    size = {frame.width, frame.height}
-    bottom = max_top(state, size)
+    bottom = transcript_bottom(state, transcript_area)
     top = scroll_top(state.scroll, bottom)
 
     transcript = %Markdown{
       content: Enum.join(Transcript.entries_markdown(state), "\n\n"),
       scroll: {top, 0},
       block: %Block{
-        title: title(state, bottom - top),
+        title: if(search?, do: SearchWorkspace.title(state), else: title(state, bottom - top)),
         borders: [:all],
         border_type: :rounded,
         border_style: %Style{fg: :dark_gray}
@@ -41,12 +78,16 @@ defmodule TinyAxe.TUI.View do
 
     input = %Textarea{
       state: state.input,
-      placeholder: "Ask for code or text…  (enter to send, alt+enter for newline)",
+      placeholder:
+        if(search?,
+          do: SearchWorkspace.placeholder(state),
+          else: "Ask for code or text…  (enter to send, alt+enter for newline)"
+        ),
       placeholder_style: %Style{fg: :dark_gray},
       cursor_style: Pulse.cursor_style(state),
       wrap_mode: :word,
       block: %Block{
-        title: " prompt ",
+        title: input_title(state),
         borders: [:all],
         border_type: :rounded,
         border_style: %Style{fg: if(state.run, do: :dark_gray, else: :cyan)}
@@ -55,8 +96,12 @@ defmodule TinyAxe.TUI.View do
 
     [{transcript, transcript_area}, {status_widget(state), status_area}, {input, input_area}] ++
       Welcome.widgets(state, transcript_area) ++
-      Pulse.widgets(state, input_area) ++ sidebar ++ Overlays.render(state, area)
+      Pulse.widgets(state, input_area) ++ sidebar
   end
+
+  defp input_title(%{section: :search, search_mode: :ask}), do: " ask Gemma "
+  defp input_title(%{section: :search}), do: " search "
+  defp input_title(_state), do: " prompt "
 
   ## Sidebar: the context meter and the compacted summary
 
@@ -71,40 +116,21 @@ defmodule TinyAxe.TUI.View do
 
   # Shown automatically on wide screens once there's something worth seeing.
   def sidebar?(state, width) do
-    case state.sidebar do
-      nil ->
+    case {Map.get(state, :section, :chat), state.sidebar} do
+      {:search, _} ->
+        false
+
+      {_, nil} ->
         width >= 110 and
-          (state.summary != nil or state.compacting != nil or Chats.count(state) > 1 or
+          (state.summary != nil or state.compacting != nil or
              Context.fraction(context_tokens(state)) >= 0.25)
 
-      shown ->
+      {_, shown} ->
         shown and width >= @sidebar_width + 30
     end
   end
 
-  # With several chats, a list of them goes above the meter.
-  defp sidebar_widgets(state, area) do
-    case Chats.count(state) do
-      1 ->
-        context_widgets(state, area)
-
-      n ->
-        [chats_area, rest] = Layout.split(area, :vertical, [{:length, n + 2}, {:fill, 1}])
-        [{chats_widget(state), chats_area} | context_widgets(state, rest)]
-    end
-  end
-
-  defp chats_widget(state) do
-    %Paragraph{
-      text: Enum.map(Chats.lines(state), &styled/1),
-      block: %Block{
-        title: " chats · ctrl+o next ",
-        borders: [:all],
-        border_type: :rounded,
-        border_style: %Style{fg: :dark_gray}
-      }
-    }
-  end
+  defp sidebar_widgets(state, area), do: context_widgets(state, area)
 
   defp context_widgets(state, area) do
     [meter_area, summary_area] = Layout.split(area, :vertical, [{:length, 6}, {:fill, 1}])
@@ -222,6 +248,21 @@ defmodule TinyAxe.TUI.View do
     "#{buying}#{scroll} tiny-axe · 📍 #{TinyAxe.Ops.show(TinyAxe.Location.current())} · #{model()} · decider: #{decider_name()} "
   end
 
+  defp status_widget(%{section: :search, run: nil} = state) do
+    %Paragraph{
+      text: " #{state.status} · local only · pgup/pgdn scroll · ctrl+y copy · enter search",
+      style: %Style{fg: :dark_gray}
+    }
+  end
+
+  defp status_widget(%{section: :search} = state) do
+    %Throbber{
+      label: " #{state.status} · local only · esc cancel",
+      step: state.tick,
+      throbber_style: %Style{fg: :cyan}
+    }
+  end
+
   defp status_widget(%{run: nil} = state) do
     %Paragraph{
       text:
@@ -251,8 +292,13 @@ defmodule TinyAxe.TUI.View do
 
   defp max_top(state, {w, h}) do
     width = if sidebar?(state, w), do: w - @sidebar_width, else: w
-    inner_h = max(h - 1 - @input_height - 2, 1)
+    inner_h = max(h - header_height(state) - 1 - @input_height - 2, 1)
     max(Transcript.height(state, max(width - 2, 1)) - inner_h, 0)
+  end
+
+  defp transcript_bottom(state, %Rect{} = area) do
+    inner_h = max(area.height - 2, 1)
+    max(Transcript.height(state, max(area.width - 2, 1)) - inner_h, 0)
   end
 
   # Scrolling to the end resumes following new output.
@@ -267,7 +313,14 @@ defmodule TinyAxe.TUI.View do
   def scroll_by(state, lines), do: scroll_to(state, view_top(state, state.size) + lines)
 
   @doc "The number of transcript rows to move for page up/down."
-  def page(%{size: {_w, h}}), do: max(h - @input_height - 4, 1)
+  def page(%{size: {_w, h}} = state), do: max(h - header_height(state) - @input_height - 4, 1)
+
+  defp header_height(%{section: :search}), do: MainTabs.height() + SearchWorkspace.height()
+
+  defp header_height(%{section: section}) when section in [:wallet, :tokens, :remote],
+    do: MainTabs.height()
+
+  defp header_height(_state), do: MainTabs.height() + TabBar.height()
 
   defp model, do: Application.get_env(:tiny_axe, :model)
 

@@ -8,7 +8,8 @@ defmodule TinyAxe.TUI.Chats do
 
   The chat on screen keeps its fields in the TUI state, as with a single
   chat; the others are parked in `state.chats` (see `blank/0` for which fields
-  belong to a chat). Everything else is shared: the prompt, the screen size,
+  belong to a chat), including its unsent prompt and cursor. Everything else
+  is shared: the screen size,
   the sidebar, questions to the user (`asking`, `tool_ask`, `purchase_ask`,
   `waiting`), `/credit-card`, remote mode, the recovery and undo popups.
 
@@ -29,6 +30,9 @@ defmodule TinyAxe.TUI.Chats do
   # scrolled to. And its id in the history (TinyAxe.History), given when
   # it starts.
   @blank %{
+    # Textarea resources stay in memory only; session/history saving below
+    # selects conversation fields explicitly and never serializes drafts.
+    input: nil,
     saved_as: nil,
     local_only: false,
     memory_results: nil,
@@ -75,7 +79,7 @@ defmodule TinyAxe.TUI.Chats do
     parked =
       for {chat, id} <- Enum.zip(saved, ids), id != active, into: %{} do
         chat = Map.take(chat, [:history, :transcript, :summary, :saved_as, :local_only])
-        {id, Map.merge(@blank, chat) |> Map.update!(:saved_as, &(&1 || TinyAxe.History.new_id()))}
+        {id, fresh(chat) |> Map.update!(:saved_as, &(&1 || TinyAxe.History.new_id()))}
       end
 
     %{order: ids, active: active, next: length(saved) + 1, parked: parked, caches: %{}}
@@ -234,7 +238,7 @@ defmodule TinyAxe.TUI.Chats do
     arg = String.trim(rest)
 
     case Integer.parse(arg) do
-      {n, ""} -> switch_to(state, n)
+      {n, ""} -> select(state, n)
       _ when arg == "close" -> close(state)
       _ -> add_meta(state, "/new · /chats · /chat N · /chat close · ctrl+o next chat")
     end
@@ -258,7 +262,7 @@ defmodule TinyAxe.TUI.Chats do
       open(state, fields)
     else
       Transcript.clear_cache()
-      Map.merge(state, Map.merge(@blank, fields))
+      Map.merge(state, fresh(fields))
     end
   end
 
@@ -269,7 +273,7 @@ defmodule TinyAxe.TUI.Chats do
     chats = %{chats | order: chats.order ++ [id], next: id + 1, active: id}
 
     state
-    |> Map.merge(@blank)
+    |> Map.merge(fresh())
     |> Map.put(:saved_as, TinyAxe.History.new_id())
     |> Map.merge(fields)
     |> Map.put(:chats, chats)
@@ -281,7 +285,7 @@ defmodule TinyAxe.TUI.Chats do
   """
   def open_aside(state, fields) do
     id = state.chats.next
-    chat = @blank |> Map.put(:saved_as, TinyAxe.History.new_id()) |> Map.merge(fields)
+    chat = fresh(fields) |> Map.update!(:saved_as, &(&1 || TinyAxe.History.new_id()))
 
     chats = %{
       state.chats
@@ -321,11 +325,20 @@ defmodule TinyAxe.TUI.Chats do
         %{state | status: "this is the only chat · /new starts another"}
 
       n ->
-        switch_to(state, rem(position(state, state.chats.active), n) + 1)
+        select(state, rem(position(state, state.chats.active), n) + 1)
     end
   end
 
-  defp switch_to(state, n) do
+  @doc "Shows the previous chat, before the first the last."
+  def previous(state) do
+    case count(state) do
+      1 -> %{state | status: "this is the only chat · /new starts another"}
+      n -> select(state, Integer.mod(position(state, state.chats.active) - 2, n) + 1)
+    end
+  end
+
+  @doc "Shows a chat by its one-based position in the tab bar."
+  def select(state, n) do
     case Enum.at(state.chats.order, n - 1) do
       id when n >= 1 and id != nil -> switch(state, id)
       _ -> add_meta(state, "no chat #{n} (/chats lists them)")
@@ -336,12 +349,19 @@ defmodule TinyAxe.TUI.Chats do
   def switch(%{chats: %{active: id}} = state, id), do: state
 
   def switch(state, id) do
-    was_running? = state.run != nil
-    state = state |> park() |> unpark(id)
-    # The throbber's tick runs only while the chat on screen is working.
-    if state.run != nil and not was_running?, do: Run.schedule_tick()
-    state
+    if Map.has_key?(state.chats.parked, id) do
+      was_running? = state.run != nil
+      state = state |> park() |> unpark(id)
+      # The throbber's tick runs only while the chat on screen is working.
+      if state.run != nil and not was_running?, do: Run.schedule_tick()
+      state
+    else
+      state
+    end
   end
+
+  defp fresh(fields \\ %{}),
+    do: @blank |> Map.put(:input, ExRatatui.textarea_new()) |> Map.merge(fields)
 
   # Closing a working chat would lose its request, so that has to be cancelled first.
   defp close(state) do
@@ -485,11 +505,13 @@ defmodule TinyAxe.TUI.Chats do
   """
   def persist(now, before) do
     saved = conversations(now)
+    previous = conversations(before)
 
-    if saved != conversations(before) do
+    if saved != previous or now.chats.active != before.chats.active do
       TinyAxe.Session.save_chats(saved, position(now, now.chats.active) - 1)
-      TinyAxe.History.save(saved -- conversations(before))
     end
+
+    if saved != previous, do: TinyAxe.History.save(saved -- previous)
   end
 
   defp conversations(state) do

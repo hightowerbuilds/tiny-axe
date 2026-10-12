@@ -45,18 +45,20 @@ defmodule TinyAxe.TUI.TokenDash do
 
   ## What it shows
 
-  def lines(%{summary: nil}) do
+  def lines(dash, opts \\ [])
+
+  def lines(%{summary: nil}, opts) do
     [
       styled(
         "tiny-axe isn't counting tokens right now (its usage record didn't answer).",
         :yellow
       ),
       styled(""),
-      styled("esc close", :dark_gray)
+      styled(if(opts[:page], do: "r refresh", else: "esc close"), :dark_gray)
     ]
   end
 
-  def lines(%{summary: s}) do
+  def lines(%{summary: s}, opts) do
     body =
       if Enum.all?([:claude, :jev, :ollama], &(s.week[&1].calls == 0)) do
         [
@@ -68,7 +70,12 @@ defmodule TinyAxe.TUI.TokenDash do
         claude(s) ++ [styled("")] ++ jev(s) ++ [styled("")] ++ gemma(s) ++ hours(s.hours)
       end
 
-    body ++ [styled(""), styled("updates as calls finish · esc close", :dark_gray)]
+    hint =
+      if opts[:page],
+        do: "updates as calls finish · r refresh",
+        else: "updates as calls finish · esc close"
+
+    body ++ [styled(""), styled(hint, :dark_gray)]
   end
 
   defp claude(s) do

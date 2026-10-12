@@ -107,7 +107,9 @@ defmodule TinyAxe.TUITest do
     # The transcript rows between the borders.
     defp transcript_rows(screen) do
       {_w, h} = @size
-      screen |> String.split("\n") |> Enum.slice(1, h - 1 - 6 - 2)
+      tabs = TinyAxe.TUI.MainTabs.height() + TinyAxe.TUI.TabBar.height()
+      input = TinyAxe.TUI.View.input_height()
+      screen |> String.split("\n") |> Enum.slice(tabs + 1, h - tabs - 1 - input - 2)
     end
 
     test "reaches the very top, and page down responds at once" do

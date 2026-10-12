@@ -362,13 +362,35 @@ defmodule TinyAxe.TUI.RemoteChat do
     end
   end
 
-  defp switch(pid, on) when is_pid(pid), do: send(pid, {:remote_out, {:switch, on}})
+  @doc "Changes remote connectivity explicitly, without adding anything to a chat transcript."
+  def set_enabled(state, on) when is_boolean(on) do
+    case switch(state.remote_link.to, on) do
+      :ok ->
+        phase =
+          cond do
+            not on -> :off
+            state.remote_link.phase == :online -> :online
+            true -> :connecting
+          end
+
+        {:ok, put_link(state, phase: phase, error: nil)}
+
+      {:error, _} ->
+        {:error, "Remote connectivity could not be changed. Refresh to check its status.", state}
+    end
+  end
+
+  defp switch(pid, on) when is_pid(pid) do
+    send(pid, {:remote_out, {:switch, on}})
+    :ok
+  end
 
   defp switch(server, on) do
-    TinyAxe.Remote.set_on(on)
-    if on, do: TinyAxe.Remote.connect(server), else: TinyAxe.Remote.disconnect(server)
+    with :ok <- TinyAxe.Remote.set_on(on) do
+      if on, do: TinyAxe.Remote.connect(server), else: TinyAxe.Remote.disconnect(server)
+    end
   catch
-    :exit, _ -> :ok
+    :exit, reason -> {:error, reason}
   end
 
   defp describe(%{phase: :off}), do: "off (/remote on)"

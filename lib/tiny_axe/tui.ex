@@ -15,6 +15,7 @@ defmodule TinyAxe.TUI do
   (and `↑`/`↓`/`home`/`end` with an empty prompt) · `ctrl+y` copy the newest code
   block, again for the one before · `ctrl+z` undo the last file plan ·
   `ctrl+k` compact now · `ctrl+t` show/hide the sidebar · `ctrl+o` next chat ·
+  `alt+←`/`alt+→` previous/next chat · `alt+1`…`alt+9` select a chat ·
   `ctrl+l` clear this chat · `ctrl+c` quit. When the model proposes file edits, each is
   shown as a diff: `y` save · `n` skip · `esc` skip the rest · `↑`/`↓` scroll.
 
@@ -48,11 +49,16 @@ defmodule TinyAxe.TUI do
     CommandWorkflow,
     CompactionWorkflow,
     FileWorkflow,
+    FeaturePanels,
+    MainTabs,
     Pulse,
     Run,
+    SearchWorkspace,
+    TabBar,
     Transcript,
     View,
-    Welcome
+    Welcome,
+    Workspace
   }
 
   import TinyAxe.TUI.Conversation, only: [add_meta: 2]
@@ -95,6 +101,11 @@ defmodule TinyAxe.TUI do
     {:ok,
      %{
        input: input,
+       section: :chat,
+       chat_section: nil,
+       search_chat: nil,
+       search_mode: :words,
+       panels: FeaturePanels.new(),
        # Completed turns sent back to the model as context.
        history: saved.history,
        # What the transcript shows: {:user | :assistant | :meta, text}
@@ -199,12 +210,78 @@ defmodule TinyAxe.TUI do
   # A key answering another chat's question, or a message for a chat put
   # aside, is handled within that chat (TUI.Chats.within/3).
   def handle_event(event, state) do
-    state
-    |> Chats.within(Chats.asker(state, event), &on_event(event, &1))
+    # Navigation is handled before approval ownership routes keys to another
+    # chat. Otherwise switching while answering a parked chat could swap the
+    # wrong transcript or draft back onto the screen.
+    result =
+      case tab_action(event, state) do
+        nil -> Chats.within(state, Chats.asker(state, event), &on_event(event, &1))
+        action -> {:noreply, navigate_tabs(state, action)}
+      end
+
+    result
     |> RemoteChat.sync()
     |> next_question()
     |> Chats.relabeled()
     |> saved(state)
+  end
+
+  defp tab_action(%Event.Key{kind: "release"}, _state), do: nil
+
+  defp tab_action(%Event.Key{code: code, modifiers: []}, _state)
+       when code in ~w(f1 f2 f3 f4 f5),
+       do:
+         {:section,
+          Enum.at(
+            [:chat, :wallet, :search, :tokens, :remote],
+            String.to_integer(String.trim_leading(code, "f")) - 1
+          )}
+
+  defp tab_action(%Event.Key{code: "o", modifiers: ["ctrl"]}, %{section: :chat}), do: :next
+  defp tab_action(%Event.Key{code: "left", modifiers: ["alt"]}, %{section: :chat}), do: :previous
+  defp tab_action(%Event.Key{code: "right", modifiers: ["alt"]}, %{section: :chat}), do: :next
+
+  defp tab_action(%Event.Key{code: code, modifiers: ["alt"]}, %{section: :chat})
+       when code in ~w(1 2 3 4 5 6 7 8 9),
+       do: {:position, String.to_integer(code)}
+
+  defp tab_action(%Event.Mouse{kind: "down", button: "left", x: x, y: y}, state),
+    do: MainTabs.hit(state, x, y) || TabBar.hit(state, x, y)
+
+  defp tab_action(_event, _state), do: nil
+
+  defp navigate_tabs(state, action) do
+    if tab_navigation_blocked?(state) do
+      state
+    else
+      case action do
+        {:section, section} -> Workspace.select(state, section)
+        :new -> Chats.create(state)
+        :previous -> Chats.previous(state)
+        :next -> Chats.next(state)
+        {:chat, id} -> Chats.switch(state, id)
+        {:position, n} -> Chats.select(state, n)
+      end
+    end
+  end
+
+  # Approval questions retain their owner and may stay up across tab changes.
+  # Other overlays describe the active chat or hold secret-entry state, so
+  # navigation waits until those are closed. Reserved navigation keys never
+  # become password/card characters or approval answers.
+  defp tab_navigation_blocked?(state) do
+    Enum.any?(
+      [
+        :account_flow,
+        :card_flow,
+        :recovery,
+        :confirm_undo,
+        :pending_commands,
+        :pending_plan,
+        :token_dash
+      ],
+      &(Map.get(state, &1) != nil)
+    ) or state.pending_edits != []
   end
 
   @impl true
@@ -282,19 +359,21 @@ defmodule TinyAxe.TUI do
         {:noreply, %{state | card_flow: flow}}
 
       {:done, message} ->
-        {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
+        {:noreply, card_notice(%{state | card_flow: nil, status: "ready"}, message)}
 
       {:cancel, message} ->
-        {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
+        {:noreply, card_notice(%{state | card_flow: nil, status: "ready"}, message)}
     end
   end
 
   defp on_event(%Event.Paste{content: content}, %{card_flow: flow} = state) when flow != nil,
     do: {:noreply, %{state | card_flow: TinyAxe.TUI.CardFlow.paste(flow, content)}}
 
-  # Another chat; the one left keeps running, and its questions still come up.
-  defp on_event(%Event.Key{code: "o", modifiers: ["ctrl"]}, state),
-    do: {:noreply, Chats.next(state)}
+  # Popups own their input even when the feature page below has buttons.
+  defp on_event(%kind{}, state)
+       when kind in [Event.Mouse, Event.Paste] and
+              (state.asking != nil or state.purchase_ask != nil or state.tool_ask != nil),
+       do: {:noreply, state}
 
   # The request waits for this answer; it holds for the rest of the session.
   defp on_event(%Event.Key{code: code}, %{asking: ask} = state) when ask != nil do
@@ -398,9 +477,6 @@ defmodule TinyAxe.TUI do
   defp on_event(%Event.Key{code: code}, %{pending_plan: plan} = state) when plan != nil,
     do: FileWorkflow.plan_key(code, state)
 
-  defp on_event(%Event.Key{code: "z", modifiers: ["ctrl"]}, %{run: nil, ops_job: nil} = state),
-    do: FileWorkflow.request_undo(state)
-
   # While an edit is on screen, keys answer it instead of going to the prompt.
   defp on_event(%Event.Key{code: code}, %{pending_edits: [edit | _]} = state) do
     {:noreply, FileWorkflow.edit_key(code, edit, state)}
@@ -413,11 +489,44 @@ defmodule TinyAxe.TUI do
       else: {:noreply, state, render?: false}
   end
 
-  defp on_event(%Event.Key{code: "esc"}, %{run: run} = state) when run != nil do
+  defp on_event(%Event.Resize{width: w, height: h}, state),
+    do: {:noreply, %{state | size: {w, h}}}
+
+  defp on_event(event, %{section: section} = state) when section in [:wallet, :tokens, :remote] do
+    if tab_navigation_blocked?(state) do
+      {:noreply, state}
+    else
+      case FeaturePanels.event(event, state) do
+        {:open_chat, id, state} -> {:noreply, Workspace.open_chat(state, id)}
+        result -> result
+      end
+    end
+  end
+
+  defp on_event(event, %{section: :search} = state) do
+    if tab_navigation_blocked?(state),
+      do: {:noreply, state},
+      else: SearchWorkspace.event(event, state) || conversation_event(event, state)
+  end
+
+  defp on_event(event, state), do: conversation_event(event, state)
+
+  defp card_notice(%{section: :wallet} = state, message),
+    do: state |> FeaturePanels.enter(:wallet) |> FeaturePanels.notice(:wallet, message)
+
+  defp card_notice(state, message), do: add_meta(state, message)
+
+  defp conversation_event(
+         %Event.Key{code: "z", modifiers: ["ctrl"]},
+         %{run: nil, ops_job: nil} = state
+       ),
+       do: FileWorkflow.request_undo(state)
+
+  defp conversation_event(%Event.Key{code: "esc"}, %{run: run} = state) when run != nil do
     {:noreply, %{Run.cancel(state) | status: "cancelled"}}
   end
 
-  defp on_event(%Event.Key{code: "l", modifiers: ["ctrl"]}, %{run: nil} = state) do
+  defp conversation_event(%Event.Key{code: "l", modifiers: ["ctrl"]}, %{run: nil} = state) do
     # The transcript's measured heights go with it.
     Transcript.clear_cache()
 
@@ -436,35 +545,35 @@ defmodule TinyAxe.TUI do
   end
 
   # Chat commands work while this chat is busy too: that's when they're wanted.
-  defp on_event(%Event.Key{code: "enter", modifiers: []}, state),
-    do:
-      Chats.submit(state) || MemoryChat.submit(state) || ChatHistory.submit(state) ||
-        submit(state)
+  defp conversation_event(%Event.Key{code: "enter", modifiers: []}, state) do
+    Chats.submit(state) || memory_submit(state) || ChatHistory.submit(state) || submit(state)
+  end
 
-  defp on_event(%Event.Key{code: "enter"}, state) do
+  defp conversation_event(%Event.Key{code: "enter"}, state) do
     ExRatatui.textarea_handle_key(state.input, "enter", [])
     {:noreply, state}
   end
 
-  defp on_event(%Event.Key{code: "k", modifiers: ["ctrl"]}, %{run: nil} = state),
+  defp conversation_event(%Event.Key{code: "k", modifiers: ["ctrl"]}, %{run: nil} = state),
     do: {:noreply, CompactionWorkflow.start(state)}
 
-  defp on_event(%Event.Key{code: "t", modifiers: ["ctrl"]}, state) do
+  defp conversation_event(%Event.Key{code: "t", modifiers: ["ctrl"]}, state) do
     {w, _h} = state.size
     {:noreply, %{state | sidebar: not View.sidebar?(state, w)}}
   end
 
-  defp on_event(%Event.Key{code: "y", modifiers: ["ctrl"]}, state), do: {:noreply, copy(state)}
+  defp conversation_event(%Event.Key{code: "y", modifiers: ["ctrl"]}, state),
+    do: {:noreply, copy(state)}
 
-  defp on_event(%Event.Key{code: "page_up"}, state),
+  defp conversation_event(%Event.Key{code: "page_up"}, state),
     do: {:noreply, View.scroll_by(state, -page(state))}
 
-  defp on_event(%Event.Key{code: "page_down"}, state),
+  defp conversation_event(%Event.Key{code: "page_down"}, state),
     do: {:noreply, View.scroll_by(state, page(state))}
 
   # With an empty prompt, arrows, home and end scroll the transcript. Terminals
   # also turn the mouse wheel into arrow keys, so this makes the wheel scroll.
-  defp on_event(%Event.Key{code: code, modifiers: []} = key, state)
+  defp conversation_event(%Event.Key{code: code, modifiers: []} = key, state)
        when code in ["up", "down", "home", "end"] do
     if ExRatatui.textarea_get_value(state.input) == "" do
       {:noreply,
@@ -480,21 +589,39 @@ defmodule TinyAxe.TUI do
     end
   end
 
-  defp on_event(%Event.Key{code: code, modifiers: mods}, state) do
+  defp conversation_event(%Event.Key{code: code, modifiers: mods}, state) do
     ExRatatui.textarea_handle_key(state.input, code, mods)
     {:noreply, state}
   end
 
-  defp on_event(%Event.Paste{content: content}, state) do
+  defp conversation_event(%Event.Paste{content: content}, state) do
     ExRatatui.textarea_insert_str(state.input, content)
     {:noreply, state}
   end
 
-  defp on_event(%Event.Resize{width: w, height: h}, state) do
+  defp conversation_event(%Event.Resize{width: w, height: h}, state) do
     {:noreply, %{state | size: {w, h}}}
   end
 
-  defp on_event(_event, state), do: {:noreply, state}
+  # With mouse capture enabled terminals report wheel events directly rather
+  # than translating them to arrows. Scroll even while a draft is being typed.
+  defp conversation_event(%Event.Mouse{kind: kind}, state)
+       when kind in ["scroll_up", "scroll_down"] do
+    if tab_navigation_blocked?(state) do
+      {:noreply, state}
+    else
+      {:noreply, View.scroll_by(state, if(kind == "scroll_up", do: -3, else: 3))}
+    end
+  end
+
+  defp conversation_event(_event, state), do: {:noreply, state}
+
+  defp memory_submit(state) do
+    case MemoryChat.submit(state) do
+      {:noreply, opened} -> {:noreply, Workspace.adopt_search(opened, state)}
+      nil -> nil
+    end
+  end
 
   ## Copying
 
@@ -783,6 +910,9 @@ defmodule TinyAxe.TUI do
 
   defp on_info({:token_dash, ref}, %{token_dash: dash} = state) when dash != nil,
     do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
+
+  defp on_info({:token_dash, ref}, %{section: :tokens} = state),
+    do: {:noreply, FeaturePanels.refresh_tokens(state, ref)}
 
   defp on_info({:token_dash, _closed}, state), do: {:noreply, state, render?: false}
 
