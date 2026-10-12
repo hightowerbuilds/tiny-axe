@@ -29,7 +29,9 @@ defmodule TinyAxe.TUI.Run do
         TinyAxe.Pipeline.run(history, prompt, notify,
           remote: remote_mode(state),
           # The 🌐 chat is never on the leash (TinyAxe.Leash).
-          leash: not state.remote_chat
+          leash: not state.remote_chat,
+          # The last turn was an agent's: this one may carry its task on.
+          after_agent: state.agent_run
         )
       end)
 

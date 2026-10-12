@@ -269,6 +269,62 @@ defmodule TinyAxe.AgentTest do
       assert JSON.decode!(done(events))["tool_result"]["text"] == "echo: routed"
     end
 
+    test "after an agent's turn, a message that carries its task on goes back to the agent",
+         %{server: s} do
+      driver({:claude, "haiku"})
+      me = self()
+
+      # "1107 Halsey Drive": no service named, but it answers what the agent asked.
+      Decider.Script.script(fn
+        :continues, _, _ -> 0.9
+        :tools, _, _ -> 0.1
+        _, _, _ -> nil
+      end)
+
+      Pipeline.run(
+        [],
+        ~s(SCENARIO:tool:#{s}__echo:{"text":"1107 Halsey Drive"}),
+        &send(me, {:event, &1}),
+        remote: :allowed,
+        after_agent: true
+      )
+
+      assert {:task, :agent} in drain([])
+
+      # Not after an agent's turn: no such question, and it isn't the agent's.
+      Model.Script.script(fn _, _ -> "A plain answer." end)
+
+      Decider.Script.script(fn
+        :continues, _, _ -> flunk("asked whether it carries a task on, with none before")
+        :tools, _, _ -> 0.1
+        :addresses, _, _ -> 0.95
+        _, _, _ -> nil
+      end)
+
+      Pipeline.run([], "1107 Halsey Drive", &send(me, {:event, &1}), remote: :allowed)
+      assert {:task, :answer} in drain([])
+    end
+
+    test "after an agent's turn, something new goes where it would anyway", %{server: s} do
+      driver({:claude, "haiku"})
+      me = self()
+      Model.Script.script(fn _, _ -> "Paris." end)
+
+      Decider.Script.script(fn
+        :continues, _, _ -> 0.1
+        :tools, %{instructions: q}, _ -> if q =~ s, do: 0.1, else: 0.0
+        :addresses, _, _ -> 0.95
+        _, _, _ -> nil
+      end)
+
+      Pipeline.run([], "what's the capital of France?", &send(me, {:event, &1}),
+        remote: :allowed,
+        after_agent: true
+      )
+
+      assert {:task, :answer} in drain([])
+    end
+
     test "with no servers connected, there's no tools question and no agent", %{server: s} do
       MCP.stop_server(s)
       Model.Script.script(fn _, _ -> "A plain answer." end)

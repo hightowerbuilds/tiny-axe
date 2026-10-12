@@ -41,6 +41,12 @@ defmodule TinyAxe.Browser.DeadEnds do
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
 
+  @doc """
+  Whether dead ends are kept and used: `config :tiny_axe, :dead_ends,
+  enabled:` (on, except in tests, which share one state folder).
+  """
+  def enabled?, do: Keyword.get(Application.get_env(:tiny_axe, :dead_ends, []), :enabled, true)
+
   def path, do: Path.join(TinyAxe.Ops.Journal.state_dir(), "dead_ends.json")
 
   ## What a record says
@@ -92,8 +98,8 @@ defmodule TinyAxe.Browser.DeadEnds do
 
   @doc "Keeps a failed action (in the background: Jev may take a moment)."
   def add(record) do
-    case info(record) do
-      nil -> :ok
+    case enabled?() && info(record) do
+      falsy when falsy in [nil, false] -> :ok
       info -> GenServer.cast(__MODULE__, {:add, info})
     end
   catch
@@ -176,7 +182,7 @@ defmodule TinyAxe.Browser.DeadEnds do
 
   @doc "This site's known dead ends (Jev's verdict, or two failures), newest first."
   def known(host) when is_binary(host) do
-    read()
+    if(enabled?(), do: read(), else: %{})
     |> Map.values()
     |> Enum.filter(&(&1["host"] == host and &1["verdict"] == "dead_end"))
     |> Enum.sort_by(& &1["last"], :desc)
@@ -186,7 +192,7 @@ defmodule TinyAxe.Browser.DeadEnds do
 
   @doc "Whether a key is a known dead end."
   def dead_end?(nil), do: false
-  def dead_end?(key), do: match?(%{"verdict" => "dead_end"}, read()[key])
+  def dead_end?(key), do: enabled?() and match?(%{"verdict" => "dead_end"}, read()[key])
 
   @doc """
   Whether an action (its key) is refused: a known dead end that already

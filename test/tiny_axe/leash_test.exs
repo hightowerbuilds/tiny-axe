@@ -234,6 +234,8 @@ defmodule TinyAxe.LeashTest do
     end
 
     test "kept per site; twice is a dead end; the agent is warned; a repeat is refused", ctx do
+      Application.put_env(:tiny_axe, :dead_ends, enabled: true)
+      on_exit(fn -> Application.put_env(:tiny_axe, :dead_ends, enabled: false) end)
       Leash.set(true)
       # Jev, verifying: the page shows an error and nothing took effect.
       Decider.Script.script(fn

@@ -46,3 +46,7 @@ config :tiny_axe, :site,
 
 # Never open the real browser from a test (TinyAxe.Site.open_in_browser/1).
 config :tiny_axe, :site, opener: false
+
+# One state folder for the whole suite: a failure in one test mustn't become
+# a dead end in the next (TinyAxe.Browser.DeadEnds); their own tests switch it on.
+config :tiny_axe, :dead_ends, enabled: false

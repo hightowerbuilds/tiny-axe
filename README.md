@@ -64,6 +64,10 @@ Type `/new` to start another chat; the one you leave keeps working in the backgr
 
 Every chat is kept on disk, in `~/.local/state/tiny-axe/history/` (one file per chat, with card numbers and keys removed), so it outlives tiny-axe. `/history` lists the recent ones, `/history words` finds chats that mention something, and `/history N` reopens one with its context, to carry on where it left off. Your page of tiny-axe's website shows every chat, from every session, under **Chats** (without what reopening one gives the model). See [docs/plan-history.md](docs/plan-history.md).
 
+`/leash on` gives the browser agent a longer leash for the session. Browser actions run without asking, on any site and in your own Chrome too. An order whose checks all pass (what you asked for, the per-order and daily limits, the shop, the card's rules) is placed without asking, with a receipt line afterwards. Commands, a card's PIN and the 🌐 remote chat still ask, and `/leash off` puts the questions back. A purchase request that doesn't name a maximum price uses the per-order limit as its maximum. After an agent's turn, a reply that carries its task on (an address it asked for, "yes", "go on") goes back to the agent, not to a plain answer. See [docs/plan-leash.md](docs/plan-leash.md).
+
+tiny-axe remembers browser paths that didn't work, per site (dead ends). Each failed or unconfirmed action is kept by site, page, action and label for 30 days. Jev judges whether it's a real dead end or a one-off, and two failures make it a dead end. When the agent reaches a site, it's told that site's dead ends, and it can't repeat one that fails again in the same task. `mix tiny_axe.dead_ends` lists them and `mix tiny_axe.dead_ends forget HOST` (or `--all`) forgets them.
+
 Mention files or folders with `@path` (relative to the project, `~/…` or absolute) to give them to the model. Otherwise the decider picks the project files a request is about.
 
 ## How it works

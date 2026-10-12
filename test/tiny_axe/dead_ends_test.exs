@@ -26,8 +26,13 @@ defmodule TinyAxe.DeadEndsTest do
   end
 
   setup do
+    Application.put_env(:tiny_axe, :dead_ends, enabled: true)
     File.rm(DeadEnds.path())
-    on_exit(fn -> File.rm(DeadEnds.path()) end)
+
+    on_exit(fn ->
+      File.rm(DeadEnds.path())
+      Application.put_env(:tiny_axe, :dead_ends, enabled: false)
+    end)
   end
 
   test "the key: site, the page's path made general, the action, the label" do

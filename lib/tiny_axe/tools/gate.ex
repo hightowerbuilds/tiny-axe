@@ -738,10 +738,13 @@ defmodule TinyAxe.Tools.Gate do
           |> Map.put(:choice, choice)
           |> Map.put(:hint, hint)
 
-        # A known dead end that has already failed here too: another way.
-        dead_end = assessment.action_id && DeadEnds.key(assessment.effect.target, tool.tool)
+        # A known dead end that has already failed here too: another way. One
+        # that may have gone through is held already, with its own reason.
+        dead_end =
+          assessment.action_id && "outcome_unresolved" not in assessment.reason_codes &&
+            DeadEnds.key(assessment.effect.target, tool.tool)
 
-        if DeadEnds.blocked?(dead_end, GenServer.call(__MODULE__, {:actions, task.id})) do
+        if DeadEnds.blocked?(dead_end || nil, GenServer.call(__MODULE__, {:actions, task.id})) do
           {:refused,
            "dead_end: this didn't work on this site in earlier tasks, and it didn't work again " <>
              "in this one, so tiny-axe won't try it a third way the same: find another way " <>

@@ -1,6 +1,6 @@
 # Plan: the leash, automatic purchases, and dead ends
 
-Status (2026-10-12): planned. This work is on branch `leash` (worktree `../tiny-axe-leash`), which is built on `chrome-purchases` with `main` merged in, so both browsers get it.
+Status (2026-10-12): L1–L4 built. This work is on branch `leash` (worktree `../tiny-axe-leash`), which is built on `chrome-purchases` with `main` merged in, so both browsers get it.
 
 ## Why
 

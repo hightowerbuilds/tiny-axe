@@ -334,7 +334,7 @@ defmodule TinyAxe.ChromePurchaseTest do
     assert m =~ "the user didn't confirm the purchase"
   end
 
-  test "over a limit or with no maximum: refused, never asked" do
+  test "over a limit: refused, never asked; with no maximum, the per-order limit is it" do
     limits(per_order_max: 10.0, daily_max: 200.0)
     task = open()
     read(task, @checkout)
@@ -344,12 +344,12 @@ defmodule TinyAxe.ChromePurchaseTest do
     refute_received {:popup, _}
     assert_received {:gate, {:purchase_refused, _}}
 
-    limits(per_order_max: 100.0, daily_max: 200.0)
+    limits(per_order_max: 10.0, daily_max: 200.0)
     task = open(%{@intent | max: nil})
     read(task, @checkout)
     find_button(task)
     assert %{"message" => m} = click(task, :confirm)
-    assert m =~ "Ask the user the most they want to spend"
+    assert m =~ "over the $10.00 limit per order"
   end
 
   test "buying off: refused, with how to turn it on" do
