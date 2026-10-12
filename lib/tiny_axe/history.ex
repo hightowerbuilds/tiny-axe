@@ -2,7 +2,7 @@ defmodule TinyAxe.History do
   @moduledoc """
   The history of every chat, kept on disk so it outlives tiny-axe: one file
   per chat in `<state_dir>/history/`, as `docs/plan-history.md` describes (the
-  website, `tiny-axe graph`, reads the same files).
+  website gets them from `TinyAxe.Sync`, without `context`).
 
   The TUI hands over its chats whenever what they show changes (`save/1`,
   from `TinyAxe.TUI.Chats.persist/2`); a chat is written once it has a

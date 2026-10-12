@@ -219,8 +219,11 @@ go-ahead.
    gate asks each time (y once, a for the session, n). The viewer shows Notes
    in their own colour. Tested through the gate (no sends nothing, yes sends
    it) and end to end against the real site API.
-5. **L5, local site removed.** Delete `graph/`'s server, MCP and install
-   step once L2 has every page.
+5. **L5, local site removed.** Done 2026-10-11: `graph/` is deleted (its
+   reader, viewer and tests live in lobsterattack now), with
+   `tiny-axe graph`, its install step and the dev launcher's build; the next
+   `mix tiny_axe.install` removes an installed copy
+   (`~/.local/share/tiny-axe/graph`).
 
 ## What the user has to do
 

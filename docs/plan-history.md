@@ -5,6 +5,10 @@ Status (2026-10-11): being built on branch `chat-history` (worktree
 
 ## What the user asked for
 
+(Since 2026-10-11 the website is tiny-axe's hosted home, which gets the chats
+from `TinyAxe.Sync`; see `plan-lobsterattack.md`. The local `tiny-axe graph`
+below is gone.)
+
 tiny-axe keeps a history of its sessions, and the website (`tiny-axe graph`)
 gets a route showing the entire history of the user's chats.
 

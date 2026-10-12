@@ -1,7 +1,9 @@
 # The vault format, version 1
 
 The contract between tiny-axe's Elixir writer (`TinyAxe.Vault`, G1) and the
-TypeScript viewer (`graph/`, G3–G4) for the know-how graph. See
+TypeScript reader on tiny-axe's website (lobsterattack `api/_lib/vault/`,
+which replaced the local `graph/` viewer; `docs/plan-lobsterattack.md`) for
+the know-how graph. See
 [the plan](plan-knowledge-graph.md) for why it exists.
 
 Schema name: `tiny-axe-vault/1`. A reader refuses a vault whose schema it

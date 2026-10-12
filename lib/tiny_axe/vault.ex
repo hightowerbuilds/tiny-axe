@@ -1,7 +1,8 @@
 defmodule TinyAxe.Vault do
   @moduledoc """
   The know-how vault's writer (`docs/vault-format.md`): task journals into
-  linked Markdown notes, for `tiny-axe graph` and Obsidian to read.
+  linked Markdown notes, for Obsidian to read and `TinyAxe.Sync` to send to
+  the user's page of tiny-axe's website.
 
   One process, so writes are serial within tiny-axe; a lock file
   (`.tiny-axe/lock`) keeps two tiny-axe instances from interleaving. At

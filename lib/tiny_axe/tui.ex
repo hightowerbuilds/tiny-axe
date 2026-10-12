@@ -24,7 +24,7 @@ defmodule TinyAxe.TUI do
 
   History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
   `/history` lists the recent ones, `/history N` reopens one, `/history words`
-  finds them. The website (`tiny-axe graph`) shows all of them under Chats.
+  finds them. Your page of tiny-axe's website shows all of them under Chats.
   """
 
   use ExRatatui.App

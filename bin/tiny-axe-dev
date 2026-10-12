@@ -6,20 +6,5 @@ set -euo pipefail
 project="$PWD"
 home="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
-# `tiny-axe-dev graph [--port N] [--vault DIR]`: the know-how graph viewer,
-# built from graph/ and run with Node (no BEAM).
-if [ "${1:-}" = "graph" ]; then
-  shift
-  [ -d "$home/graph/node_modules" ] || npm --prefix "$home/graph" ci --silent
-  (cd "$home/graph" && npm run --silent build)
-  exec node "$home/graph/dist/server.js" "$@"
-fi
-
-# The TUI's /graph runs the viewer from graph/dist: build it once if needed.
-if command -v node >/dev/null && [ ! -f "$home/graph/dist/server.js" ]; then
-  [ -d "$home/graph/node_modules" ] || npm --prefix "$home/graph" ci --silent
-  (cd "$home/graph" && npm run --silent build)
-fi
-
 cd "$home"
 exec mise exec -- mix tiny_axe --dir "$project" "$@"

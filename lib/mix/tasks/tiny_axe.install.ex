@@ -9,9 +9,10 @@ defmodule Mix.Tasks.TinyAxe.Install do
       whatever folder you run it from
     * settings live in `~/.config/tiny-axe/env`; if that file doesn't exist and
       this repo has a `.env`, it's copied there (readable only by you)
-    * the know-how graph viewer (`graph/`, built with npm) goes to
-      `~/.local/share/tiny-axe/graph`, for `tiny-axe graph`; skipped, with a
-      note, if npm isn't installed
+
+  The know-how graph and the chats are on tiny-axe's website now
+  (`docs/plan-lobsterattack.md`); a copy of the old local viewer that an
+  earlier install left in `~/.local/share/tiny-axe/graph` is removed.
 
       mix tiny_axe.install
 
@@ -20,7 +21,6 @@ defmodule Mix.Tasks.TinyAxe.Install do
       tiny-axe
       tiny-axe --model gemma4:12b-it-qat --decider local
       tiny-axe --dir ~/code/app
-      tiny-axe graph                 # serves what it knows on 127.0.0.1:4747
 
   Code checks run the `elixir` command in a sandbox; outside this repo mise
   doesn't know which Elixir to use, so the launcher puts the Elixir and
@@ -55,7 +55,8 @@ defmodule Mix.Tasks.TinyAxe.Install do
     File.rm_rf!(release)
     File.rename!(build, release)
 
-    graph = install_graph(data)
+    # The old local graph viewer (now the website) that earlier installs put here.
+    File.rm_rf!(Path.join(data, "graph"))
 
     File.mkdir_p!(bin)
     launcher = Path.join(bin, "tiny-axe")
@@ -63,7 +64,7 @@ defmodule Mix.Tasks.TinyAxe.Install do
     # replaced rather than written through.
     File.rm(launcher)
     extra_path = elixir_paths()
-    File.write!(launcher, launcher(release, Path.join(data, "graph"), extra_path))
+    File.write!(launcher, launcher(release, extra_path))
     File.chmod!(launcher, 0o755)
 
     # The installed copy runs from its own trimmed runtime, which is where code
@@ -95,34 +96,9 @@ defmodule Mix.Tasks.TinyAxe.Install do
       release   #{release}
       launcher  #{launcher}
       settings  #{settings}
-      graph     #{graph}
 
     Run `tiny-axe` in any folder.#{on_path_hint(bin)}
     """)
-  end
-
-  # The graph viewer is Node, not part of the release: built in graph/ and its
-  # dist/ swapped in beside the release.
-  defp install_graph(data) do
-    target = Path.join(data, "graph")
-
-    with npm when is_binary(npm) <- System.find_executable("npm"),
-         {_, 0} <- npm(npm, ["ci", "--silent"]),
-         {_, 0} <- npm(npm, ["run", "--silent", "build"]) do
-      staged = target <> ".new"
-      File.rm_rf!(staged)
-      File.cp_r!("graph/dist", staged)
-      File.rm_rf!(target)
-      File.rename!(staged, target)
-      "#{target} (`tiny-axe graph`)"
-    else
-      nil -> "skipped: npm isn't installed, so `tiny-axe graph` won't work"
-      {_, status} -> Mix.raise("building the graph viewer failed (npm exit #{status})")
-    end
-  end
-
-  defp npm(npm, args) do
-    System.cmd(npm, args, cd: "graph", into: IO.stream(:stdio, :line), stderr_to_stdout: true)
   end
 
   @smoke """
@@ -166,7 +142,7 @@ defmodule Mix.Tasks.TinyAxe.Install do
     ErlangError -> []
   end
 
-  defp launcher(release, graph, extra_path) do
+  defp launcher(release, extra_path) do
     path =
       if extra_path == [], do: "", else: ~s(export PATH="#{Enum.join(extra_path, ":")}:$PATH"\n)
 
@@ -178,22 +154,7 @@ defmodule Mix.Tasks.TinyAxe.Install do
 
     usage() {
       echo "usage: tiny-axe [--dir FOLDER] [--model OLLAMA_MODEL] [--decider jev|local]"
-      echo "       tiny-axe graph [--port PORT] [--vault FOLDER]"
     }
-
-    # The know-how graph: a small Node server, not the BEAM.
-    if [ "${1:-}" = "graph" ]; then
-      shift
-      if ! command -v node >/dev/null; then
-        echo "tiny-axe graph needs Node (https://nodejs.org)" >&2
-        exit 2
-      fi
-      if [ ! -f "#{graph}/server.js" ]; then
-        echo "tiny-axe graph isn't installed; run mix tiny_axe.install with npm available" >&2
-        exit 2
-      fi
-      exec node "#{graph}/server.js" "$@"
-    fi
 
     dir="$PWD"
     while [ $# -gt 0 ]; do
