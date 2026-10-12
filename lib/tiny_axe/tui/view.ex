@@ -10,7 +10,7 @@ defmodule TinyAxe.TUI.View do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Markdown, Paragraph, Textarea, Throbber}
   alias TinyAxe.Context
-  alias TinyAxe.TUI.{Chats, Overlays, Pulse, Transcript}
+  alias TinyAxe.TUI.{Chats, Overlays, Pulse, Transcript, Welcome}
   import TinyAxe.TUI.Presentation, only: [styled: 1, styled: 2, review_label: 1]
   import TinyAxe.TUI.Conversation, only: [context_tokens: 1]
 
@@ -54,6 +54,7 @@ defmodule TinyAxe.TUI.View do
     }
 
     [{transcript, transcript_area}, {status_widget(state), status_area}, {input, input_area}] ++
+      Welcome.widgets(state, transcript_area) ++
       Pulse.widgets(state, input_area) ++ sidebar ++ Overlays.render(state, area)
   end
 

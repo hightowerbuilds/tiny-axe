@@ -43,7 +43,8 @@ defmodule TinyAxe.TUI do
     Pulse,
     Run,
     Transcript,
-    View
+    View,
+    Welcome
   }
 
   import TinyAxe.TUI.Conversation, only: [add_meta: 2]
@@ -145,6 +146,7 @@ defmodule TinyAxe.TUI do
        # The prompt cursor's pulse (TinyAxe.TUI.Pulse): its frame and the
        # textarea's first visible row.
        pulse: Pulse.new(),
+       welcome: Welcome.new(opts),
        halt_on_exit: Keyword.get(opts, :halt_on_exit, false),
        # The chats put aside, which keep running; the active one's fields are
        # the ones here (TinyAxe.TUI.Chats lists which).
@@ -164,7 +166,8 @@ defmodule TinyAxe.TUI do
        copy_back: 0,
        # Tests swap in a function that doesn't touch the real clipboard.
        clipboard: Keyword.get(opts, :clipboard, &TinyAxe.Clipboard.copy/1)
-     }}
+     }
+     |> Welcome.sync()}
   end
 
   @impl true
@@ -232,8 +235,9 @@ defmodule TinyAxe.TUI do
 
   defp saved(result, before) do
     now = elem(result, 1)
+    now = if elem(result, 0) == :noreply, do: Welcome.sync(now), else: now
     if now.session?, do: Chats.persist(now, before)
-    result
+    put_elem(result, 1, now)
   end
 
   defp on_event(%Event.Key{kind: "release"}, state), do: {:noreply, state}
@@ -742,6 +746,11 @@ defmodule TinyAxe.TUI do
     do: {:noreply, %{add_meta(state, "✗ graph: #{message}") | status: "ready"}}
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
+
+  defp on_info({:timeout, ref, :welcome}, %{welcome: %{timer: ref}} = state)
+       when is_reference(ref) do
+    {:noreply, Welcome.step(state)}
+  end
 
   defp on_info(:pulse, state) do
     Pulse.schedule()

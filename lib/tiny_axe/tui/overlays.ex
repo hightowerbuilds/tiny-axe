@@ -8,10 +8,11 @@ defmodule TinyAxe.TUI.Overlays do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, Paragraph, Popup}
   alias TinyAxe.Files
+  alias TinyAxe.TUI.Welcome
   import TinyAxe.TUI.Presentation
 
   # At most one popup at a time, most urgent first.
-  def render(%{account_flow: flow}, area) when flow != nil do
+  def render(%{account_flow: flow} = state, area) when flow != nil do
     alias TinyAxe.TUI.AccountFlow
     {question, kind} = AccountFlow.step(flow)
     typing = %Style{fg: :yellow, modifiers: [:bold]}
@@ -67,7 +68,32 @@ defmodule TinyAxe.TUI.Overlays do
           styled(hint, :dark_gray)
         ]
 
-    popup(" your tiny-axe account ", Enum.filter(lines, & &1), 0, area)
+    lines = Enum.filter(lines, & &1)
+    [{panel, _}] = popup(" your tiny-axe account ", lines, 0, area)
+
+    if Welcome.account?(%{state | size: {area.width, area.height}}) do
+      # Put the little axe beside the first-run choices, leaving all of the
+      # account instructions visible even in a standard 80x24 terminal.
+      alias ExRatatui.Layout
+      width = div(area.width * 90, 100)
+      height = div(area.height * 85, 100)
+      [box] = Layout.split(area, :horizontal, [{:length, width}], flex: :center)
+      [box] = Layout.split(box, :vertical, [{:length, height}], flex: :center)
+      [inner] = Layout.split(box, :horizontal, [{:fill, 1}], margin: 1)
+
+      [art, _gap, text] =
+        Layout.split(inner, :horizontal, [{:length, 21}, {:length, 3}, {:fill, 1}])
+
+      [art] = Layout.split(art, :vertical, [{:length, 11}], flex: :center)
+
+      [
+        {%{panel | content: %Paragraph{}, fixed_width: width, fixed_height: height}, area},
+        {%Paragraph{text: Welcome.logo(state)}, art},
+        {%Paragraph{text: lines, wrap: true}, text}
+      ]
+    else
+      [{panel, area}]
+    end
   end
 
   def render(%{card_flow: flow}, area) when flow != nil do
