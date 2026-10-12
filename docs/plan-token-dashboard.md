@@ -8,6 +8,10 @@ Status (2026-10-12): planned, not built. Branch `token-dashboard` (worktree
 A `/token` command in the TUI that opens a small dashboard of token use with
 Claude Haiku 5.5 and Jev.
 
+The user's choices (2026-10-12): session, today and 7 days, kept on disk
+across restarts; no dollar figures; the local Gemma calls too, as a third
+section.
+
 ## What tiny-axe records today
 
 | Source | What's there | Kept? |
@@ -15,16 +19,17 @@ Claude Haiku 5.5 and Jev.
 | Jev (`Decider.Jev`) | each reply's `usage` (`input_tokens`, `output_tokens`), model, request id | on the decision's meta only; never added up |
 | Haiku answers (`Model.ClaudeCLI`, `claude -p`) | the stream's final `result` event: `usage` (input, output, cache read, cache write) and `total_cost_usd`; `rate_limit_event` with the 5-hour and 7-day windows' utilization and reset time | usage goes to the caller's `on_usage` (context meter); windows to `TinyAxe.Escalation` (the status bar's "Claude 41% of 5h", the 90% stop) |
 | Haiku agent and sub-agents (`Agent.ClaudeDriver`, `Agent.Dispatch`) | the same `result` event, in `acc.result` | only the call is counted (`[:tiny_axe, :model, :call]`, `remote: true`) |
+| Gemma (`TinyAxe.Ollama`) | each reply's `prompt_eval_count` and `eval_count` (and durations) | the answer route's `on_usage` (context meter); the local decider and agent loop drop them |
 
 So the numbers exist at every call; nothing collects them.
 
 ## The shape
 
 - **One event per call.** Each place above emits `[:tiny_axe, :usage]` with
-  measurements `%{input, output, cache_read, cache_write}` (tokens) and
-  `cost_usd` when Claude gives one, and metadata `%{backend: :claude | :jev,
-  kind: :answer | :agent | :subagent | :decision | :compaction, model, ok,
-  ms}`. Never any prompt or answer text.
+  measurements `%{input, output, cache_read, cache_write}` (tokens), and
+  metadata `%{backend: :claude | :jev | :ollama, kind: :answer | :agent |
+  :subagent | :decision | :compaction | :suggest, model, ok, ms}`. Never any
+  prompt or answer text, and no dollar figures (`total_cost_usd` is left out).
 - **`TinyAxe.Usage`**, a supervised process that listens for it:
   - appends one JSON line per call to `<state_dir>/usage.jsonl` (written
     before it's counted, so a crash loses at most the call in flight; lines
@@ -54,7 +59,11 @@ So the numbers exist at every call; nothing collects them.
 │   output                        912    2.8k      21.1k   │
 │   errors                         0        1         3    │
 │                                                          │
-│ today by hour  Haiku ▁▁▃▇▂▁▁▅   Jev ▂▃▅▇▆▃▂▄             │
+│ Gemma (gemma4:e4b-it-qat, local) session  today   7 days │
+│   calls                         52      140      1.1k    │
+│   input / output          96k / 8k   270k/24k   2.1M/180k │
+│                                                          │
+│ today by hour  Haiku ▁▁▃▇▂▁▁▅ Jev ▂▃▅▇▆▃▂▄ Gemma ▃▅▇▇▅▃▂▄ │
 │ tab: session / today / 7 days · esc close                │
 ╰──────────────────────────────────────────────────────────╯
 ```
@@ -62,7 +71,8 @@ So the numbers exist at every call; nothing collects them.
 ## Phases
 
 1. **T1, the numbers.** The `[:tiny_axe, :usage]` event from Jev, Haiku
-   answers, the agent and sub-agents (and compaction, when Haiku does it);
+   answers, the agent and sub-agents, and every Ollama call (answers,
+   decisions with the local decider, the local agent loop, compaction);
    `TinyAxe.Usage` with `usage.jsonl`, totals, pruning. Tests with the fake
    CLIs (`test/support/fake_cli/claude`) and a stubbed Jev.
 2. **T2, `/token`.** The popup, live updates, `esc`; a render test of each
@@ -71,13 +81,10 @@ So the numbers exist at every call; nothing collects them.
    decisions in the installed tiny-axe, compared with what the CLI and Jev
    report.
 
-## Open questions (defaults in brackets)
+## Settled
 
-- Time ranges: session, today and 7 days, kept on disk across restarts
-  [yes]; or this session only.
-- Show Claude's `total_cost_usd`? On a subscription it isn't billed, so it
-  would read as "what this would cost on the API" [leave it out].
-- Include the local Gemma calls too, for comparison [no: Haiku and Jev only,
-  as asked].
+- Session, today and 7 days, on disk (`usage.jsonl`, 90 days).
+- No dollar figures.
+- Gemma included, as a third section.
 - Jev's replies carry tokens but no credits or price, as far as tiny-axe
   sees; if TypeSafe reports a balance somewhere, it could go in later.
