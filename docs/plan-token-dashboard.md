@@ -1,6 +1,6 @@
 # Plan: `/token`, a small dashboard of Haiku and Jev usage
 
-Status (2026-10-12): T1 built (the numbers); T2 (the popup) next. Branch `token-dashboard` (worktree
+Status (2026-10-12): T1 (the numbers) and T2 (the popup) built; T3 (a real check) next. Branch `token-dashboard` (worktree
 `../tiny-axe-lobster`).
 
 ## What the user asked for
@@ -82,7 +82,16 @@ So the numbers exist at every call; nothing collects them.
    decisions with the local decider, the local agent loop, compaction);
    `TinyAxe.Usage` with `usage.jsonl`, totals, pruning. Tests with the fake
    CLIs (`test/support/fake_cli/claude`) and a stubbed Jev.
-2. **T2, `/token`.** The popup, live updates, `esc`; a render test of each
+2. **T2, `/token`.** Done 2026-10-12: `TUI.TokenDash`. All three columns
+   at once (session, today, 7 days), so no `tab`; input counts Claude's cache
+   writes, with cache reads on their own row; errors only when there were
+   some; a backend with no calls says "none in the last 7 days", and with
+   none at all one line says so. Refreshes every second while open (a stale
+   refresh is ignored); `esc`/`q`/`enter` close it, other keys are ignored,
+   and questions (a tool call, a purchase) still go on top and get the keys.
+   Unwrapped and sized to fit, so the columns line up. Tested in
+   `tui_token_test.exs`: each part, column alignment, the empty states, a
+   live refresh, a question on top. Originally: The popup, live updates, `esc`; a render test of each
    part, and an empty state ("no Haiku or Jev calls yet").
 3. **T3, check it for real.** One Haiku answer, one agent run and a few Jev
    decisions in the installed tiny-axe, compared with what the CLI and Jev

@@ -22,6 +22,9 @@ defmodule TinyAxe.TUI do
   working, `/chats` lists them, `/chat N` switches, `/chat close` closes an
   idle one. Questions from any chat show up wherever you are.
 
+  `/token` shows token use by Claude Haiku, Jev and the local model
+  (`TUI.TokenDash`).
+
   History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
   `/history` lists the recent ones, `/history N` reopens one, `/history words`
   finds them. Your page of tiny-axe's website shows all of them under Chats.
@@ -135,6 +138,8 @@ defmodule TinyAxe.TUI do
        # running job's ref, so a stale answer is dropped.
        account_flow: first_account_flow(opts),
        account_job: nil,
+       # /token's popup (TinyAxe.TUI.TokenDash), while it's open.
+       token_dash: nil,
        # Whether this request is an agent run: its answer goes after its tool lines.
        agent_run: false,
        status: "ready",
@@ -382,6 +387,13 @@ defmodule TinyAxe.TUI do
     {:noreply, FileWorkflow.edit_key(code, edit, state)}
   end
 
+  # /token: esc closes it; other keys wait until it's closed.
+  defp on_event(%Event.Key{code: code}, %{token_dash: dash} = state) when dash != nil do
+    if TinyAxe.TUI.TokenDash.close?(code),
+      do: {:noreply, %{state | token_dash: nil}},
+      else: {:noreply, state, render?: false}
+  end
+
   defp on_event(%Event.Key{code: "esc"}, %{run: run} = state) when run != nil do
     {:noreply, %{Run.cancel(state) | status: "cancelled"}}
   end
@@ -520,9 +532,9 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /graph, /account and /credit-card are handled here,
-      # like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account"] or prompt =~ ~r/\Acd(\s|\z)/ or
+      # cd, pwd, tools, /graph, /account, /token and /credit-card are handled
+      # here, like shell built-ins: no model involved.
+      prompt in ["pwd", "tools", "/account", "/token"] or prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -588,6 +600,8 @@ defmodule TinyAxe.TUI do
         %{state | account_flow: TinyAxe.TUI.AccountFlow.new(), status: "setting up your account…"}
     end
   end
+
+  defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
 
   defp builtin(state, "/credit-card" <> rest) do
     case String.split(String.trim(rest), " ", parts: 2) do
@@ -756,6 +770,11 @@ defmodule TinyAxe.TUI do
 
   defp on_info({:graph, {:error, message}}, state),
     do: {:noreply, %{add_meta(state, "✗ graph: #{message}") | status: "ready"}}
+
+  defp on_info({:token_dash, ref}, %{token_dash: dash} = state) when dash != nil,
+    do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
+
+  defp on_info({:token_dash, _closed}, state), do: {:noreply, state, render?: false}
 
   defp on_info(:tick, %{run: nil} = state), do: {:noreply, state, render?: false}
 
