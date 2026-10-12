@@ -538,7 +538,8 @@ defmodule TinyAxe.TUI do
 
       # cd, pwd, tools, /graph, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account", "/token", "/review"] or prompt =~ ~r/\Acd(\s|\z)/ or
+      prompt in ["pwd", "tools", "/account", "/token", "/review", "/review all"] or
+        prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/graph(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -596,11 +597,12 @@ defmodule TinyAxe.TUI do
   end
 
   # Reads every chat for the site's session graph (TinyAxe.Review), aside.
-  defp builtin(state, "/review") do
+  defp builtin(state, "/review" <> rest) do
     tui = self()
+    opts = if String.trim(rest) == "all", do: [all: true], else: []
 
     Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
-      send(tui, {:review, TinyAxe.Review.run()})
+      send(tui, {:review, TinyAxe.Review.run(opts)})
     end)
 
     %{state | status: "reading the chats…"}

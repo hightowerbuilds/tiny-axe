@@ -24,7 +24,11 @@ defmodule TinyAxe.Review do
   alias TinyAxe.{Decider, History}
 
   @delay 5_000
-  @categories ~w(coding research shopping writing tiny-axe other)
+  @categories ~w(coding system research shopping writing tiny-axe other)
+  # Words that say nothing about what a chat was about.
+  @dull ~w(price prices website site page pages link links login sign-in username password account
+           graph chat chats user search request question answer help information local host localhost
+           terminal computer machine) ++ ["command-line interface"]
   @max_chars 6_000
   @max_concepts 8
   @keep 0.5
@@ -61,7 +65,8 @@ defmodule TinyAxe.Review do
 
   @doc """
   Reviews every chat that's new or has grown since its last review, now, and
-  waits. Options (for tests): `:history` (the folder), `:path` (the record),
+  waits; `all: true` reads every chat again (after the prompts change).
+  Options (for tests): `:history` (the folder), `:path` (the record),
   `:chat` (how the local model is asked), `:decide` (how Jev is).
   """
   @spec run(keyword()) :: {:ok, %{reviewed: integer(), skipped: integer(), failed: integer()}}
@@ -81,7 +86,7 @@ defmodule TinyAxe.Review do
       hash = hash(doc)
 
       cond do
-        match?(%{"hash" => ^hash}, known[doc["id"]]) ->
+        !opts[:all] and match?(%{"hash" => ^hash}, known[doc["id"]]) ->
           {:ok, %{counts | skipped: counts.skipped + 1}}
 
         true ->
@@ -179,9 +184,14 @@ defmodule TinyAxe.Review do
           "You review a chat between a user and tiny-axe, a terminal assistant. Say what it was " <>
             "about. Answer with JSON: \"summary\" (one plain sentence), \"category\" (one of " <>
             Enum.join(@categories, ", ") <>
-            "; \"tiny-axe\" is for chats about tiny-axe itself, its site or account) and " <>
-            "\"concepts\" (3 to #{@max_concepts} short tags, lowercase, each a thing, place, " <>
-            "product or topic the chat was about; no generic words)."
+            ": coding is writing or changing code; system is installing, removing or running " <>
+            "things on this computer; research is finding things out; shopping is looking at or " <>
+            "buying products; writing is prose; tiny-axe is only for chats about tiny-axe itself, " <>
+            "its website or the user's account there; other is anything else) and " <>
+            "\"concepts\" (3 to #{@max_concepts} short tags, lowercase: the specific things the " <>
+            "chat was about, named: products, brands, shops, places, software, languages, " <>
+            "topics. Never generic words such as price, website, login, username, link, page, " <>
+            "graph, search or help)."
       },
       %{role: "user", content: "Title: #{title}\n\n#{text}"}
     ]
@@ -195,7 +205,7 @@ defmodule TinyAxe.Review do
               tags
               |> Enum.filter(&is_binary/1)
               |> Enum.map(&tidy/1)
-              |> Enum.reject(&(&1 == ""))
+              |> Enum.reject(&(&1 == "" or &1 in @dull))
               |> Enum.uniq()
               |> Enum.take(@max_concepts)
 
@@ -233,7 +243,9 @@ defmodule TinyAxe.Review do
           {:"concept_#{i}",
            %{
              type: :noul,
-             instructions: "Is \"#{c}\" a major concept of this chat, not a passing one?"
+             instructions:
+               "Is \"#{c}\" a specific, major thing this chat was about (a named product, place, " <>
+                 "software, topic), rather than a passing mention or a generic word?"
            }}
         end)
       )
