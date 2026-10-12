@@ -105,14 +105,20 @@ shop's saved card).
 - **P3, remote approvals:** `ta-remote-approve`, the approval card on the
   Chat tab, the 🌐 chat waiting for it; purchases and other asks from the
   phone.
-- **P4, the first real purchase:** with the user there, a small amount,
-  following § C's checklist.
+- **P4, the first real purchase:** with the user there, following § C's
+  checklist. The user expects real orders to be $100 or more, so the caps
+  must allow that first (below).
 
 ## Defaults (change any)
 
 - Acts off the purchase's shop need a yes (at the machine, or on the Chat tab
   remotely).
-- Caps and journal as now: $100 an order, $200 a day, any shop.
+- Caps in code as now, set by the user (`mix tiny_axe.purchases limits
+  --per-order N --daily N`). On 2026-10-12 they're $25 an order and $25 a
+  day, which would refuse the $100+ orders the user expects: they need
+  raising before P4. Claude in Chrome pays with the card saved at the shop,
+  so tiny-axe's own card limits don't apply there; these caps are the limit.
+  Journal as now.
 - Cards: saved at the shop or in Chrome autofill only; tiny-axe never types
   a card number into Chrome.
 - tiny-axe's own browser stays for tasks that don't need your logins;
