@@ -1,6 +1,6 @@
 # Plan: purchases through Claude in Chrome
 
-Status (2026-10-12): plan only. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
+Status (2026-10-12): P0 done (findings below); P1 next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
 
 ## What the user asked for
 
@@ -88,6 +88,36 @@ shop's saved card).
 - The same card, with Approve / Deny, covers the other "needs a yes" asks in
   remote chats (acts off the shop, commands that change things), so remote
   chats stop refusing everything. That's the start of the security pass.
+
+## P0 findings (2026-10-12, claude 2.1.296, Haiku 5.5, the fixture shop in the user's Chrome)
+
+Run: `claude -p --model claude-haiku-5-5 --setting-sources local --settings
+<hooks> --tools "" --strict-mcp-config --mcp-config <gate> --allowedTools
+<gate> --permission-prompt-tool <gate tool> --chrome`, from an empty folder.
+
+- **Every Chrome call goes to the permission tool**, reads included, as
+  `{tool_name, input, tool_use_id}`. It answers with the text
+  `{"behavior":"allow","updatedInput":…}` or `{"behavior":"deny","message":…}`.
+  A refusal's message reaches the model, which follows it: held "Place
+  order" → it called `get_page_text` → clicked again → allowed.
+- **Hooks run** from `--settings` under `--setting-sources local`. PreToolUse
+  and PostToolUse get `tool_name`, `tool_input`, `tool_use_id` and (post)
+  `tool_response`, a list of text parts:
+  - `get_page_text`: `Title:`, `URL:`, then the page text (the summary's
+    source);
+  - `find`: `- ref_16: button ""Place order"" (button) - …` (ref → label);
+  - every result ends with **Tab Context**: each tab's id, title and URL.
+- **A click carries its ref and tab:** `computer {"action":"left_click",
+  "ref":"ref_16","tabId":…,"action_summary":…}`. So the gate knows the button
+  and the page.
+- **`browser_batch` hides actions:** the gate sees one call whose
+  `input.actions` lists the inner ones (`navigate`, `get_page_text`, …), and
+  no PostToolUse came back for it. Haiku used it even when told not to. The
+  gate refuses batches ("one call at a time").
+- **Waiting works:** a permission answer that took 150 s was waited for. The
+  driver also sets `MCP_TOOL_TIMEOUT` high, for remote approvals (10 min).
+- The order on the fixture went through only after the gate allowed the
+  click (order `TA-1001`).
 
 ## Phases
 
