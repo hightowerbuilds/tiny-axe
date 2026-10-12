@@ -22,11 +22,16 @@ defmodule TinyAxe.TUI do
   working, `/chats` lists them, `/chat N` switches, `/chat close` closes an
   idle one. Questions from any chat show up wherever you are.
 
-  `/token` shows token use by Claude Haiku, Jev and the local model
-  (`TUI.TokenDash`).
-
+  The panel (`TUI.Panel`): one popup with a tab each for Remote, Token,
+  Wallet and Search, opened on its tab by `/remote`, `/token`, `/wallet` (or
+  `/credit-card`) and `/search`; tab and the arrows switch, esc closes.
   `/remote on|off` lets the site's /remote page reach this tiny-axe: its
   messages are answered in a 🌐 chat of their own (`TUI.RemoteChat`).
+
+  Questions (a tool call, a command, a purchase, a bigger model) share one
+  layout (`TUI.Overlays`): how risky, who asks, what, `d` for the details,
+  and every question waiting behind it. `/route on|off` shows or hides the
+  decider's route line above each answer (hidden by default).
 
   History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
   `/history` lists the recent ones, `/history N` reopens one, `/history words`
@@ -351,6 +356,11 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  # d shows or hides a question's details (TUI.Overlays).
+  defp on_event(%Event.Key{code: "d", modifiers: []}, %{tool_ask: ask} = state)
+       when is_map(ask) and :erlang.map_get(:class, ask) != :handoff,
+       do: {:noreply, %{state | tool_ask: Map.update(ask, :details, true, &(!&1))}}
+
   # The agent's call waits for this answer in the gate.
   defp on_event(%Event.Key{code: code}, %{tool_ask: ask} = state) when ask != nil do
     handoff? = ask[:class] == :handoff
@@ -554,8 +564,8 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /site, /remote, /account, /token and /credit-card are handled
-      # here, like shell built-ins: no model involved.
+      # cd, pwd, tools, /site, /remote, /account, /route, the panel's commands
+      # and /credit-card are handled here, like shell built-ins: no model involved.
       prompt in ~w(pwd tools /account /token /wallet /site /route) or
         prompt in ["/route on", "/route off"] or
         prompt =~ ~r/\A(cd|\/search)(\s|\z)/ or

@@ -1,6 +1,6 @@
 # Plan: the panel, the permission popup, and the route line
 
-Status (2026-10-12): planned. This work is on branch `panels` (worktree `../tiny-axe-panels`).
+Status (2026-10-12): P1–P3 built on branch `panels` (worktree `../tiny-axe-panels`).
 
 This responds to review section 08 (`docs/reviews/tiny-axe-review-2026-10-12.html`): the interface shows a lot of internal detail. The review asks that the default view say what's happening, what tiny-axe needs from you, and what has been verified, with details available when you ask for them. The account step stays as it is (the user's choice).
 
