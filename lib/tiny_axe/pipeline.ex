@@ -140,7 +140,10 @@ defmodule TinyAxe.Pipeline do
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
 
         :agent ->
-          TinyAxe.Agent.run(history, prompt, notify, remote: remote)
+          TinyAxe.Agent.run(history, prompt, notify,
+            remote: remote,
+            leash: Keyword.get(opts, :leash, false)
+          )
 
         :answer ->
           {file_context, request, notify} =

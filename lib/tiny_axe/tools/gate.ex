@@ -76,7 +76,7 @@ defmodule TinyAxe.Tools.Gate do
 
   require Logger
 
-  alias TinyAxe.{Browser, Chrome, MCP, Ops, Purchases, Tools}
+  alias TinyAxe.{Browser, Chrome, Leash, MCP, Ops, Purchases, Tools}
   alias TinyAxe.Agent.{Dispatch, ShellTool, SiteTool}
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
@@ -118,6 +118,8 @@ defmodule TinyAxe.Tools.Gate do
         recent: [],
         allowed: MapSet.new(),
         intent: Keyword.get(opts, :intent),
+        # Whether it may run on the leash (TinyAxe.Leash): the TUI's own chats.
+        leash: Keyword.get(opts, :leash, false),
         objective: opts |> Keyword.get(:objective) |> then(&(&1 && Redact.text(&1))),
         # 0 for an agent's own task, 1 for a sub-agent's; and who drives it
         # (driven_by/2): together they say whether dispatch_agents is offered.
@@ -1132,33 +1134,39 @@ defmodule TinyAxe.Tools.Gate do
         chrome_commit(task, input, reason)
 
       :act ->
-        if host && MapSet.member?(task.chrome_sites, host) do
-          chrome_acted(task, input)
-          {:allowed_for_session, chrome_allow(input)}
-        else
-          where = if host, do: " on #{host}", else: ""
+        cond do
+          Leash.leashed?(task) ->
+            chrome_acted(task, input)
+            {:leashed, chrome_allow(input)}
 
-          pseudo = %{
-            name: "chrome · #{short}",
-            server: "chrome",
-            definition: %{"description" => "Acts in your own Chrome#{where}."},
-            policy: %{}
-          }
+          host && MapSet.member?(task.chrome_sites, host) ->
+            chrome_acted(task, input)
+            {:allowed_for_session, chrome_allow(input)}
 
-          # "a" allows the whole site for this task, when there is one.
-          case ask(task, pseudo, input, :outward, reason, %{session_ok: host != nil, site: host}) do
-            :once ->
-              chrome_acted(task, input)
-              {:approved, chrome_allow(input)}
+          true ->
+            where = if host, do: " on #{host}", else: ""
 
-            :session ->
-              GenServer.call(__MODULE__, {:chrome_site, task.id, host})
-              chrome_acted(task, input)
-              {:approved, chrome_allow(input)}
+            pseudo = %{
+              name: "chrome · #{short}",
+              server: "chrome",
+              definition: %{"description" => "Acts in your own Chrome#{where}."},
+              policy: %{}
+            }
 
-            :deny ->
-              {:denied, chrome_deny("the user said no")}
-          end
+            # "a" allows the whole site for this task, when there is one.
+            case ask(task, pseudo, input, :outward, reason, %{session_ok: host != nil, site: host}) do
+              :once ->
+                chrome_acted(task, input)
+                {:approved, chrome_allow(input)}
+
+              :session ->
+                GenServer.call(__MODULE__, {:chrome_site, task.id, host})
+                chrome_acted(task, input)
+                {:approved, chrome_allow(input)}
+
+              :deny ->
+                {:denied, chrome_deny("the user said no")}
+            end
         end
     end
   end
@@ -1275,13 +1283,7 @@ defmodule TinyAxe.Tools.Gate do
         Purchases.event(id, %{t: "refused", checks: failed})
         task.notify.({:purchase_refused, %{summary: summary, failed: failed}})
 
-        hint =
-          if task.intent && task.intent.max == nil,
-            do: " Ask the user the most they want to spend, then they can ask again.",
-            else: ""
-
-        {:refused,
-         chrome_deny("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.#{hint}")}
+        {:refused, chrome_deny("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.")}
     end
   end
 
@@ -1588,7 +1590,14 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(task, tool, args, {class, _reason}, _allowed),
     do: forward(task, tool, args, if(class == :outward, do: :allowed_for_session, else: :ran))
 
+  # On the leash, a browser action runs without asking (TinyAxe.Leash).
   defp ask_and_forward(task, tool, args, reason) do
+    if browser?(tool) and Leash.leashed?(task),
+      do: forward(task, tool, args, :leashed),
+      else: asked_and_forward(task, tool, args, reason)
+  end
+
+  defp asked_and_forward(task, tool, args, reason) do
     case ask(task, tool, args, :outward, reason) do
       :once ->
         forward(task, tool, args, :approved)
@@ -1642,13 +1651,7 @@ defmodule TinyAxe.Tools.Gate do
             Purchases.event(id, %{t: "refused", checks: failed})
             task.notify.({:purchase_refused, %{summary: summary, failed: failed}})
 
-            hint =
-              if task.intent && task.intent.max == nil,
-                do: " Ask the user the most they want to spend, then they can ask again.",
-                else: ""
-
-            {:refused,
-             refusal("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.#{hint}")}
+            {:refused, refusal("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.")}
         end
 
       {:error, why} ->
@@ -1916,7 +1919,21 @@ defmodule TinyAxe.Tools.Gate do
 
   # `needs`: what the user types to unlock the card for this purchase (its PIN,
   # its CVC); `mode`: :order (type the total) or :card_step (fill the card in).
-  defp ask_purchase(task, summary, checks, needs, mode) do
+  # On the leash, an order (or a card step) whose checks all passed and that
+  # needs nothing typed is placed without asking; the receipt still shows.
+  defp ask_purchase(task, summary, checks, [], mode) do
+    if Leash.leashed?(task) do
+      task.notify.({:purchase_leashed, %{summary: summary, checks: checks, mode: mode}})
+      {:confirm, make_ref()}
+    else
+      asked_purchase(task, summary, checks, [], mode)
+    end
+  end
+
+  defp ask_purchase(task, summary, checks, needs, mode),
+    do: asked_purchase(task, summary, checks, needs, mode)
+
+  defp asked_purchase(task, summary, checks, needs, mode) do
     ref = make_ref()
     timeout = Application.get_env(:tiny_axe, :tools, [])[:approval_timeout] || :timer.minutes(10)
 

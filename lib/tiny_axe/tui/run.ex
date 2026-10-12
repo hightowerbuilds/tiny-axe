@@ -26,7 +26,11 @@ defmodule TinyAxe.TUI.Run do
 
     state =
       start(state, fn notify ->
-        TinyAxe.Pipeline.run(history, prompt, notify, remote: remote_mode(state))
+        TinyAxe.Pipeline.run(history, prompt, notify,
+          remote: remote_mode(state),
+          # The 🌐 chat is never on the leash (TinyAxe.Leash).
+          leash: not state.remote_chat
+        )
       end)
 
     %{

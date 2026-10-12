@@ -264,11 +264,11 @@ defmodule TinyAxe.Purchases do
         intent == nil ->
           {:fail, "you didn't ask to buy anything in this request"}
 
-        intent.max == nil ->
-          {:fail, "you didn't say the most to spend (e.g. \"under $50\")"}
-
         not is_number(total) ->
           {:fail, "tiny-axe couldn't read the total on the page"}
+
+        intent.max == nil ->
+          {:ok, "you named no maximum, so the per-order limit is it"}
 
         total > intent.max ->
           {:fail,

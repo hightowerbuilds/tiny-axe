@@ -1,5 +1,5 @@
 defmodule TinyAxe.TUIToolsTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ExRatatui.Event
   alias TinyAxe.TUI
@@ -366,6 +366,43 @@ defmodule TinyAxe.TUIToolsTest do
       metas = for {:meta, m} <- state.transcript, do: m
       assert "✗ tiny-axe won't buy at shop.example ($16.00): over your maximum" in metas
       assert Enum.any?(metas, &(&1 =~ "🧾 bought at shop.example for $16.00 · order TA-1001"))
+    end
+  end
+
+  describe "/leash" do
+    defp status_bar(state), do: draw(state) |> String.split("\n") |> Enum.find(&(&1 =~ "ctx"))
+
+    defp typed(state, text) do
+      ExRatatui.textarea_set_value(state.input, text)
+      {:noreply, state} = TUI.handle_event(key("enter"), state)
+      state
+    end
+
+    test "on, off and how it stands; the status bar shows it; a leashed order says so" do
+      on_exit(fn -> TinyAxe.Leash.set(false) end)
+      {:ok, state} = TUI.mount(test_mode: @size)
+
+      state = typed(state, "/leash on")
+      assert TinyAxe.Leash.on?()
+      assert {:meta, "🔓 leash on for this session" <> _} = List.last(state.transcript)
+      assert status_bar(state) =~ ~r/🔓\s+leash/
+
+      state = %{state | run: {make_ref(), self()}}
+
+      state =
+        event(
+          state,
+          {:purchase_leashed,
+           %{summary: %{"host" => "shop.example", "total_text" => "$16.00"}, mode: :order}}
+        )
+
+      assert List.last(state.transcript) ==
+               {:meta,
+                "🔓 on the leash, every check passed: placing the order at shop.example for $16.00"}
+
+      state = typed(%{state | run: nil}, "/leash off")
+      refute TinyAxe.Leash.on?()
+      refute status_bar(state) =~ ~r/🔓\s+leash/
     end
   end
 end

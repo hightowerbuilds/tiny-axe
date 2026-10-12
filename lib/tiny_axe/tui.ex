@@ -552,7 +552,7 @@ defmodule TinyAxe.TUI do
       # here, like shell built-ins: no model involved.
       prompt in ["pwd", "tools", "/account", "/token", "/site"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
-        prompt =~ ~r/\A\/(remote|chrome)(\s|\z)/ or
+        prompt =~ ~r/\A\/(remote|chrome|leash)(\s|\z)/ or
           String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
@@ -605,6 +605,32 @@ defmodule TinyAxe.TUI do
 
       nil ->
         %{state | account_flow: TinyAxe.TUI.AccountFlow.new(), status: "setting up your account…"}
+    end
+  end
+
+  # The leash (TinyAxe.Leash): browser actions, and orders whose checks all
+  # pass, go through without asking, for this session.
+  defp builtin(state, "/leash" <> rest) do
+    case String.trim(rest) do
+      "on" ->
+        TinyAxe.Leash.set(true)
+
+        add_meta(
+          state,
+          "🔓 leash on for this session: browser actions run without asking, and an order " <>
+            "whose checks all pass (what you asked for, the limits, the shop, the card) is " <>
+            "placed without asking. Commands, a card's PIN and the 🌐 chat still ask. /leash off"
+        )
+
+      "off" ->
+        TinyAxe.Leash.set(false)
+        add_meta(state, "🔒 leash off: browser actions and orders ask you again")
+
+      _ ->
+        add_meta(
+          state,
+          "leash #{if TinyAxe.Leash.on?(), do: "on", else: "off"} (/leash on · /leash off)"
+        )
     end
   end
 
@@ -944,6 +970,15 @@ defmodule TinyAxe.TUI do
       "✗ tiny-axe won't buy at #{s["host"] || "this shop"}#{if s["total_text"], do: " (#{s["total_text"]})"}: " <>
         Enum.join(failed, "; ")
     )
+  end
+
+  defp apply_event({:purchase_leashed, %{summary: s, mode: mode}}, state) do
+    what =
+      if mode == :card_step,
+        do: "filling your card in at #{s["host"]}",
+        else: "placing the order at #{s["host"]} for #{s["total_text"]}"
+
+    add_meta(state, "🔓 on the leash, every check passed: #{what}")
   end
 
   defp apply_event({:purchase_changed, why}, state),

@@ -74,7 +74,9 @@ defmodule TinyAxe.Agent do
         do: [chrome: true, max_calls: Application.get_env(:tiny_axe, :chrome_max_calls, 150)],
         else: []
 
-    case open(notify, [intent: intent, objective: objective(prompt, history)] ++ chrome_opts) do
+    base = [intent: intent, objective: objective(prompt, history), leash: opts[:leash] == true]
+
+    case open(notify, base ++ chrome_opts) do
       {:ok, task} ->
         try do
           choice
@@ -110,6 +112,7 @@ defmodule TinyAxe.Agent do
       depth: parent.depth + 1,
       parent: parent.id,
       part: part["objective"],
+      leash: parent[:leash] == true,
       # Browser decisions judge by the user's own words, never an agent's.
       objective: parent.objective,
       max_calls: Application.get_env(:tiny_axe, :subagent_max_calls, 30),
