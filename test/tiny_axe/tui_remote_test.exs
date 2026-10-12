@@ -79,7 +79,8 @@ defmodule TinyAxe.TUIRemoteTest do
     assert "🌐 from the site" in metas(chat)
     assert {_id, _pid} = chat.run
     assert Chats.title(state, remote_id(state), 30) =~ "🌐 what's in this folder?"
-    assert_received {:remote_out, {:reply, "m1", "working", nil}}
+    # TinyAxe.Remote took it up before handing it over: no "working" from here.
+    refute_received {:remote_out, {:reply, "m1", _, _}}
     take_run(state)
   end
 
@@ -109,11 +110,10 @@ defmodule TinyAxe.TUIRemoteTest do
     state = info(state, {:remote, {:message, message("m2")}})
 
     assert [%{id: "m2"}] = state.remote_link.queue
-    refute_received {:remote_out, {:reply, "m2", _, _}}
+    assert {:user, "question m2"} not in remote(state).transcript
 
     state = events(state, id, [{:done, "First."}])
     assert_received {:remote_out, {:reply, "m1", "answered", "First."}}
-    assert_received {:remote_out, {:reply, "m2", "working", nil}}
     assert Chats.count(state) == 2
     assert {:user, "question m2"} in remote(state).transcript
     assert state.remote_link.queue == []
@@ -185,14 +185,8 @@ defmodule TinyAxe.TUIRemoteTest do
 
     state = events(state, id, [{:error, :timeout}])
     assert_received {:remote_out, {:reply, "m1", "failed", ":timeout"}}
-    assert_received {:remote_out, {:reply, "m2", "working", nil}}
+    assert {:user, "question m2"} in remote(state).transcript
     take_run(state)
-  end
-
-  test "an interrupted message is failed, not run again" do
-    state = info(mount(), {:remote, {:interrupted, message("m1")}})
-    assert_received {:remote_out, {:reply, "m1", "failed", "tiny-axe stopped" <> _}}
-    assert Chats.count(state) == 1
   end
 
   test "a card number in a message never reaches the model" do

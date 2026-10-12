@@ -83,17 +83,6 @@ defmodule TinyAxe.TUI.RemoteChat do
       else: put_link(state, queue: queue(link, msg))
   end
 
-  # tiny-axe stopped (or the screen restarted) while answering it: say so
-  # rather than run it again blind; sending it again from the page is easy.
-  def event(state, {:interrupted, msg}) do
-    out(
-      state,
-      {:reply, msg.id, "failed", "tiny-axe stopped while it was working on this; send it again"}
-    )
-
-    state
-  end
-
   def event(state, _other), do: state
 
   defp queue(link, msg) do
@@ -159,7 +148,6 @@ defmodule TinyAxe.TUI.RemoteChat do
     from = length(transcript)
     # Answers go above the lines that judged them, so they're found by count.
     answers = Enum.count(transcript, &match?({:assistant, _}, &1))
-    out(state, {:reply, msg.id, "working", nil})
 
     # A card number never reaches a model (as at the prompt).
     prompt = TinyAxe.Tools.Redact.text(msg.body)

@@ -18,17 +18,19 @@ defmodule TinyAxe.Remote do
     what it hasn't finished; new ones arrive on the channel as they're sent.
     It asks again every minute while online, in case the channel missed one
     (right after a join, Realtime's database broadcasts can take a moment).
-    Subscribers get `{:remote, {:message, msg}}` for each message waiting,
-    once, and `{:remote, {:interrupted, msg}}` for one that was being worked
-    on when tiny-axe stopped. `msg` is `%{id:, body:, created_at:}`. Nobody
-    subscribed: nothing is taken, the message waits.
+    Each waiting message is taken up first (`ta-remote-reply` "working",
+    which only works on a message still pending), then handed to
+    subscribers as `{:remote, {:message, msg}}`, once; `msg` is
+    `%{id:, body:, created_at:}`. With two tiny-axes online (two windows),
+    one takes each message and the other leaves it. Nobody subscribed:
+    nothing is taken, the message waits. One left "working" by a tiny-axe
+    that stopped stays that way (the page says so); it's never run again
+    blind.
   - **Answering:** `progress/3` (what tiny-axe is doing) and `draft/3` (the
     reply so far) go straight out on the channel; they're not kept.
     `send_reply/4` saves where a message stands and its reply through
     `ta-remote-reply`, from an outbox: in order, and kept until the site has
-    it, so a reply written while offline goes once tiny-axe is back. A
-    message tiny-axe has sent a reply for is never handed out again, even if
-    the site still lists it (a reconnect midway through an answer). Everything is
+    it, so a reply written while offline goes once tiny-axe is back. Everything is
     redacted (`Tools.Redact.secrets/1`) before it leaves.
 
   `{:remote, {:status, phase}}` goes to subscribers whenever the phase
@@ -180,8 +182,8 @@ defmodule TinyAxe.Remote do
       # Replies waiting to go, oldest first, and the one being sent.
       outbox: [],
       sending: nil,
-      # Messages this tiny-axe has taken up (sent a reply for): never handed
-      # out again, even if the site still lists them as working.
+      # Messages this tiny-axe has taken up or replied to: never handed out
+      # again.
       claimed: MapSet.new()
     }
 
@@ -247,7 +249,7 @@ defmodule TinyAxe.Remote do
     do: {:noreply, token(s, renewal?, result)}
 
   def handle_info({:pending, gen, {:ok, %{"messages" => messages}}}, %{gen: gen} = s),
-    do: {:noreply, Enum.reduce(messages, s, &deliver(&2, &1, :catch_up))}
+    do: {:noreply, Enum.reduce(messages, s, &deliver(&2, &1))}
 
   def handle_info({:pending, gen, {:error, reason}}, %{gen: gen} = s) do
     Logger.warning("remote chat: couldn't ask for waiting messages: #{reason}")
@@ -275,6 +277,25 @@ defmodule TinyAxe.Remote do
   end
 
   def handle_info({:sent, _stale, _result}, s), do: {:noreply, s}
+
+  def handle_info({:taken, msg, result}, s) do
+    case result do
+      {:ok, _} ->
+        for pid <- Map.keys(s.subscribers), do: send(pid, {:remote, {:message, msg}})
+        {:noreply, %{s | claimed: MapSet.put(s.claimed, msg.id)}}
+
+      # Another tiny-axe took it (or it's settled): leave it.
+      {:error, "ta-remote-reply: 409" <> _} ->
+        Logger.info("remote chat: #{msg.id} was taken by another tiny-axe")
+        {:noreply, s}
+
+      # Try again on the next sweep.
+      {:error, reason} ->
+        Logger.warning("remote chat: couldn't take up a message yet: #{reason}")
+        {:noreply, %{s | seen: MapSet.delete(s.seen, msg.id)}}
+    end
+  end
+
   def handle_info(:flush, s), do: {:noreply, flush(s)}
 
   def handle_info({:beat, gen}, %{gen: gen, beat: nil} = s) do
@@ -465,7 +486,7 @@ defmodule TinyAxe.Remote do
          "event" => "broadcast",
          "payload" => %{"event" => "message", "payload" => message}
        }),
-       do: deliver(s, message, :live)
+       do: deliver(s, message)
 
   defp frame(s, %{"event" => event}) when event in ["phx_error", "phx_close"],
     do: retry(s, "the channel closed (#{event})")
@@ -493,27 +514,26 @@ defmodule TinyAxe.Remote do
     s
   end
 
-  defp deliver(s, %{"role" => "user", "id" => id, "status" => status} = message, how)
+  # A message waiting, not yet taken (or being taken) by this tiny-axe: take
+  # it up, then hand it out (see :taken).
+  defp deliver(s, %{"role" => "user", "id" => id, "status" => "pending"} = message)
        when map_size(s.subscribers) > 0 do
-    kind =
-      case {status, how} do
-        {"pending", _} -> :message
-        {"working", :catch_up} -> :interrupted
-        _ -> nil
-      end
-
-    # One this tiny-axe has taken up is being (or was) answered: not waiting,
-    # not interrupted.
-    if kind && not MapSet.member?(s.claimed, id) && not MapSet.member?(s.seen, id) do
-      msg = %{id: id, body: message["body"], created_at: message["created_at"]}
-      for pid <- Map.keys(s.subscribers), do: send(pid, {:remote, {kind, msg}})
-      %{s | seen: MapSet.put(s.seen, id)}
-    else
+    if MapSet.member?(s.claimed, id) or MapSet.member?(s.seen, id) or not fresh?(s.session, 30) do
       s
+    else
+      me = self()
+      msg = %{id: id, body: message["body"], created_at: message["created_at"]}
+      %{url: base, session: %{token: token}} = s
+
+      Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+        send(me, {:taken, msg, Api.reply(base, token, id, "working")})
+      end)
+
+      %{s | seen: MapSet.put(s.seen, id)}
     end
   end
 
-  defp deliver(s, _message, _how), do: s
+  defp deliver(s, _message), do: s
 
   # Sends the oldest reply waiting, one at a time so they arrive in order.
   defp flush(%{sending: nil, outbox: [item | _]} = s) do

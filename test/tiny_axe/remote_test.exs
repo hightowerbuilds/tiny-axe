@@ -92,7 +92,7 @@ defmodule TinyAxe.RemoteTest do
     refute_received {:realtime, :socket, _, _}
   end
 
-  test "hands each waiting message to subscribers once: those kept and those that arrive",
+  test "takes up each waiting message, then hands it to subscribers once: those kept and those that arrive",
        %{fake: fake} do
     FakeRealtime.set(fake, :pending, [row("a"), row("b", "working")])
     pid = start(fake)
@@ -100,20 +100,53 @@ defmodule TinyAxe.RemoteTest do
 
     assert Remote.subscribe(pid).phase == :online
     assert_receive {:realtime, :pending, "session-1"}, @wait
+    assert_receive {:realtime, :reply, "session-1", %{"id" => "a", "status" => "working"}}, @wait
     assert_receive {:remote, {:message, %{id: "a", body: "hello a"}}}, @wait
-    assert_receive {:remote, {:interrupted, %{id: "b"}}}, @wait
 
     FakeRealtime.message(socket, row("c"))
+    assert_receive {:realtime, :reply, _, %{"id" => "c", "status" => "working"}}, @wait
     assert_receive {:remote, {:message, %{id: "c"}}}, @wait
 
-    # The same message again (its update to "working", say), or tiny-axe's own reply: nothing.
+    # The same message again, its update to "working", tiny-axe's own reply,
+    # or one another tiny-axe is working on (or was, before it stopped): nothing.
     FakeRealtime.message(socket, row("c"))
     FakeRealtime.message(socket, row("c", "working"))
     FakeRealtime.message(socket, %{row("d") | "role" => "assistant"})
-    # A "working" message only counts as cut off when it's waiting from before.
     FakeRealtime.message(socket, row("e", "working"))
     Process.sleep(50)
     refute_received {:remote, {_, _}}
+    for id <- ~w(b d e), do: refute_received({:realtime, :reply, _, %{"id" => ^id}})
+  end
+
+  test "two tiny-axes online: the one that loses the race leaves the message alone",
+       %{fake: fake} do
+    pid = start(fake, sweep: 30)
+    Remote.subscribe(pid)
+    socket = online(pid)
+
+    FakeRealtime.set(fake, :reply_status, 409)
+    FakeRealtime.message(socket, row("x"))
+    assert_receive {:realtime, :reply, _, %{"id" => "x", "status" => "working"}}, @wait
+    refute_receive {:remote, {:message, _}}, 100
+
+    # Taken by the other: the sweep doesn't try again either.
+    FakeRealtime.set(fake, :pending, [row("x")])
+    assert_receive {:realtime, :pending, _}, @wait
+    refute_receive {:realtime, :reply, _, %{"id" => "x"}}, 100
+  end
+
+  test "a message it couldn't take up yet is tried again on the next sweep", %{fake: fake} do
+    pid = start(fake, sweep: 30)
+    Remote.subscribe(pid)
+    socket = online(pid)
+
+    FakeRealtime.set(fake, :reply_status, 500)
+    FakeRealtime.message(socket, row("y"))
+    assert_receive {:realtime, :reply, _, %{"id" => "y", "status" => "working"}}, @wait
+
+    FakeRealtime.set(fake, :reply_status, 200)
+    FakeRealtime.set(fake, :pending, [row("y")])
+    assert_receive {:remote, {:message, %{id: "y"}}}, @wait
   end
 
   test "nobody subscribed: nothing is taken, and a new subscriber gets what's waiting",
@@ -130,9 +163,11 @@ defmodule TinyAxe.RemoteTest do
     assert_receive {:remote, {:message, %{id: "a"}}}, @wait
     assert_receive {:remote, {:message, %{id: "b"}}}, @wait
 
-    # A subscriber that comes back (a restarted TUI) is handed them again.
+    # A subscriber that comes back (a restarted TUI) isn't handed one this
+    # tiny-axe took up already; the page shows it was being worked on.
     Remote.subscribe(pid)
-    assert_receive {:remote, {:message, %{id: "a"}}}, @wait
+    assert_receive {:realtime, :pending, _}, @wait
+    refute_receive {:remote, {:message, _}}, 100
   end
 
   test "a message the channel missed is still picked up: it asks again while online",
@@ -176,15 +211,15 @@ defmodule TinyAxe.RemoteTest do
     Remote.send_reply(pid, "a", "answered", "done")
     refute_receive {:realtime, :reply, _, _}, 50
 
-    # A message whose reply is on its way isn't handed out as interrupted.
-    FakeRealtime.set(fake, :pending, [row("a", "working")])
+    # One this tiny-axe is replying to isn't taken up again.
+    FakeRealtime.set(fake, :pending, [row("a")])
     Remote.subscribe(pid)
     Remote.connect(pid)
 
     assert_receive {:realtime, :reply, "session-1", %{"id" => "a", "status" => "working"}}, @wait
     assert_receive {:realtime, :reply, "session-1", %{"id" => "a", "status" => "answered"}}, @wait
     assert_receive {:realtime, :pending, _}, @wait
-    refute_receive {:remote, {:interrupted, _}}, 50
+    refute_receive {:remote, {:message, _}}, 100
   end
 
   test "the outbox drops a reply the site will never take, and keeps one it couldn't send yet",

@@ -1,6 +1,6 @@
 # Plan: chat with tiny-axe from lobsterattack.yachts
 
-Status (2026-10-12): R1 done (migration 0009 applied, ta-remote-* deployed, scripts/remote-check.ts 23/23). R2 done: `TinyAxe.Remote` (own Phoenix-channels client on `mint_web_socket`), live-checked. R3 done: the 🌐 chat in the TUI (`TUI.RemoteChat`), `/remote on|off`, live-checked with Gemma against the real site. R4 (the page) next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
+Status (2026-10-12): R1 done (migration 0009 applied, ta-remote-* deployed, scripts/remote-check.ts 23/23). R2 done: `TinyAxe.Remote` (own Phoenix-channels client on `mint_web_socket`), live-checked. R3 done: the 🌐 chat in the TUI (`TUI.RemoteChat`), `/remote on|off`, live-checked with Gemma against the real site. R4 built: the site's existing Chat tab (home page) is the chat window, checked in a real browser against the real project (not deployed yet). Messages are taken up atomically, so two tiny-axes online never both answer. Branch `remote-chat` (worktree `../tiny-axe-remote`).
 
 ## What the user asked for
 
@@ -84,6 +84,12 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
   (Realtime's database broadcasts warming up); kept rows make that safe. It gets a token, joins the
   channel, tracks presence, sends a heartbeat every 25 s, reconnects with
   backoff, and renews the token.
+- **Taking a message** (R4): `TinyAxe.Remote` takes each one up
+  (`ta-remote-reply` "working", which only works on a pending message, in
+  one statement) before handing it to the TUI. With two tiny-axes online
+  (two windows), one takes it and the other leaves it. There's no
+  "interrupted": a message left working by a tiny-axe that stopped stays
+  that way, and the page says so (send it again).
 - **Where a remote message runs** (R3, `TUI.RemoteChat`): a 🌐 chat of its
   own, made when the first message comes and put aside like any chat (it
   works while you use another; `/chat N` shows it, `esc` there cancels). The
@@ -101,9 +107,7 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
   are part of the security pass.
 - **Replies are never lost:** `Remote.send_reply/4` goes through an outbox
   (in order, kept until the site has it). A message tiny-axe has taken up is
-  never handed out again, even if the site still lists it as working.
-  `{:interrupted, msg}` (taken up by an earlier run of tiny-axe) gets a failed
-  reply: send it again.
+  never handed out again.
 - **Redaction:** a card number in a message is removed before any model sees
   it (as at the prompt); replies, drafts and status are redacted
   (`Redact.secrets/1`) before they leave.
@@ -113,11 +117,19 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
 
 ## Site side (lobsterattack)
 
-- A `/remote` page: transcript, input box, the online dot, and the live
-  status line. supabase-js `channel('remote:<id>', { config: { private: true } })`.
-- Supabase CLI needed to deploy functions (not installed here). Install it
-  through mise and run `! supabase login` once; secrets are set with
-  `supabase secrets set`, typed by the user and never pasted into chat.
+- The home page's **Chat tab** (already there as a placeholder) is the chat
+  window (`src/remote.tsx`): the kept messages (`ta-remote-history`, fetched
+  again whenever the channel rejoins), the online dot (tiny-axe's presence),
+  a live bubble with what tiny-axe is doing and its reply so far, the reply
+  once saved. Replies go through the saved chats' safe Markdown renderer
+  (`renderChat`); your messages are text. Enter sends, shift+enter is a new
+  line. supabase-js `channel('remote:<id>', { config: { private: true } })`.
+- CSP: `connect-src` allows `wss://<project>.supabase.co`.
+- Migration `0010_buster_ta_remote.sql` (was 0009 on the branch; main's 0009
+  is `buster_ta_reviews`; both are applied).
+- Local check: `vp dev` can't serve the page (its `/api` proxy also catches
+  the browser's imports from `api/_lib`), so the check serves `dist/` the way
+  Vercel does, with `vercel.json`'s headers, and drives system Chrome.
 
 ## Steps
 
