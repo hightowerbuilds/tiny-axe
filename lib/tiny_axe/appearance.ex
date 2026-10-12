@@ -355,7 +355,24 @@ defmodule TinyAxe.Appearance do
   defp same?(nil, _), do: false
   defp same?(now, value), do: String.downcase(to_string(now)) == String.downcase(value)
 
+  # Changes to settings the request names outright ("put the terminal tabs
+  # at the bottom") need no review: the decider second-guessed exactly
+  # those (2026-10-12). Only the others are reviewed, if there are any.
   defp review(changes, already, context, notify) do
+    {named, unnamed} =
+      Enum.split_with(changes, fn %{setting: s, value: v} ->
+        Settings.named?(s.id, v, s.kind, context.request)
+      end)
+
+    if named != [], do: notify.({:review_skipped, Enum.map(named, & &1.setting.id)})
+
+    case unnamed do
+      [] -> :ok
+      _ -> review_unnamed(unnamed, already ++ named, context, notify)
+    end
+  end
+
+  defp review_unnamed(changes, already, context, notify) do
     questions =
       changes
       |> Enum.with_index()
@@ -369,18 +386,18 @@ defmodule TinyAxe.Appearance do
       |> Map.put(:complete, %{
         type: :noul,
         instructions:
-          "Would these changes, together with the settings already as asked, do " <>
-            "everything the user asked?"
+          "Would these changes, together with the ones already as asked or named by " <>
+            "the user, do everything the user asked?"
       })
 
     state = %{
       request: context.request,
       recent_conversation: Map.get(context, :recent_conversation, ""),
       changes: Enum.map_join(changes, "\n", &"- #{explain(&1)}"),
-      already_as_asked:
+      already_as_asked_or_named:
         if(already == [],
           do: "none",
-          else: Enum.map_join(already, "; ", &"#{label(&1.setting)} is already #{&1.value}")
+          else: Enum.map_join(already, "; ", &"#{label(&1.setting)}: #{&1.value}")
         )
     }
 

@@ -51,6 +51,94 @@ defmodule TinyAxe.Appearance.Settings do
   @spec ids() :: [String.t()]
   def ids, do: Enum.map(all(), & &1.id)
 
+  ## What names a setting
+
+  # Words a request uses when it names a setting outright: every group must
+  # match (any phrase in it, at the start of a word, so "gap" matches
+  # "gaps"). A change to a setting the request names needs no review
+  # (`TinyAxe.Appearance`). "tab bar" is read as one word first, so the
+  # desktop bar's "bar" doesn't match it.
+  @names %{
+    "theme" => [["theme", "colour scheme", "color scheme", "colours", "colors"]],
+    "background" => [["background", "wallpaper", "bg"]],
+    "font" => [["font", "typeface"]],
+    "text_size" => [
+      ["text", "font"],
+      ["everywhere", "everything", "system", "desktop", "whole", "all apps", "global", "overall"]
+    ],
+    "display_scale" => [["scale", "scaling", "zoom", "hidpi", "dpi"]],
+    "brightness" => [["bright", "dimmer", "darker screen"]],
+    "nightlight" => [["night light", "nightlight", "night mode", "blue light"]],
+    "idle_lock" => [["idle", "lock", "screensaver", "stay awake", "awake"]],
+    "do_not_disturb" => [["disturb", "dnd", "silence", "notification"]],
+    "bar" => [
+      ["bar", "waybar", "panel"],
+      ["show", "hide", "hidden", "visible", "on", "off", "back"]
+    ],
+    "bar_position" => [
+      ["bar", "panel"],
+      ["top", "bottom", "left", "right", "edge", "side", "position"]
+    ],
+    "bar_transparent" => [
+      ["bar", "panel"],
+      ["transparen", "see-through", "see through", "opaque", "solid"]
+    ],
+    "terminal_font_size" => [
+      ["terminal", "ghostty", "console"],
+      ["font", "text", "size", "bigger", "smaller", "larger"]
+    ],
+    "terminal_padding" => [["terminal", "ghostty"], ["padding", "margin", "space", "spacing"]],
+    "terminal_opacity" => [
+      ["terminal", "ghostty"],
+      ["opac", "transparen", "see-through", "see through", "translucent"]
+    ],
+    "terminal_cursor" => [["cursor", "caret"]],
+    "terminal_cursor_blink" => [["blink"]],
+    "terminal_tab_bar" => [["tab"], ["terminal", "ghostty", "show", "hide", "always", "never"]],
+    "terminal_tab_position" => [["tab"], ["terminal", "ghostty", "top", "bottom"]],
+    "window_gaps_inner" => [["gap", "space between windows", "spacing between windows"]],
+    "window_gaps_outer" => [
+      ["gap", "space between windows", "spacing between windows", "screen edge"]
+    ],
+    "window_border" => [["border"]],
+    "window_rounding" => [["round", "corner", "radius"]],
+    "window_layout" => [["layout", "tiling", "dwindle", "master", "scrolling"]],
+    "window_dim_inactive" => [["dim"], ["inactive", "unfocused", "window"]],
+    "window_inactive_opacity" => [
+      ["inactive", "unfocused", "other window"],
+      ["opac", "transparen", "see-through", "see through", "translucent", "fade"]
+    ],
+    "window_blur" => [["blur"]],
+    "animations" => [["animation", "animate", "motion"]],
+    "window_tab_bar" => [["group", "tabbed"], ["tab"]]
+  }
+
+  @doc """
+  Whether the request names this change's setting outright: its words
+  (above), or, for a list read from the computer, the value itself
+  ("switch to Tokyo Night" names the theme).
+
+      iex> TinyAxe.Appearance.Settings.named?("terminal_tab_position", "bottom", {:enum, ~w(top bottom)}, "put the terminal tabs at the bottom")
+      true
+      iex> TinyAxe.Appearance.Settings.named?("bar_position", "bottom", {:enum, ~w(top bottom)}, "terminal tab bar at the bottom")
+      false
+  """
+  @spec named?(String.t(), String.t(), term(), String.t()) :: boolean()
+  def named?(id, value, kind, request) do
+    text = request |> String.downcase() |> String.replace(~r/\btab\s+bar/, "tabbar")
+    groups = Map.get(@names, id, [])
+
+    by_words =
+      groups != [] and
+        Enum.all?(groups, fn phrases ->
+          Enum.any?(phrases, &Regex.match?(~r/\b#{Regex.escape(&1)}/, text))
+        end)
+
+    by_words or (match?({:choice, _}, kind) and String.contains?(squash(text), squash(value)))
+  end
+
+  defp squash(text), do: text |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "")
+
   ## Omarchy
 
   defp omarchy do

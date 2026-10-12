@@ -1166,6 +1166,8 @@ defmodule TinyAxe.TUI do
   defp apply_event({:subagent, %{n: n} = sub, event}, state), do: subagent(event, n, sub, state)
 
   defp apply_event({:review, _}, state), do: state
+  # Appearance changes the request named outright weren't reviewed.
+  defp apply_event({:review_skipped, _}, state), do: state
   # Which way the request went; the route line already shows it.
   defp apply_event({:task, _}, state), do: state
 

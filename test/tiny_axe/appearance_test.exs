@@ -5,6 +5,7 @@ defmodule TinyAxe.AppearanceTest do
   alias TinyAxe.Appearance.{ConfigFiles, Undo, Value}
 
   doctest TinyAxe.Appearance.Value
+  doctest TinyAxe.Appearance.Settings
 
   @keys ~w(model_backend decider script_model script_decider models)a
 
@@ -238,6 +239,38 @@ defmodule TinyAxe.AppearanceTest do
       assert_received {:asked, retry}
       assert List.last(retry).content =~ "Reply with corrected JSON"
       assert done(events) =~ "Solitude → Gruvbox"
+    end
+
+    test "a change to a setting the request names isn't reviewed" do
+      owner = self()
+
+      Decider.Script.script(fn key, _, _ ->
+        send(owner, {:reviewed, key})
+        0.1
+      end)
+
+      plan([%{setting: "theme", value: "Tokyo Night"}])
+      events = run("switch to tokyo night")
+
+      refute_received {:reviewed, _}
+      assert {:review_skipped, ["theme"]} in events
+      assert done(events) =~ "theme: Solitude → Tokyo Night"
+    end
+
+    test "only the changes the request doesn't name are reviewed" do
+      owner = self()
+
+      Decider.Script.script(fn key, q, _ ->
+        send(owner, {:reviewed, key, q.instructions})
+        0.9
+      end)
+
+      plan([%{setting: "terminal_font_size", value: "14"}, %{setting: "theme", value: "Gruvbox"}])
+      run("make the terminal font bigger")
+
+      assert_received {:reviewed, :change_0, about}
+      assert about =~ "theme → Gruvbox"
+      refute_received {:reviewed, :change_1, _}
     end
 
     test "a question about the current look changes nothing" do
