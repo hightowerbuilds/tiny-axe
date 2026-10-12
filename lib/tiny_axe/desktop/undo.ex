@@ -1,6 +1,6 @@
-defmodule TinyAxe.Appearance.Undo do
+defmodule TinyAxe.Desktop.Undo do
   @moduledoc """
-  What appearance changes did, kept on disk (`<state_dir>/appearance-undo.json`,
+  What appearance changes did, kept on disk (`<state_dir>/desktop-undo.json`,
   the last #{20}), so `/look undo` can put the newest one back, even after a
   restart.
 
@@ -12,11 +12,11 @@ defmodule TinyAxe.Appearance.Undo do
   with no readable value (an `:action`) is done once more.
   """
 
-  alias TinyAxe.Appearance.{ConfigFiles, Settings}
+  alias TinyAxe.Desktop.{ConfigFiles, Settings}
 
   @keep 20
 
-  def path, do: Path.join(TinyAxe.Ops.Journal.state_dir(), "appearance-undo.json")
+  def path, do: Path.join(TinyAxe.Ops.Journal.state_dir(), "desktop-undo.json")
 
   @doc "Records one request's changes (newest first)."
   @spec push(String.t(), [map()]) :: :ok

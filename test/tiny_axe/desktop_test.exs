@@ -1,11 +1,11 @@
-defmodule TinyAxe.AppearanceTest do
+defmodule TinyAxe.DesktopTest do
   use ExUnit.Case, async: false
 
-  alias TinyAxe.{Appearance, Decider, FakeDesktop, Model}
-  alias TinyAxe.Appearance.{ConfigFiles, Undo, Value}
+  alias TinyAxe.{Desktop, Decider, FakeDesktop, Model}
+  alias TinyAxe.Desktop.{ConfigFiles, Undo, Value}
 
-  doctest TinyAxe.Appearance.Value
-  doctest TinyAxe.Appearance.Settings
+  doctest TinyAxe.Desktop.Value
+  doctest TinyAxe.Desktop.Settings
 
   @keys ~w(model_backend decider script_model script_decider models)a
 
@@ -71,6 +71,24 @@ defmodule TinyAxe.AppearanceTest do
       "hyprctl", ["reload"] ->
         {"ok", 0}
 
+      "wpctl", ["get-volume", "@DEFAULT_AUDIO_SINK@"] ->
+        {"Volume: 0.65\n", 0}
+
+      "wpctl", ["set-volume" | _] ->
+        {"", 0}
+
+      "omarchy", ["bluetooth", "power", "is-on"] ->
+        {"", 0}
+
+      "omarchy", ["bluetooth", "power", _] ->
+        {"", 0}
+
+      "omarchy", ["reminder" | _] ->
+        {"", 0}
+
+      "setsid", _ ->
+        {"", 0}
+
       "hyprctl", ["getoption", "decoration:rounding", "-j"] ->
         {~s({"option":"decoration:rounding","int":6,"set":true}), 0}
 
@@ -90,7 +108,7 @@ defmodule TinyAxe.AppearanceTest do
 
   defp run(prompt, opts \\ []) do
     me = self()
-    Appearance.run([], prompt, &send(me, {:event, &1}), opts)
+    Desktop.run([], prompt, &send(me, {:event, &1}), opts)
     events()
   end
 
@@ -196,7 +214,7 @@ defmodule TinyAxe.AppearanceTest do
 
       assert File.read!(ConfigFiles.ghostty_path()) =~ "font-size = 14"
       text = done(events)
-      assert text =~ "Changed without asking"
+      assert text =~ "Done without asking"
       assert text =~ "terminal font size: 12 → 14"
       assert text =~ "`/look undo`"
 
@@ -204,9 +222,9 @@ defmodule TinyAxe.AppearanceTest do
       assert first =~ "terminal_font_size — font size in the terminal, in points — now: 12"
       assert opts[:use] == nil
 
-      assert Appearance.undo() =~ "terminal_font_size put back"
+      assert Desktop.undo() =~ "terminal_font_size put back"
       assert File.read!(ConfigFiles.ghostty_path()) =~ "font-size = 12"
-      assert Appearance.undo() == "no appearance changes to undo"
+      assert Desktop.undo() == "no desktop changes to undo"
     end
 
     test "an omarchy setting runs its command, and undo sets the value from before" do
@@ -216,7 +234,7 @@ defmodule TinyAxe.AppearanceTest do
       assert_received {:desktop, "omarchy", ["theme", "set", "Tokyo Night"]}
       assert done(events) =~ "theme: Solitude → Tokyo Night"
 
-      Appearance.undo()
+      Desktop.undo()
       assert_received {:desktop, "omarchy", ["theme", "set", "Solitude"]}
     end
 
@@ -233,7 +251,7 @@ defmodule TinyAxe.AppearanceTest do
 
       events = run("use a dark retro theme")
 
-      assert [problems] = for({:appearance_problems, p} <- events, do: p)
+      assert [problems] = for({:desktop_problems, p} <- events, do: p)
       assert hd(problems) =~ "isn't one of: Solitude, Tokyo Night, Gruvbox"
       assert_received {:asked, _}
       assert_received {:asked, retry}
@@ -291,14 +309,14 @@ defmodule TinyAxe.AppearanceTest do
       assert List.last(retry).content =~ "A reviewer checked the changes"
       refute_received {:desktop, "omarchy", ["theme", "set", _]}
 
-      assert [plan] = for({:appearance_plan, p} <- events, do: p)
+      assert [plan] = for({:desktop_plan, p} <- events, do: p)
       assert plan.changes == [%{"setting" => "theme", "value" => "Gruvbox"}]
       assert done(events) =~ "waiting for your approval"
 
       # Approved: checked again against the settings now, then made.
       me = self()
-      Appearance.execute(plan, &send(me, {:event, &1}))
-      assert [text] = for({:appearance_done, t} <- events(), do: t)
+      Desktop.execute(plan, &send(me, {:event, &1}))
+      assert [text] = for({:desktop_done, t} <- events(), do: t)
       assert text =~ "theme: Solitude → Gruvbox"
       assert_received {:desktop, "omarchy", ["theme", "set", "Gruvbox"]}
     end
@@ -325,6 +343,101 @@ defmodule TinyAxe.AppearanceTest do
 
       assert [%{to: "Claude Haiku 5.5"}] = for({:escalate, e} <- events, do: e)
       assert {:answered_by, %{model: "Claude Haiku 5.5"}} in events
+    end
+
+    test "volume is a low-risk setting: set at once, read back, undoable" do
+      plan([%{setting: "volume", value: "40"}])
+      events = run("set the volume to 40")
+
+      assert_received {:desktop, "wpctl", ["set-volume", "@DEFAULT_AUDIO_SINK@", "40%"]}
+      assert done(events) =~ "volume: 65 → 40"
+      assert [%{"changes" => [%{"setting" => "volume", "from" => "65"}]}] = Undo.load()
+    end
+
+    test "without a number, the volume moves a step, not to the top" do
+      owner = self()
+      tries = :counters.new(1, [])
+
+      Model.Script.script(fn messages, _ ->
+        :counters.add(tries, 1, 1)
+        send(owner, {:asked, messages})
+        value = if :counters.get(tries, 1) == 1, do: "100", else: "+10"
+        JSON.encode!(%{changes: [%{setting: "volume", value: value}], reply: ""})
+      end)
+
+      events = run("louder")
+      assert [[problem]] = for({:desktop_problems, p} <- events, do: p)
+      assert problem =~ "change volume by at most 20 from 65"
+      assert_received {:desktop, "wpctl", ["set-volume", "@DEFAULT_AUDIO_SINK@", "75%"]}
+    end
+
+    test "bluetooth always asks first, then runs once approved" do
+      plan([%{setting: "bluetooth", value: "off"}])
+      events = run("turn bluetooth off")
+
+      refute_received {:desktop, "omarchy", ["bluetooth", "power", "off"]}
+      assert [%{why: :risk} = plan] = for({:desktop_plan, p} <- events, do: p)
+      assert done(events) =~ "these always ask first"
+
+      me = self()
+      Desktop.execute(plan, &send(me, {:event, &1}))
+      assert_received {:desktop, "omarchy", ["bluetooth", "power", "off"]}
+      assert [text] = for({:desktop_done, t} <- events(), do: t)
+      assert text =~ "Done, after you approved"
+    end
+
+    test "actions run once, aren't recorded for undo, and apps open detached" do
+      data =
+        Path.join(System.tmp_dir!(), "tiny_axe_test_apps_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(data, "applications"))
+
+      File.write!(
+        Path.join(data, "applications/zz-fake-notes.desktop"),
+        "[Desktop Entry]\nType=Application\nName=Fake Notes\nExec=true\n"
+      )
+
+      previous = System.get_env("XDG_DATA_HOME")
+      System.put_env("XDG_DATA_HOME", data)
+
+      on_exit(fn ->
+        if previous,
+          do: System.put_env("XDG_DATA_HOME", previous),
+          else: System.delete_env("XDG_DATA_HOME")
+
+        File.rm_rf(data)
+      end)
+
+      plan([
+        %{setting: "launch_app", value: "fake notes"},
+        %{setting: "reminder", value: "in 10 minutes: check the oven"}
+      ])
+
+      events = run("open fake notes and remind me in 10 minutes to check the oven")
+
+      assert_received {:desktop, "setsid", ["-f", "uwsm-app", "--", "zz-fake-notes.desktop"]}
+      assert_received {:desktop, "omarchy", ["reminder", "10", "check the oven"]}
+      assert done(events) =~ "launch app: Fake Notes, done"
+      assert Undo.load() == []
+    end
+
+    test "an app that isn't installed goes back with the closest names" do
+      owner = self()
+      tries = :counters.new(1, [])
+
+      Model.Script.script(fn messages, _ ->
+        :counters.add(tries, 1, 1)
+        send(owner, {:asked, messages})
+
+        JSON.encode!(%{
+          changes: [%{setting: "launch_app", value: "Definitely Not An App"}],
+          reply: ""
+        })
+      end)
+
+      events = run("open definitely not an app")
+      assert [[problem] | _] = for({:desktop_problems, p} <- events, do: p)
+      assert problem =~ "isn't one of the installed names; the closest are:"
     end
 
     test "from the site's Chat tab nothing changes" do

@@ -93,15 +93,19 @@ defmodule TinyAxe.Capabilities do
       "#{minutes()}."
   end
 
-  @doc "One paragraph on changing the desktop's look (`TinyAxe.Appearance`)."
-  @spec appearance() :: String.t()
-  def appearance do
-    "It changes how the desktop and terminal look when asked: the theme, background, " <>
-      "font and text size; the terminal's (Ghostty's) font size, padding, opacity, cursor " <>
-      "and tabs; display scaling, brightness and night light; window gaps, borders, " <>
-      "rounded corners, dimming, blur, animations and tiling layout; the bar. Those run " <>
-      "without asking, and `/look undo` puts the last change back; `/look` lists the " <>
-      "settings as they are now."
+  @doc "One paragraph on changing the desktop (`TinyAxe.Desktop`)."
+  @spec desktop() :: String.t()
+  def desktop do
+    "It changes the desktop when asked: how it and the terminal (Ghostty) look (theme, " <>
+      "background, fonts, text size, terminal font size, padding, opacity, cursor and " <>
+      "tabs, display scaling, brightness, night light, window gaps, borders, corners, " <>
+      "blur, animations, layout, the bar); sound (volume, mute, microphone, which " <>
+      "speakers); bluetooth; the power profile; default browser, editor and terminal; " <>
+      "and actions: screenshots, screen recording, opening apps and web pages, reminders, " <>
+      "restarting audio or the shell, and locking, logging out, rebooting or shutting " <>
+      "down. Low-risk changes run without asking; bluetooth, wifi, default apps, screen " <>
+      "recording and lock/log out/reboot/shut down ask first. `/look` lists the settings " <>
+      "and `/look undo` puts the last change back (actions can't be undone)."
   end
 
   @doc """

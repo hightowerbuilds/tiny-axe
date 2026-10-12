@@ -1,4 +1,4 @@
-defmodule TinyAxe.TUIAppearanceTest do
+defmodule TinyAxe.TUIDesktopTest do
   @moduledoc "The appearance popup: a plan the reviewer doubted, approved with y."
 
   use ExUnit.Case, async: false
@@ -11,7 +11,7 @@ defmodule TinyAxe.TUIAppearanceTest do
   setup do
     on_exit(fn ->
       FakeDesktop.reset()
-      File.rm(TinyAxe.Appearance.Undo.path())
+      File.rm(TinyAxe.Desktop.Undo.path())
     end)
 
     FakeDesktop.script(fn
@@ -45,7 +45,8 @@ defmodule TinyAxe.TUIAppearanceTest do
     {:ok, state} = TUI.mount(test_mode: @size)
 
     plan = %{
-      kind: :appearance,
+      kind: :desktop,
+      why: :doubtful,
       request: "use gruvbox",
       changes: [%{"setting" => "theme", "value" => "Gruvbox"}],
       commands: [%{command: "theme → Gruvbox", review: nil}],
@@ -53,7 +54,7 @@ defmodule TinyAxe.TUIAppearanceTest do
       dir: TinyAxe.Location.current()
     }
 
-    state = TinyAxe.TUI.CommandWorkflow.event({:appearance_plan, plan}, state)
+    state = TinyAxe.TUI.CommandWorkflow.event({:desktop_plan, plan}, state)
     assert state.pending_commands == plan
 
     state = %{
@@ -65,7 +66,8 @@ defmodule TinyAxe.TUIAppearanceTest do
     }
 
     screen = draw(state)
-    assert screen =~ "change the look?"
+    assert screen =~ "change the desktop?"
+    assert screen =~ "the reviewer wasn't sure"
     assert screen =~ "theme → Gruvbox"
 
     {:noreply, state} =

@@ -1,4 +1,4 @@
-defmodule TinyAxe.Appearance.Runner do
+defmodule TinyAxe.Desktop.Runner do
   @moduledoc """
   Runs the desktop's own programs (`omarchy`, `hyprctl`, `killall`) for
   appearance changes: as the user, outside the sandbox (the user's choice,
@@ -10,7 +10,7 @@ defmodule TinyAxe.Appearance.Runner do
   GTK settings and the Omarchy shell need. Each run is stopped after
   30 seconds.
 
-  Tests swap the implementation (`config :tiny_axe, :appearance_runner`) so
+  Tests swap the implementation (`config :tiny_axe, :desktop_runner`) so
   they never touch the real desktop.
   """
 
@@ -19,7 +19,7 @@ defmodule TinyAxe.Appearance.Runner do
   @doc "Runs `program` with `args`: `{output, exit_status}` or `{:error, reason}`."
   @spec cmd(String.t(), [String.t()]) :: {String.t(), non_neg_integer()} | {:error, term()}
   def cmd(program, args) do
-    impl = Application.get_env(:tiny_axe, :appearance_runner, __MODULE__.Desktop)
+    impl = Application.get_env(:tiny_axe, :desktop_runner, __MODULE__.Desktop)
     impl.cmd(program, args)
   end
 
@@ -37,7 +37,7 @@ defmodule TinyAxe.Appearance.Runner do
 
   defmodule Desktop do
     @moduledoc false
-    @behaviour TinyAxe.Appearance.Runner
+    @behaviour TinyAxe.Desktop.Runner
 
     @timeout 30_000
     @keep ~w(DBUS_SESSION_BUS_ADDRESS)

@@ -1,13 +1,13 @@
 defmodule TinyAxe.FakeDesktop do
   @moduledoc """
-  Stands in for the desktop's programs in tests (`TinyAxe.Appearance.Runner`),
+  Stands in for the desktop's programs in tests (`TinyAxe.Desktop.Runner`),
   so no test changes the real theme, fonts or windows. A test sets a function
   with `script/1`; it gets `(program, args)` and returns `{output, status}`.
   Every call is sent to the test process as `{:desktop, program, args}`.
   Unscripted, every program "fails" with status 1.
   """
 
-  @behaviour TinyAxe.Appearance.Runner
+  @behaviour TinyAxe.Desktop.Runner
 
   def script(fun) when is_function(fun, 2) do
     Application.put_env(:tiny_axe, :fake_desktop, {self(), fun})

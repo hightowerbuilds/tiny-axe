@@ -265,7 +265,7 @@ defmodule TinyAxe.Pipeline.Answer do
       "(after approval, undoable with ctrl+z). " <>
       TinyAxe.Capabilities.summary() <>
       " " <>
-      TinyAxe.Capabilities.appearance() <>
+      TinyAxe.Capabilities.desktop() <>
       " Requests that need the web or connected " <>
       "tools go to an agent that uses tiny-axe's own browser and MCP servers, with the user " <>
       "approving anything that sends something. It can buy things for the user: #{buying}. " <>

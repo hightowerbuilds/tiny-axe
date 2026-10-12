@@ -106,15 +106,18 @@ defmodule TinyAxe.Pipeline do
     },
     # The command question comes from TinyAxe.Capabilities (route_questions/0).
     command: %{type: :noul, instructions: ""},
-    appearance: %{
+    desktop: %{
       type: :noul,
       instructions:
-        "Does the user want how their desktop or terminal looks changed, or ask how it's " <>
-          "set: the theme, background, fonts or text size; the terminal's font size, " <>
-          "padding, opacity, cursor or tabs; display scaling, brightness or night light; " <>
-          "window gaps, borders, rounded corners, dimming, blur, animations or tiling " <>
-          "layout; the bar (shown, position, see-through); do-not-disturb or idle lock? " <>
-          "No if they're asking how to do it themselves, or about code."
+        "Does the user want something about their desktop changed or done, or ask how " <>
+          "it's set: how it or the terminal looks (theme, background, fonts, text size, " <>
+          "terminal font size, padding, opacity, cursor or tabs, display scaling, " <>
+          "brightness, night light, window gaps, borders, corners, blur, animations, " <>
+          "layout, the bar); sound (volume, mute, microphone, which speakers); bluetooth; " <>
+          "power profile; default browser, editor or terminal; or an action: a screenshot, " <>
+          "screen recording, opening an app or a web page, a reminder, restarting audio or " <>
+          "the shell, or locking, logging out, rebooting or shutting down? No if they're " <>
+          "asking how to do it themselves, or about code or files."
     }
   }
 
@@ -122,7 +125,7 @@ defmodule TinyAxe.Pipeline do
   Handles one request. `opts`: `:remote` (`:ask`, `:allowed` or `:denied`,
   the default), whether a request that falls short may go to a model off this
   machine (see `TinyAxe.Escalation`); `:origin`, `:site` for a request from
-  the site's Chat tab (it can't change the computer's appearance).
+  the site's Chat tab (it can't change the desktop).
   """
   @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
   def run(history, prompt, notify, opts \\ []) do
@@ -148,8 +151,8 @@ defmodule TinyAxe.Pipeline do
         :command ->
           TinyAxe.Commander.run(history, prompt, notify, remote: remote)
 
-        :appearance ->
-          TinyAxe.Appearance.run(history, prompt, notify, remote: remote, origin: origin)
+        :desktop ->
+          TinyAxe.Desktop.run(history, prompt, notify, remote: remote, origin: origin)
 
         :organize ->
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
@@ -204,15 +207,15 @@ defmodule TinyAxe.Pipeline do
 
   # Commands go to the Commander, file tasks (moving, organising, writing
   # documents) to the Organizer, requests that need connected services to
-  # the agent, and changes to how the desktop looks to TinyAxe.Appearance;
+  # the agent, and desktop changes and actions to TinyAxe.Desktop;
   # when several look likely, the likeliest wins.
   defp task(route) do
     command = if config(:commands, true), do: Decider.p(route, :command) || 0, else: 0
     organize = if config(:file_ops, true), do: Decider.p(route, :organize) || 0, else: 0
     agent = if TinyAxe.Agent.available?(), do: Decider.p(route, :tools) || 0, else: 0
-    appearance = if config(:appearance, true), do: Decider.p(route, :appearance) || 0, else: 0
+    desktop = if config(:desktop, true), do: Decider.p(route, :desktop) || 0, else: 0
 
-    [command: command, organize: organize, agent: agent, appearance: appearance]
+    [command: command, organize: organize, agent: agent, desktop: desktop]
     |> Enum.filter(fn {_task, p} -> p >= config(:route_threshold, 0.5) end)
     |> Enum.max_by(&elem(&1, 1), fn -> {:answer, 0} end)
     |> elem(0)

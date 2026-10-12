@@ -1,4 +1,4 @@
-defmodule TinyAxe.Appearance.ConfigFiles do
+defmodule TinyAxe.Desktop.ConfigFiles do
   @moduledoc """
   The two config files appearance settings write, and only the lines they own:
 
@@ -14,10 +14,10 @@ defmodule TinyAxe.Appearance.ConfigFiles do
       reloads again, so the desktop is never left on a broken config.
 
   Every write returns the file's content from before, which the undo record
-  keeps (`TinyAxe.Appearance.Undo`).
+  keeps (`TinyAxe.Desktop.Undo`).
   """
 
-  alias TinyAxe.Appearance.Runner
+  alias TinyAxe.Desktop.Runner
 
   @begin "-- tiny-axe: begin (settings tiny-axe made; `/look undo` puts back the last change, or delete this block)"
   @values "-- tiny-axe-values: "
@@ -27,7 +27,7 @@ defmodule TinyAxe.Appearance.ConfigFiles do
   def hypr_path, do: path(:hypr_look, "~/.config/hypr/looknfeel.lua")
 
   defp path(key, default) do
-    Application.get_env(:tiny_axe, :appearance, [])
+    Application.get_env(:tiny_axe, :desktop, [])
     |> Keyword.get(key, default)
     |> Path.expand()
   end

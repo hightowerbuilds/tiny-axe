@@ -360,14 +360,20 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" undo ", lines, state.plan_scroll, area)
   end
 
-  def render(%{pending_commands: %{kind: :appearance} = plan} = state, area) do
+  def render(%{pending_commands: %{kind: :desktop} = plan} = state, area) do
     header = [
-      Span.new("tiny-axe will change these once you approve", style: %Style{modifiers: [:bold]})
-      |> then(
-        &Line.new([&1, Span.new(" · the reviewer wasn't sure", style: %Style{fg: :yellow})])
-      ),
-      styled("appearance settings; `/look undo` puts them back", :cyan),
-      styled("y change · n cancel · ↑/↓ scroll", :dark_gray),
+      Line.new([
+        Span.new("tiny-axe will do these once you approve", style: %Style{modifiers: [:bold]}),
+        Span.new(
+          if(plan[:why] == :doubtful,
+            do: " · the reviewer wasn't sure",
+            else: " · these always ask first"
+          ),
+          style: %Style{fg: :yellow}
+        )
+      ]),
+      styled("desktop changes; `/look undo` puts settings back (actions can't be undone)", :cyan),
+      styled("y do it · n cancel · ↑/↓ scroll", :dark_gray),
       styled("")
     ]
 
@@ -376,7 +382,7 @@ defmodule TinyAxe.TUI.Overlays do
         Line.new([Span.new("🎨 " <> c.command, style: %Style{modifiers: [:bold]})])
       end)
 
-    popup(" change the look? ", header ++ changes, state.plan_scroll, area)
+    popup(" change the desktop? ", header ++ changes, state.plan_scroll, area)
   end
 
   def render(%{pending_commands: plan} = state, area) when plan != nil do

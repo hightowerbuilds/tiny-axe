@@ -282,3 +282,39 @@ path even narrower for Gemma.
 **Next:** Jev's review is noisy on correct single-setting plans. Options are
 tuning the questions, or skipping the review when the change is one setting
 the request names outright.
+
+## Review fix and O1 as built (2026-10-12)
+
+- **Review fix** (ef7b86d):
+  - Each setting lists the words a request uses to name it
+    (`Settings.named?/4`; a theme or font can also be named by its value).
+  - Changes to named settings skip Jev's review. Only the rest are reviewed.
+  - In the live dry run, all of the wrongly doubted requests went through
+    on Gemma alone in about 1 s.
+- **Rename:** `TinyAxe.Appearance` is now `TinyAxe.Desktop`, with the
+  router question `desktop` and events `:desktop_*`.
+- **O1, the rest of the catalog.** All 284 non-root Omarchy commands were
+  sorted. About 240 are reads, hardware probes, interactive menus, dev
+  tools, or installs and removals that belong with O4. The useful rest is
+  typed items in `Desktop.System`, not a raw route picker. Typed items
+  give Gemma a narrower path, and the result was 14/14 right items in a
+  live dry run.
+  - Settings, with read-back and undo: volume, sound_muted, mic_muted,
+    audio_output (pactl; what's playing moves too), bluetooth (asks),
+    power_profile, default_browser, default_editor and default_terminal
+    (installed choices only; all three ask), and touchpad (only where
+    there is one).
+  - Actions, which can't be undone: screenshot, screen_recording (asks),
+    restart (audio, shell, terminal, …), restart_network (wifi or
+    bluetooth; asks), launch_app (`uwsm-app`, detached; a lookup over the
+    installed `.desktop` entries, where a miss suggests the closest
+    names), open_url (http and https only, `xdg-open`, detached),
+    reminder ("10 check the oven"), and power (lock, logout, reboot or
+    shutdown; asks).
+- **Risk:** a plan containing any `risk: :ask` item waits for the y/n
+  popup ("these always ask first"). The rest runs at once.
+- **Volume guard:** with no number in the request, the volume moves at
+  most 20 (`max_jump`), and "louder" or "quieter" is ±10. Before this,
+  Gemma set "louder" to 100.
+- Commands outside the typed list (webapp install, dns, plugins, …) are
+  for Haiku's `os_run` in O3, always with approval.

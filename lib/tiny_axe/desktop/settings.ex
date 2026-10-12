@@ -1,7 +1,9 @@
-defmodule TinyAxe.Appearance.Settings do
+defmodule TinyAxe.Desktop.Settings do
   @moduledoc """
-  Every appearance setting tiny-axe can change, as data: what it is, what
-  values it takes, how to read it now and how to set it. Models never write
+  Every desktop setting and action tiny-axe can use, as data: what it is,
+  what values it takes, how to read it now and how to set it. This module
+  holds the appearance ones; `TinyAxe.Desktop.System` the rest (sound,
+  devices, default apps, actions). Models never write
   a command: they name a setting from this list and a value, and code checks
   the value (against the computer's own lists where there is one, such as
   `omarchy theme list`), sets it, and reads it back.
@@ -25,7 +27,7 @@ defmodule TinyAxe.Appearance.Settings do
   animations, layout, the tab bar on grouped windows).
   """
 
-  alias TinyAxe.Appearance.{ConfigFiles, Runner}
+  alias TinyAxe.Desktop.{ConfigFiles, Runner}
 
   @type setting :: %{
           id: String.t(),
@@ -40,7 +42,7 @@ defmodule TinyAxe.Appearance.Settings do
   @doc "All settings, in the order they're shown."
   @spec all() :: [setting()]
   def all do
-    omarchy() ++ ghostty() ++ hyprland()
+    omarchy() ++ ghostty() ++ hyprland() ++ TinyAxe.Desktop.System.all()
   end
 
   @doc "The setting with this id, or nil."
@@ -56,7 +58,7 @@ defmodule TinyAxe.Appearance.Settings do
   # Words a request uses when it names a setting outright: every group must
   # match (any phrase in it, at the start of a word, so "gap" matches
   # "gaps"). A change to a setting the request names needs no review
-  # (`TinyAxe.Appearance`). "tab bar" is read as one word first, so the
+  # (`TinyAxe.Desktop`). "tab bar" is read as one word first, so the
   # desktop bar's "bar" doesn't match it.
   @names %{
     "theme" => [["theme", "colour scheme", "color scheme", "colours", "colors"]],
@@ -110,7 +112,42 @@ defmodule TinyAxe.Appearance.Settings do
     ],
     "window_blur" => [["blur"]],
     "animations" => [["animation", "animate", "motion"]],
-    "window_tab_bar" => [["group", "tabbed"], ["tab"]]
+    "window_tab_bar" => [["group", "tabbed"], ["tab"]],
+    "volume" => [["volume", "louder", "quieter", "softer"]],
+    "sound_muted" => [
+      ["mute", "unmute", "silent"],
+      ["sound", "speaker", "audio", "volume", "mute"]
+    ],
+    "mic_muted" => [["mic", "microphone"]],
+    "audio_output" => [["speaker", "headphone", "headset", "output", "hdmi", "sound through"]],
+    "bluetooth" => [["bluetooth"]],
+    "power_profile" => [
+      ["power profile", "performance", "power saver", "power-saver", "balanced", "battery saver"]
+    ],
+    "default_browser" => [["default"], ["browser"]],
+    "default_editor" => [["default"], ["editor"]],
+    "default_terminal" => [["default"], ["terminal"]],
+    "touchpad" => [["touchpad", "trackpad"]],
+    "screenshot" => [["screenshot", "screen shot", "capture the screen"]],
+    "screen_recording" => [["record"], ["screen"]],
+    "restart" => [["restart", "reload", "reset"]],
+    "restart_network" => [["restart", "reset"], ["wifi", "wi-fi", "bluetooth"]],
+    "launch_app" => [["open", "launch", "start", "run"]],
+    "open_url" => [["open", "go to", "visit", "browse"], [".", "http", "website", "site", "page"]],
+    "reminder" => [["remind"]],
+    "power" => [
+      [
+        "lock",
+        "log out",
+        "logout",
+        "sign out",
+        "reboot",
+        "restart the computer",
+        "shut down",
+        "shutdown",
+        "power off"
+      ]
+    ]
   }
 
   @doc """
@@ -118,9 +155,9 @@ defmodule TinyAxe.Appearance.Settings do
   (above), or, for a list read from the computer, the value itself
   ("switch to Tokyo Night" names the theme).
 
-      iex> TinyAxe.Appearance.Settings.named?("terminal_tab_position", "bottom", {:enum, ~w(top bottom)}, "put the terminal tabs at the bottom")
+      iex> TinyAxe.Desktop.Settings.named?("terminal_tab_position", "bottom", {:enum, ~w(top bottom)}, "put the terminal tabs at the bottom")
       true
-      iex> TinyAxe.Appearance.Settings.named?("bar_position", "bottom", {:enum, ~w(top bottom)}, "terminal tab bar at the bottom")
+      iex> TinyAxe.Desktop.Settings.named?("bar_position", "bottom", {:enum, ~w(top bottom)}, "terminal tab bar at the bottom")
       false
   """
   @spec named?(String.t(), String.t(), term(), String.t()) :: boolean()

@@ -1,17 +1,20 @@
-defmodule TinyAxe.Appearance do
+defmodule TinyAxe.Desktop do
   @moduledoc """
-  Changes how the desktop and terminal look when asked ("make the terminal
-  font bigger", "switch to Tokyo Night", "no gaps between windows", "put
-  the bar at the bottom"), along a fixed path a small model can walk:
+  Changes the desktop when asked: how it looks ("make the terminal font
+  bigger", "switch to Tokyo Night", "no gaps between windows"), its sound,
+  devices and default apps ("volume to 40", "turn bluetooth off", "make
+  Brave my default browser"), and actions ("take a screenshot", "open
+  Spotify", "remind me in 10 minutes to stretch", "reboot"), along a fixed
+  path a small model can walk:
 
   1. **Read** — every setting's current value is read from the computer
-     (`Appearance.Settings`), along with the real choices where there's a
+     (`Desktop.Settings`), along with the real choices where there's a
      list (themes, fonts).
   2. **Fill** (the local model first) — the model answers in a fixed JSON
      shape: `changes` (a setting id from the list, which the JSON schema
      enforces, and a value) and `reply`. It never writes a command.
   3. **Check** (code) — each value is checked against its kind
-     (`Appearance.Value`): one of the real choices, a number in range, an
+     (`Desktop.Value`): one of the real choices, a number in range, an
      image that exists; `+2` is from the current value. Problems go back to
      the model with the real choices, up to #{3} rounds.
   4. **Review** (the Decider) — per change, is it needed for what was
@@ -21,24 +24,27 @@ defmodule TinyAxe.Appearance do
      the checks and the review, the escalation ladder (`TinyAxe.Escalation`,
      Claude Haiku 5.5) fills the same shape from the start. Escalation
      changes who fills it in, never what may be set.
-  6. **Apply** — appearance settings are low-risk and undoable, so they run
-     without asking (the user's choice, 2026-10-12), one at a time, and each
-     is read back. `/look undo` puts the newest request's changes back
-     (`Appearance.Undo`). Requests from the site's Chat tab
-     (`origin: :site`) can't change anything: they get the plan and are
-     told to ask on this computer.
+  6. **Apply** — low-risk changes (look and feel, sound, launching an app,
+     a screenshot, a reminder) run without asking (the user's choice,
+     2026-10-12), one at a time, and settings are read back. A plan with
+     anything marked `risk: :ask` (bluetooth, wifi, default apps, screen
+     recording, lock/log out/reboot/shut down) waits for the user's y/n, as
+     does one the reviewer still doubts. `/look undo` puts the newest
+     request's settings back (`Desktop.Undo`); actions can't be undone.
+     Requests from the site's Chat tab (`origin: :site`) can't change
+     anything: they get the plan and are told to ask on this computer.
 
-  Events: `{:stage, text}`, `{:appearance_problems, [text]}`, `{:review, p}`,
+  Events: `{:stage, text}`, `{:desktop_problems, [text]}`, `{:review, p}`,
   the escalation events, then `{:attempt, 1}` and `{:done, text}`.
   """
 
   alias TinyAxe.{Escalation, Model, Ollama}
-  alias TinyAxe.Appearance.{Settings, Undo, Value}
+  alias TinyAxe.Desktop.{Settings, Undo, Value}
 
   @max_rounds 3
 
   @doc """
-  Handles an appearance request. `opts[:remote]`: whether the escalation
+  Handles a desktop request. `opts[:remote]`: whether the escalation
   ladder may leave this machine (`:ask`, `:allowed`, `:denied`);
   `opts[:origin]`: `:site` for a request from the site's Chat tab.
   """
@@ -65,8 +71,8 @@ defmodule TinyAxe.Appearance do
         {fell, _, _} = local when fell in [:gave_up, :doubtful] ->
           why =
             if fell == :gave_up,
-              do: "its appearance changes didn't pass the checks after #{@max_rounds} tries",
-              else: "the reviewer doubted its appearance changes"
+              do: "its desktop changes didn't pass the checks after #{@max_rounds} tries",
+              else: "the reviewer doubted its desktop changes"
 
           # A doubtful plan is kept: if no bigger model does better, the user
           # is asked about it instead of it running without asking.
@@ -100,10 +106,12 @@ defmodule TinyAxe.Appearance do
         done(notify, from_site(changes, reply))
 
       {:ok, changes, reply} ->
-        done(notify, apply_changes(prompt, changes, reply, notify))
+        if Enum.any?(changes, &(&1.setting[:risk] == :ask)),
+          do: ask(prompt, changes, reply, notify, :risk),
+          else: done(notify, apply_changes(prompt, changes, reply, :without_asking, notify))
 
       {:doubtful, changes, reply} ->
-        ask(prompt, changes, reply, notify)
+        ask(prompt, changes, reply, notify, :doubtful)
 
       {:gave_up, reply, _} ->
         done(notify, reply)
@@ -121,15 +129,16 @@ defmodule TinyAxe.Appearance do
   # The plan waits for the user's y/n in the TUI (the commands popup); only
   # setting ids and values are kept, and they're checked again when it runs
   # (`execute/2`).
-  defp ask(request, changes, reply, notify) do
+  defp ask(request, changes, reply, notify, why) do
     notify.(
-      {:appearance_plan,
+      {:desktop_plan,
        %{
-         kind: :appearance,
+         kind: :desktop,
          request: request,
          changes: Enum.map(changes, &%{"setting" => &1.setting.id, "value" => &1.value}),
          commands: Enum.map(changes, &%{command: describe(&1), review: nil}),
          review: nil,
+         why: why,
          dir: TinyAxe.Location.current()
        }}
     )
@@ -137,31 +146,35 @@ defmodule TinyAxe.Appearance do
     lines = Enum.map_join(changes, "\n", &"- #{describe(&1)}")
     reply = if String.trim(reply) == "", do: "", else: String.trim(reply) <> "\n\n"
 
+    because =
+      case why do
+        :risk -> "these always ask first"
+        :doubtful -> "the reviewer wasn't sure they're what you asked for"
+      end
+
     done(
       notify,
-      reply <>
-        "**Appearance changes** (waiting for your approval: the reviewer wasn't sure " <>
-        "they're what you asked for):\n\n" <> lines
+      reply <> "**Desktop changes** (waiting for your approval: #{because}):\n\n" <> lines
     )
   end
 
   @doc """
-  Makes an approved appearance plan's changes (from `{:appearance_plan, plan}`),
+  Makes an approved desktop plan's changes (from `{:desktop_plan, plan}`),
   checked again against the settings as they are now. Events:
-  `{:stage, text}`, then `{:appearance_done, text}`.
+  `{:stage, text}`, then `{:desktop_done, text}`.
   """
   @spec execute(map(), (term() -> any())) :: :ok
   def execute(plan, notify) do
-    notify.({:stage, "changing the look…"})
+    notify.({:stage, "changing the desktop…"})
 
     text =
       case check(plan.changes, snapshot()) do
         {:ok, [], _} -> "*Nothing to change: the settings are already as asked.*"
-        {:ok, changes, _} -> apply_changes(plan.request, changes, "", notify)
+        {:ok, changes, _} -> apply_changes(plan.request, changes, "", :approved, notify)
         {:error, problems} -> "✗ didn't change anything; now:\n" <> Enum.join(problems, "\n")
       end
 
-    notify.({:appearance_done, text})
+    notify.({:desktop_done, text})
     :ok
   end
 
@@ -192,7 +205,7 @@ defmodule TinyAxe.Appearance do
               other
           end
 
-        Map.merge(s, %{now: s.current.(), kind: kind})
+        Map.merge(s, %{now: s[:current] && s.current.(), kind: kind})
       end,
       timeout: 15_000,
       on_timeout: :kill_task,
@@ -264,14 +277,14 @@ defmodule TinyAxe.Appearance do
         {:error, reason}
 
       _ ->
-        {:error, :bad_appearance_json}
+        {:error, :bad_desktop_json}
     end
   end
 
   defp planned(answer, messages, context, settings, notify, round, reviewed?) do
     reply = text(answer["reply"])
 
-    case check(answer["changes"], settings) do
+    case check(answer["changes"], settings, context.request) do
       {:ok, [], _already} ->
         {:reply, reply}
 
@@ -291,7 +304,7 @@ defmodule TinyAxe.Appearance do
         end
 
       {:error, problems} ->
-        notify.({:appearance_problems, problems})
+        notify.({:desktop_problems, problems})
 
         fix =
           "tiny-axe can't make these changes as written:\n" <>
@@ -307,8 +320,9 @@ defmodule TinyAxe.Appearance do
   wins), where `already` are those the setting already has, taken out of
   `changes`; or `{:error, problems}`.
   """
-  @spec check(term(), [map()]) :: {:ok, [map()], [map()]} | {:error, [String.t()]}
-  def check(changes, settings) do
+  @spec check(term(), [map()], String.t() | nil) ::
+          {:ok, [map()], [map()]} | {:error, [String.t()]}
+  def check(changes, settings, request \\ nil) do
     by_id = Map.new(settings, &{&1.id, &1})
 
     {ok, problems} =
@@ -328,7 +342,7 @@ defmodule TinyAxe.Appearance do
               {ok, ["#{inspect(id)} isn't a setting tiny-axe has" | bad]}
 
             s ->
-              case Value.parse(s.kind, value, s.now) do
+              case Value.parse(s.kind, value, s.now) |> within_jump(s, request) do
                 {:ok, v} ->
                   {[%{setting: s, value: v} | Enum.reject(ok, &(&1.setting.id == id))], bad}
 
@@ -351,6 +365,24 @@ defmodule TinyAxe.Appearance do
         {:error, Enum.reverse(problems)}
     end
   end
+
+  # Settings with a `max_jump` (volume) move at most that far when the
+  # request gives no number: "louder" isn't "100".
+  defp within_jump({:ok, v} = ok, %{max_jump: max, now: now} = s, request)
+       when is_binary(request) and is_binary(now) do
+    with false <- request =~ ~r/\d/,
+         {new, _} <- Float.parse(v),
+         {old, _} <- Float.parse(now),
+         true <- abs(new - old) > max do
+      {:error,
+       "the user gave no number, so change #{s.id} by at most #{max} from #{now} " <>
+         "(e.g. \"+10\" or \"-10\")"}
+    else
+      _ -> ok
+    end
+  end
+
+  defp within_jump(result, _s, _request), do: result
 
   defp same?(nil, _), do: false
   defp same?(now, value), do: String.downcase(to_string(now)) == String.downcase(value)
@@ -425,20 +457,20 @@ defmodule TinyAxe.Appearance do
            "A reviewer checked the changes against the request:\n" <>
              Enum.join(doubtful ++ missing, "\n") <> "\n\nReply with corrected JSON."}
         else
-          if score == nil, do: notify.({:decider_unavailable, "reviewing the appearance changes"})
+          if score == nil, do: notify.({:decider_unavailable, "reviewing the desktop changes"})
           :ok
         end
 
       {:error, _} ->
-        notify.({:decider_unavailable, "reviewing the appearance changes"})
+        notify.({:decider_unavailable, "reviewing the desktop changes"})
         :ok
     end
   end
 
   ## Applying
 
-  defp apply_changes(request, changes, reply, notify) do
-    notify.({:stage, "changing the look…"})
+  defp apply_changes(request, changes, reply, how, notify) do
+    notify.({:stage, "changing the desktop…"})
 
     {lines, records} =
       Enum.map_reduce(changes, [], fn %{setting: s, value: v}, records ->
@@ -447,7 +479,7 @@ defmodule TinyAxe.Appearance do
         case s.apply.(v) do
           result when result == :ok or elem(result, 0) == :ok ->
             before = if is_tuple(result), do: elem(result, 1)
-            now = s.current.()
+            now = s[:current] && s.current.()
 
             record = %{
               "setting" => s.id,
@@ -458,24 +490,33 @@ defmodule TinyAxe.Appearance do
               "after_hash" => file && before && after_hash(file)
             }
 
-            {"- #{label(s)}: #{transition(s, v, now)}", [record | records]}
+            records = if undoable?(s), do: [record | records], else: records
+            {"- #{label(s)}: #{transition(s, v, now)}", records}
 
           {:error, why} ->
-            {"- #{label(s)}: ✗ not changed (#{why})", records}
+            {"- #{label(s)}: ✗ not done (#{why})", records}
         end
       end)
 
     records = Enum.reverse(records)
     Undo.push(request, records)
 
-    head =
-      if records == [],
-        do: "*Nothing was changed:*",
-        else: "*Changed without asking (appearance settings; `/look undo` puts them back):*"
+    done? = Enum.any?(lines, &(not String.contains?(&1, "✗ not done")))
 
+    head =
+      cond do
+        not done? -> "*Nothing was changed:*"
+        how == :approved -> "*Done, after you approved:*"
+        true -> "*Done without asking (low-risk desktop changes):*"
+      end
+
+    undo = if records == [], do: "", else: "\n\n`/look undo` puts the settings back."
     reply = if String.trim(reply) == "", do: "", else: "\n\n" <> String.trim(reply)
-    head <> "\n" <> Enum.join(lines, "\n") <> reply
+    head <> "\n" <> Enum.join(lines, "\n") <> undo <> reply
   end
+
+  # Actions just happen (a screenshot, a reboot); settings can be put back.
+  defp undoable?(s), do: Map.get(s, :undo, :value) != :none
 
   defp after_hash(file) do
     case File.read(file) do
@@ -485,6 +526,7 @@ defmodule TinyAxe.Appearance do
   end
 
   defp transition(%{kind: :action}, _v, _now), do: "done"
+  defp transition(%{undo: :none}, v, _now), do: "#{v}, done"
 
   defp transition(s, v, now) do
     from = s.now || "?"
@@ -496,18 +538,18 @@ defmodule TinyAxe.Appearance do
   end
 
   defp from_site(changes, reply) do
-    "Appearance changes can only be made from tiny-axe on this computer, not from the " <>
+    "Desktop changes can only be made from tiny-axe on this computer, not from the " <>
       "site. Asked here, I'd change:\n" <>
       Enum.map_join(changes, "\n", &"- #{describe(&1)}") <>
       if(String.trim(reply) == "", do: "", else: "\n\n" <> reply)
   end
 
-  @doc "Undoes the newest appearance request's changes, as a line for the transcript."
+  @doc "Undoes the newest desktop request's settings, as a line for the transcript."
   @spec undo() :: String.t()
   def undo do
     case Undo.undo_last() do
       :empty ->
-        "no appearance changes to undo"
+        "no desktop changes to undo"
 
       {:ok, record, results} ->
         parts =
@@ -520,11 +562,11 @@ defmodule TinyAxe.Appearance do
     end
   end
 
-  @doc "The current appearance settings, as lines for `/look`."
+  @doc "The current desktop settings, as lines for `/look`."
   @spec describe_current() :: String.t()
   def describe_current do
     snapshot()
-    |> Enum.reject(&(&1.kind == :action))
+    |> Enum.reject(&(&1.kind == :action or not undoable?(&1) or &1[:current] == nil))
     |> Enum.group_by(& &1.group)
     |> Enum.map_join("\n", fn {group, list} ->
       "#{group}: " <> Enum.map_join(list, " · ", &"#{label(&1)} #{&1.now || "?"}")
@@ -535,20 +577,25 @@ defmodule TinyAxe.Appearance do
 
   defp system_prompt do
     """
-    You change how the user's desktop and terminal look, for tiny-axe. You never write \
-    commands: you pick settings from the list below and give each a value, and tiny-axe \
-    checks and applies them (they can be undone).
+    You control the user's desktop for tiny-axe: how it and the terminal look, sound, \
+    devices, default apps, and actions such as screenshots, opening apps or web pages, \
+    reminders, restarting a part of the desktop, and locking, logging out, rebooting or \
+    shutting down. You never write commands: you pick items from the list below and give \
+    each a value, and tiny-axe checks them and carries them out. Settings can be undone; \
+    actions can't. Some always ask the user first; tiny-axe handles that.
 
     Reply with JSON:
-    - "changes": the settings to change, each {"setting": an id from the list, "value": text}. \
-    Values must be one of the listed choices, or a number in the listed range; "+2" or "-2" \
-    changes a number from its current value. "bigger"/"smaller" means about 2 points or pixels.
-    - "reply": one short sentence for the user about what you changed. If the user only asks \
-    how something is set, leave "changes" empty and answer from the current values. If \
-    nothing in the list can do what they ask, leave "changes" empty and say so.
+    - "changes": the items to change or do, each {"setting": an id from the list, \
+    "value": text}. Values must be one of the listed choices, or a number in the listed \
+    range; "+2" or "-2" changes a number from its current value. "bigger"/"smaller" means \
+    about 2 points or pixels.
+    - "reply": one short sentence for the user about what you're doing. If the user only \
+    asks how something is set, leave "changes" empty and answer from the current values. \
+    If nothing in the list can do what they ask, leave "changes" empty and say so.
 
-    Only change what the user asked for. The terminal is Ghostty; "terminal" settings only \
-    change it, while "text_size" scales text everywhere (bar, apps and terminals) at once.
+    Only change or do what the user asked for. The terminal is Ghostty; "terminal" \
+    settings only change it, while "text_size" scales text everywhere (bar, apps and \
+    terminals) at once. "Restart the computer" is power reboot, not restart.
     """
   end
 
@@ -561,18 +608,34 @@ defmodule TinyAxe.Appearance do
     [
       recent != "" && "Conversation so far:\n#{recent}",
       "Request: #{prompt}",
-      "Settings (id — what it is — now — values):\n" <> Enum.map_join(settings, "\n", &line/1)
+      "Items (id — what it is — now — values):\n" <> Enum.map_join(settings, "\n", &line/1)
     ]
     |> Enum.filter(& &1)
     |> Enum.join("\n\n")
   end
 
   defp line(s) do
-    "- #{s.id} — #{s.summary} — now: #{s.now || "unknown"} — #{values(s.kind)}"
+    now =
+      cond do
+        not undoable?(s) -> "action"
+        s.now -> "now: #{s.now}"
+        true -> "now: unknown"
+      end
+
+    "- #{s.id} — #{s.summary} — #{now} — #{values(s.kind)}"
   end
 
   defp values(:action), do: "value: \"now\" (does it once)"
   defp values(:image), do: "an image file path"
+  defp values(:url), do: "a web address"
+  defp values(:reminder), do: "minutes, then the message"
+
+  defp values({:lookup, fun}) do
+    names = fun.()
+
+    "the name of one of #{length(names)} installed apps, e.g. #{names |> Enum.take(6) |> Enum.join(", ")}"
+  end
+
   defp values({:choice, fun}), do: "one of: " <> Enum.join(fun.(), ", ")
   defp values({:enum, names}), do: "one of: " <> Enum.join(names, ", ")
   defp values({:int, lo, hi}), do: "a whole number #{lo}–#{hi}"

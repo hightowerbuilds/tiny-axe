@@ -26,8 +26,8 @@ defmodule TinyAxe.TUI do
   `/token` shows token use by Claude Haiku, Jev and the local model
   (`TUI.TokenDash`).
 
-  `/look` lists the desktop's appearance settings as they are now, and
-  `/look undo` puts back the newest appearance change (`TinyAxe.Appearance`).
+  `/look` lists the desktop's settings as they are now, and `/look undo`
+  puts back the newest desktop change (`TinyAxe.Desktop`).
 
   `/remote on|off` lets the site's /remote page reach this tiny-axe: its
   messages are answered in a 🌐 chat of their own (`TUI.RemoteChat`).
@@ -766,8 +766,8 @@ defmodule TinyAxe.TUI do
 
     work =
       if String.trim(rest) == "undo",
-        do: &TinyAxe.Appearance.undo/0,
-        else: fn -> "🎨 " <> TinyAxe.Appearance.describe_current() end
+        do: &TinyAxe.Desktop.undo/0,
+        else: fn -> "🎨 " <> TinyAxe.Desktop.describe_current() end
 
     Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn -> send(tui, {:look, work.()}) end)
     %{state | status: "reading the desktop's settings…"}
@@ -1034,9 +1034,9 @@ defmodule TinyAxe.TUI do
        when elem(event, 0) in [
               :command_plan,
               :command_problems,
-              :appearance_plan,
-              :appearance_problems,
-              :appearance_done,
+              :desktop_plan,
+              :desktop_problems,
+              :desktop_done,
               :cmd_start,
               :cmd_os_pid,
               :cmd_output,
