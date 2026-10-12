@@ -47,9 +47,9 @@ defmodule TinyAxe.Agent do
   alias TinyAxe.Agent.{ClaudeDriver, CodexDriver, Dispatch, LocalDriver, ShellTool}
   alias TinyAxe.Tools.{Gate, Redact}
 
-  @doc "Whether there's anything for an agent to use."
+  @doc "Whether there's anything for an agent to use: an MCP server, or the user's Chrome."
   @spec available?() :: boolean()
-  def available?, do: MCP.running() != []
+  def available?, do: MCP.running() != [] or TinyAxe.Chrome.on?()
 
   @spec run([map()], String.t(), (term() -> any()), keyword()) :: :ok
   def run(history, prompt, notify, opts \\ []) do
@@ -64,7 +64,17 @@ defmodule TinyAxe.Agent do
     # A purchase is watched from the start: the browser window is shown.
     if intent && TinyAxe.Browser.running?(), do: TinyAxe.Browser.show()
 
-    case open(notify, intent: intent, objective: objective(prompt, history)) do
+    # The user's own Chrome, when it's on and Claude drives (TinyAxe.Chrome).
+    # Every Chrome call counts against the task's limit, looking included.
+    chrome = TinyAxe.Chrome.on?() and match?({:claude, _}, choice)
+    servers = if chrome, do: servers ++ ["chrome"], else: servers
+
+    chrome_opts =
+      if chrome,
+        do: [chrome: true, max_calls: Application.get_env(:tiny_axe, :chrome_max_calls, 150)],
+        else: []
+
+    case open(notify, [intent: intent, objective: objective(prompt, history)] ++ chrome_opts) do
       {:ok, task} ->
         try do
           choice
@@ -189,7 +199,8 @@ defmodule TinyAxe.Agent do
     system =
       system_prompt(request.servers, request.briefing,
         dispatch: dispatch,
-        shell: ShellTool.available?()
+        shell: ShellTool.available?(),
+        chrome: task[:chrome] == true and match?({:claude, _}, choice)
       )
 
     driver(choice).run(Map.put(request, :system, system), task, choice, notify)
@@ -297,7 +308,7 @@ defmodule TinyAxe.Agent do
     Never type passwords or card details: ask the user (browser_handoff). To buy \
     something, go through the shop to the final "Place order" (or "Pay") button and \
     click it: tiny-axe then shows the order to the user, who decides.
-    #{graph_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}
+    #{graph_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}#{chrome_line(opts[:chrome])}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
     """ <> browser
@@ -308,6 +319,9 @@ defmodule TinyAxe.Agent do
 
   defp shell_line(true), do: "\n" <> ShellTool.instructions() <> "\n"
   defp shell_line(_), do: ""
+
+  defp chrome_line(true), do: "\n" <> TinyAxe.Chrome.instructions() <> "\n"
+  defp chrome_line(_), do: ""
 
   # Only when the graph server is connected, so its tool exists.
   defp graph_line(servers) do

@@ -5,6 +5,9 @@ defmodule TinyAxe.Tools.GatePlug do
   `initialize`, `tools/list`, `tools/call` and `ping`; notifications get 202;
   anything else (e.g. Claude Code's `server/discover`) gets "method not
   found".
+
+  `POST /hook/<task>` (the same token) is where Claude Code's `PostToolUse`
+  hook reports what a Chrome call showed (`Gate.observe/2`).
   """
 
   @behaviour Plug
@@ -30,6 +33,20 @@ defmodule TinyAxe.Tools.GatePlug do
     else
       :error -> send_resp(conn, 401, "")
       {:error, _} -> json(conn, error(nil, -32700, "parse error"))
+      {:more, _, conn} -> send_resp(conn, 413, "")
+    end
+  end
+
+  # What a Chrome call showed, from the PostToolUse hook (TinyAxe.Chrome).
+  def call(%Plug.Conn{method: "POST", path_info: ["hook", id]} = conn, _opts) do
+    with {:ok, task} <- Gate.authorize(id, bearer(conn)),
+         {:ok, body, conn} <- read_body(conn, length: 4_000_000),
+         {:ok, hook} <- JSON.decode(body) do
+      Gate.observe(task, hook)
+      send_resp(conn, 204, "")
+    else
+      :error -> send_resp(conn, 401, "")
+      {:error, _} -> send_resp(conn, 400, "")
       {:more, _, conn} -> send_resp(conn, 413, "")
     end
   end

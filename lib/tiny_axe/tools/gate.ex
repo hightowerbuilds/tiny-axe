@@ -59,6 +59,15 @@ defmodule TinyAxe.Tools.Gate do
   at once, read-only; any other is asked about every time, never for the
   session.
 
+  A task opened with `chrome: true` and driven by Claude also answers
+  Claude Code's permission questions for the user's own Chrome (Claude in
+  Chrome, `TinyAxe.Chrome`): the gate-owned `chrome_permission` tool (Claude
+  Code's `--permission-prompt-tool`) decides each Chrome call (reads run,
+  acts run on sites the user allowed for the task or wait for their yes,
+  order-placing clicks are held, some are refused), and `observe/2` takes in
+  what each Chrome call showed (from a `PostToolUse` hook, `POST /hook/<task>`),
+  so the gate knows each tab's address and what each ref is.
+
   A refusal comes back to the agent as a tool error saying why, so it can
   carry on or tell the user.
   """
@@ -67,7 +76,7 @@ defmodule TinyAxe.Tools.Gate do
 
   require Logger
 
-  alias TinyAxe.{Browser, MCP, Ops, Purchases, Tools}
+  alias TinyAxe.{Browser, Chrome, MCP, Ops, Purchases, Tools}
   alias TinyAxe.Agent.{Dispatch, ShellTool, SiteTool}
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
@@ -131,13 +140,26 @@ defmodule TinyAxe.Tools.Gate do
         # id: at the start (the system prompt) and after its calls.
         examples: %{start: [], step: []},
         # Marks the examples tiny-axe adds to results, which no page can know.
-        examples_nonce: Examples.nonce()
+        examples_nonce: Examples.nonce(),
+        # The user's own Chrome (TinyAxe.Chrome), when Claude drives: what the
+        # gate has seen of it, and the sites the user allowed for this task.
+        chrome: Keyword.get(opts, :chrome, false),
+        chrome_seen: Chrome.new(),
+        chrome_sites: MapSet.new()
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
       # Never prunes the folder of a task that's still open.
       Tools.Journal.start(id, GenServer.call(__MODULE__, :open_ids))
-      {:ok, %{id: id, token: token, url: "http://127.0.0.1:#{port}/mcp/#{id}"}}
+
+      {:ok,
+       %{
+         id: id,
+         token: token,
+         url: "http://127.0.0.1:#{port}/mcp/#{id}",
+         hook_url: "http://127.0.0.1:#{port}/hook/#{id}",
+         chrome: task.chrome
+       }}
     end
   end
 
@@ -267,12 +289,27 @@ defmodule TinyAxe.Tools.Gate do
     listed = if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
     listed = if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
     listed = if shells?(task), do: listed ++ [ShellTool.definition()], else: listed
-    if SiteTool.offered?(task.servers), do: listed ++ [SiteTool.definition()], else: listed
+
+    listed =
+      if SiteTool.offered?(task.servers), do: listed ++ [SiteTool.definition()], else: listed
+
+    if chrome?(task), do: listed ++ [Chrome.permission_definition()], else: listed
   end
+
+  # The user's Chrome is Claude's only (claude -p --chrome).
+  defp chrome?(task), do: task[:chrome] == true and match?({:claude, _}, task[:driver])
 
   @doc "Runs one tool call through the gate. Returns an MCP result."
   @spec call(map(), String.t(), map()) :: map()
-  def call(task, name, args) do
+  def call(task, "chrome_permission", args) do
+    if chrome?(task),
+      do: chrome_permission(task, args),
+      else: do_call(task, "chrome_permission", args)
+  end
+
+  def call(task, name, args), do: do_call(task, name, args)
+
+  defp do_call(task, name, args) do
     t0 = System.monotonic_time(:millisecond)
     tool = find(task, name)
     # The gate's own browser keys (tab lease, signatures) come from the gate.
@@ -1011,6 +1048,124 @@ defmodule TinyAxe.Tools.Gate do
   defp release(task, assessment) do
     GenServer.call(__MODULE__, {:release, task.id, assessment.effect.keys})
   end
+
+  @doc """
+  Takes in what a Chrome call showed (the `PostToolUse` hook's JSON:
+  `tool_name`, `tool_input`, `tool_response`), so the next permission
+  question is decided knowing each tab's address and each ref's label.
+  """
+  @spec observe(map(), map()) :: :ok
+  def observe(task, %{"tool_name" => tool} = hook) do
+    if Chrome.tool?(tool),
+      do:
+        GenServer.call(
+          __MODULE__,
+          {:chrome_seen, task.id, tool, hook["tool_input"] || %{}, hook["tool_response"]}
+        ),
+      else: :ok
+  end
+
+  def observe(_task, _hook), do: :ok
+
+  # Claude Code asks before every Chrome call; the answer is its JSON:
+  # {"behavior": "allow", "updatedInput": …} or {"behavior": "deny", "message": …}.
+  defp chrome_permission(task, args) do
+    tool = args["tool_name"]
+    input = if is_map(args["input"]), do: args["input"], else: %{}
+
+    {decision, answer} =
+      if Chrome.tool?(tool) do
+        case GenServer.call(__MODULE__, {:begin, task.id, tool, input}) do
+          {:limit, why} ->
+            task.notify.({:tool_limit, %{task: task.id, reason: why}})
+            {:refused, chrome_deny(why)}
+
+          {:ok, _allowed} ->
+            chrome_decide(task, tool, input)
+        end
+      else
+        {:refused, chrome_deny("only the user's Chrome is asked about here")}
+      end
+
+    short = if is_binary(tool), do: Chrome.short(tool), else: "?"
+
+    Tools.Journal.append(task.id, %{
+      tool: "chrome:" <> short,
+      args: Redact.deep(input),
+      decision: decision,
+      error: answer["behavior"] == "deny",
+      result: answer["message"] || "",
+      ms: 0
+    })
+
+    if answer["behavior"] == "deny" do
+      task.notify.(
+        {:tool_result,
+         %{tool: short, decision: decision, error: true, summary: answer["message"]}}
+      )
+    end
+
+    %{"content" => [%{"type" => "text", "text" => JSON.encode!(answer)}]}
+  end
+
+  defp chrome_decide(task, tool, input) do
+    {class, reason, host} = Chrome.classify(task.chrome_seen, tool, input)
+    short = Chrome.short(tool)
+    shown = %{read: :read, act: :outward, commit: :commit, refused: :refused}[class]
+
+    task.notify.(
+      {:tool_call, %{tool: short, class: shown, reason: reason, args: Redact.deep(input)}}
+    )
+
+    case class do
+      :read ->
+        {:ran, chrome_allow(input)}
+
+      :refused ->
+        {:refused, chrome_deny(reason)}
+
+      # Purchases through Chrome come with the purchase gate for it (P2).
+      :commit ->
+        {:refused,
+         chrome_deny(
+           "#{reason} would place an order, and placing orders in the user's Chrome isn't " <>
+             "switched on yet. Stop here and tell the user what's in the basket, the total, " <>
+             "and that they can place the order themselves"
+         )}
+
+      :act ->
+        if host && MapSet.member?(task.chrome_sites, host) do
+          {:allowed_for_session, chrome_allow(input)}
+        else
+          where = if host, do: " on #{host}", else: ""
+
+          pseudo = %{
+            name: "chrome · #{short}",
+            server: "chrome",
+            definition: %{"description" => "Acts in your own Chrome#{where}."},
+            policy: %{}
+          }
+
+          # "a" allows the whole site for this task, when there is one.
+          case ask(task, pseudo, input, :outward, reason, %{session_ok: host != nil, site: host}) do
+            :once ->
+              {:approved, chrome_allow(input)}
+
+            :session ->
+              GenServer.call(__MODULE__, {:chrome_site, task.id, host})
+              {:approved, chrome_allow(input)}
+
+            :deny ->
+              {:denied, chrome_deny("the user said no")}
+          end
+        end
+    end
+  end
+
+  defp chrome_allow(input), do: %{"behavior" => "allow", "updatedInput" => input}
+
+  defp chrome_deny(why),
+    do: %{"behavior" => "deny", "message" => "tiny-axe stopped this call: #{why}."}
 
   @doc """
   The completion check, before an agent's answer reaches the user: one more
@@ -1755,6 +1910,18 @@ defmodule TinyAxe.Tools.Gate do
     {:reply, :ok,
      if(Map.has_key?(tasks, id), do: put_in(tasks, [id, :card_used], used), else: tasks)}
   end
+
+  def handle_call({:chrome_seen, id, tool, input, response}, _from, tasks),
+    do:
+      {:reply, :ok,
+       update_task(tasks, id, fn task ->
+         %{task | chrome_seen: Chrome.observe(task.chrome_seen, tool, input, response)}
+       end)}
+
+  def handle_call({:chrome_site, id, host}, _from, tasks),
+    do:
+      {:reply, :ok,
+       update_task(tasks, id, &%{&1 | chrome_sites: MapSet.put(&1.chrome_sites, host)})}
 
   def handle_call({:allow, id, name}, _from, tasks) do
     {:reply, :ok, update_in(tasks, [id, :allowed], &MapSet.put(&1, name))}

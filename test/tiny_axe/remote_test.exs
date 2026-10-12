@@ -7,6 +7,16 @@ defmodule TinyAxe.RemoteTest do
   # take longer than assert_receive's default 100 ms.
   @wait 2_000
 
+  # Asks again until `fun` holds (or @wait runs out), rather than sleeping a
+  # fixed time that a loaded machine can outrun.
+  defp eventually(fun, left \\ @wait) do
+    cond do
+      fun.() -> true
+      left <= 0 -> false
+      true -> Process.sleep(20) && eventually(fun, left - 20)
+    end
+  end
+
   # The fake is linked to the test, so it stops with it.
   setup do
     %{fake: FakeRealtime.start()}
@@ -78,7 +88,7 @@ defmodule TinyAxe.RemoteTest do
   test "no site account yet: waits, and says why", %{fake: fake} do
     pid = start(fake, key: fn -> :error end)
 
-    Process.sleep(50)
+    assert eventually(fn -> Remote.status(pid).phase == :waiting end)
     assert %{phase: :waiting, error: "no site account yet" <> _} = Remote.status(pid)
     refute_received {:realtime, :token, _}
   end
@@ -87,7 +97,7 @@ defmodule TinyAxe.RemoteTest do
     # A long first wait, so it's still waiting when asked.
     pid = start(fake, key: fn -> {:ok, "not-the-key"} end, backoff: [5_000])
 
-    Process.sleep(100)
+    assert eventually(fn -> Remote.status(pid).phase == :waiting end)
     assert %{phase: :waiting, error: "ta-remote-token: 401" <> _} = Remote.status(pid)
     refute_received {:realtime, :socket, _, _}
   end
@@ -113,7 +123,7 @@ defmodule TinyAxe.RemoteTest do
     FakeRealtime.message(socket, row("c", "working"))
     FakeRealtime.message(socket, %{row("d") | "role" => "assistant"})
     FakeRealtime.message(socket, row("e", "working"))
-    Process.sleep(50)
+    Process.sleep(300)
     refute_received {:remote, {_, _}}
     for id <- ~w(b d e), do: refute_received({:realtime, :reply, _, %{"id" => ^id}})
   end
@@ -255,7 +265,7 @@ defmodule TinyAxe.RemoteTest do
     assert_receive {:realtime, :token, nil}, @wait
     assert_receive {:realtime, :in, %{"event" => "phx_join"}}, @wait
     FakeRealtime.set(fake, :refuse_join, false)
-    Process.sleep(50)
+    assert eventually(fn -> Remote.status(pid).phase == :waiting end)
 
     assert %{phase: :waiting, error: "Realtime refused the channel: Unauthorized"} =
              Remote.status(pid)

@@ -10,7 +10,13 @@ defmodule TinyAxe.Agent.ClaudeDriver do
       `--allowedTools mcp__tinyaxe`: the gate's tools, nothing else
 
   The gate's address and token are in a file only this user can read,
-  removed afterwards. Claude's text streams to the TUI as it works; the
+  removed afterwards.
+
+  With the user's Chrome (a task opened with `chrome: true`, `TinyAxe.Chrome`)
+  it also gets `--chrome`, `--permission-prompt-tool
+  mcp__tinyaxe__chrome_permission` (the gate decides each Chrome call) and,
+  through `--settings`, a `PostToolUse` hook that posts each Chrome call's
+  result to the gate (`TINYAXE_HOOK_URL`, `TINYAXE_HOOK_TOKEN`, with curl). Claude's text streams to the TUI as it works; the
   answer is its final message. API keys never reach it, and a run that
   reports any key source but the subscription is stopped (`TinyAxe.Model.CLI`,
   `TinyAxe.Model.ClaudeCLI`).
@@ -24,6 +30,7 @@ defmodule TinyAxe.Agent.ClaudeDriver do
           {:ok, String.t()} | {:error, term()}
   def run(request, task, {:claude, model}, notify) do
     config = write_config(task)
+    hooks = if task[:chrome], do: write_hooks()
     t0 = System.monotonic_time(:millisecond)
 
     try do
@@ -33,13 +40,13 @@ defmodule TinyAxe.Agent.ClaudeDriver do
       result =
         CLI.run(
           exe(),
-          args(model, config, request.system),
+          args(model, config, request.system, hooks),
           Agent.prompt_text(request),
           handle,
           acc,
           timeout: Application.get_env(:tiny_axe, :agent_timeout, :timer.minutes(30)),
           # Longer than the gate waits for the user's approval (10 minutes).
-          env: [{"MCP_TOOL_TIMEOUT", "900000"}]
+          env: [{"MCP_TOOL_TIMEOUT", "900000"} | hook_env(task, hooks)]
         )
 
       ms = System.monotonic_time(:millisecond) - t0
@@ -77,11 +84,12 @@ defmodule TinyAxe.Agent.ClaudeDriver do
       end
     after
       File.rm(config)
+      if hooks, do: File.rm(hooks)
     end
   end
 
   @doc false
-  def args(model, config, system) do
+  def args(model, config, system, hooks \\ nil) do
     ["-p", "--model", model, "--setting-sources", "local", "--tools", ""] ++
       ["--strict-mcp-config", "--mcp-config", config, "--allowedTools", "mcp__tinyaxe"] ++
       [
@@ -90,8 +98,53 @@ defmodule TinyAxe.Agent.ClaudeDriver do
         Application.get_env(:tiny_axe, :agent_effort, "medium")
       ] ++
       ["--system-prompt", system] ++
+      chrome_args(hooks) ++
       ~w(--output-format stream-json --include-partial-messages --verbose)
   end
+
+  defp chrome_args(nil), do: []
+
+  defp chrome_args(hooks),
+    do: [
+      "--chrome",
+      "--settings",
+      hooks,
+      "--permission-prompt-tool",
+      "mcp__tinyaxe__chrome_permission"
+    ]
+
+  # The hook reads the address and token from its environment, so neither is
+  # in the settings file.
+  @hook ~s(curl -s -m 10 -X POST -H "Authorization: Bearer $TINYAXE_HOOK_TOKEN" ) <>
+          ~s(-H "Content-Type: application/json" --data-binary @- "$TINYAXE_HOOK_URL" > /dev/null)
+
+  @doc false
+  def hook_settings,
+    do: %{
+      "hooks" => %{
+        "PostToolUse" => [
+          %{
+            "matcher" => "mcp__claude-in-chrome__.*",
+            "hooks" => [%{"type" => "command", "command" => @hook}]
+          }
+        ]
+      }
+    }
+
+  defp write_hooks do
+    path =
+      Path.join(System.tmp_dir!(), "tiny_axe_hooks_#{System.unique_integer([:positive])}.json")
+
+    File.write!(path, "")
+    File.chmod!(path, 0o600)
+    File.write!(path, JSON.encode!(hook_settings()))
+    path
+  end
+
+  defp hook_env(_task, nil), do: []
+
+  defp hook_env(task, _hooks),
+    do: [{"TINYAXE_HOOK_URL", task.hook_url}, {"TINYAXE_HOOK_TOKEN", task.token}]
 
   defp write_config(task) do
     path =

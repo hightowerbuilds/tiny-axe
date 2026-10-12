@@ -548,11 +548,12 @@ defmodule TinyAxe.TUI do
       prompt == "" ->
         {:noreply, state}
 
-      # cd, pwd, tools, /graph, /remote, /account, /token and /credit-card are handled
+      # cd, pwd, tools, /graph, /remote, /chrome, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
       prompt in ["pwd", "tools", "/account", "/token", "/review", "/review all"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
-        prompt =~ ~r/\A\/(graph|remote)(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
+        prompt =~ ~r/\A\/(graph|remote|chrome)(\s|\z)/ or
+          String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
@@ -631,6 +632,34 @@ defmodule TinyAxe.TUI do
   end
 
   defp builtin(state, "/remote" <> rest), do: RemoteChat.command(state, String.trim(rest))
+
+  # The user's own Chrome for the agent (TinyAxe.Chrome).
+  defp builtin(state, "/chrome" <> rest) do
+    case String.trim(rest) do
+      "on" ->
+        TinyAxe.Chrome.set_on(true)
+
+        add_meta(
+          state,
+          "🧭 your Chrome is on for the agent (when Claude drives; the Claude in Chrome extension must be " <>
+            "connected). It looks freely, asks before acting on a site you haven't allowed for the task, " <>
+            "and never places an order without you."
+        )
+
+      "off" ->
+        TinyAxe.Chrome.set_on(false)
+        add_meta(state, "🧭 your Chrome is off for the agent")
+
+      "" ->
+        add_meta(
+          state,
+          "🧭 your Chrome for the agent: #{if TinyAxe.Chrome.on?(), do: "on", else: "off (/chrome on)"}"
+        )
+
+      _ ->
+        add_meta(state, "/chrome · /chrome on · /chrome off")
+    end
+  end
 
   defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
 

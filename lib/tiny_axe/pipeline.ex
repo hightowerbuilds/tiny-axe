@@ -167,7 +167,9 @@ defmodule TinyAxe.Pipeline do
     questions =
       put_in(@route_questions.command.instructions, TinyAxe.Capabilities.command_question())
 
-    case TinyAxe.MCP.running() do
+    chrome = if TinyAxe.Chrome.on?(), do: ["chrome"], else: []
+
+    case TinyAxe.MCP.running() ++ chrome do
       [] ->
         questions
 
@@ -184,6 +186,11 @@ defmodule TinyAxe.Pipeline do
 
   defp describe_server("graph"),
     do: "graph: gives the user a link to a page of what tiny-axe itself has learned"
+
+  defp describe_server("chrome"),
+    do:
+      "chrome: the user's own Chrome browser, signed in to their shops and sites " <>
+        "(for browsing and buying there)"
 
   defp describe_server(name), do: name
 

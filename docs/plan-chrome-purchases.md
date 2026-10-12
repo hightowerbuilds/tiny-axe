@@ -1,6 +1,6 @@
 # Plan: purchases through Claude in Chrome
 
-Status (2026-10-12): P0 done (findings below); P1 next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
+Status (2026-10-12): P0 done; P1 built and live-checked (below); P2 next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
 
 ## What the user asked for
 
@@ -118,6 +118,33 @@ Run: `claude -p --model claude-haiku-5-5 --setting-sources local --settings
   driver also sets `MCP_TOOL_TIMEOUT` high, for remote approvals (10 min).
 - The order on the fixture went through only after the gate allowed the
   click (order `TA-1001`).
+
+## P1: what was built (2026-10-12)
+
+- `TinyAxe.Chrome`: `/chrome on|off` (`<state_dir>/chrome.json`), the rules
+  (`classify/3`), what results show (`observe/4`), the agent's instructions.
+- The gate: tasks opened with `chrome: true` (and driven by Claude) list
+  `chrome_permission`; it answers Claude Code's permission questions (reads
+  run; acts on a site the user allowed for the task run, else the usual
+  y / a / n question, where "a" allows that site for the task; commits are
+  refused until P2; batches, scripts, shortcuts, uploads, card numbers and
+  clicks by position are refused). `POST /hook/<task>` (the task's token)
+  takes in each Chrome result.
+- `ClaudeDriver`: `--chrome`, `--permission-prompt-tool
+  mcp__tinyaxe__chrome_permission`, and `--settings` with a `PostToolUse`
+  hook (curl to `TINYAXE_HOOK_URL` with `TINYAXE_HOOK_TOKEN`).
+- `Agent`: with Chrome on and Claude driving, the task gets Chrome (150
+  calls, since looking counts too); the router offers "chrome" as a service.
+
+**What the live check found.** The first real run (tiny-axe's agent, Haiku,
+the fixture shop) placed the order: Haiku took screenshots instead of
+reading the page as text, then clicked "Place order" **by position**, which
+looked like any click. Now every click must name a ref the gate has seen
+labelled (by position, or an unknown ref, is refused with what to do
+instead), Enter is refused on a page tiny-axe hasn't read, and on a
+checkout "Continue / Submit / Confirm / Complete" count as placing the order.
+The rerun: Haiku found the button, clicked it by ref, the gate held it, and
+Haiku told the user it hadn't ordered.
 
 ## Phases
 

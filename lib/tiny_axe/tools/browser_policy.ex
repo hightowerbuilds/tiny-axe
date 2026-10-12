@@ -56,6 +56,11 @@ defmodule TinyAxe.Tools.BrowserPolicy do
   def classify(tool, args, inspect, opts),
     do: do_classify(tool, args, inspect, Keyword.merge(opts, tool: tool, args: args))
 
+  @doc "Whether a button or link label spends money (\"Place order\", \"Buy now\", \"Pay\")."
+  @spec commit_label?(String.t() | nil) :: boolean()
+  def commit_label?(label) when is_binary(label), do: label =~ @commit
+  def commit_label?(_label), do: false
+
   @doc "This policy's version and its questions' version, as recorded with decisions."
   def versions, do: %{policy: @version, questions: @questions_version}
 
