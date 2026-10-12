@@ -122,14 +122,16 @@ defmodule TinyAxe.Pipeline do
     # somewhere else can be told apart.
     state = context(history, prompt)
 
-    with {:ok, route} <- Decider.decide(state, route_questions()) do
+    after_agent = Keyword.get(opts, :after_agent, false)
+
+    with {:ok, route} <- Decider.decide(state, route_questions(after_agent)) do
       notify.({:route, route})
       # An unknown task kind gets the plain question prompt.
       kind = route.kind.choice || :question
       navigate(route, prompt, notify)
       {web_context, request, notify} = WebContext.prepare(route, history, prompt, notify)
 
-      task = task(route)
+      task = task(route, after_agent)
       notify.({:task, task})
 
       case task do
@@ -140,7 +142,10 @@ defmodule TinyAxe.Pipeline do
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
 
         :agent ->
-          TinyAxe.Agent.run(history, prompt, notify, remote: remote)
+          TinyAxe.Agent.run(history, prompt, notify,
+            remote: remote,
+            leash: Keyword.get(opts, :leash, false)
+          )
 
         :answer ->
           {file_context, request, notify} =
@@ -162,12 +167,30 @@ defmodule TinyAxe.Pipeline do
   # With MCP servers connected, the router also asks whether the request needs
   # them; their names make the question concrete. The site runs whenever there's
   # an account, so it's named for what it does: a bare "site" would pull in
-  # questions about websites in general.
-  defp route_questions do
+  # questions about websites in general. After an agent's turn it also asks
+  # whether this message carries that task on (an address it asked for, "yes",
+  # "go on"), so a checkout isn't lost to a plain answer halfway through.
+  defp route_questions(after_agent) do
     questions =
       put_in(@route_questions.command.instructions, TinyAxe.Capabilities.command_question())
 
-    case TinyAxe.MCP.running() do
+    questions =
+      if after_agent,
+        do:
+          Map.put(questions, :continues, %{
+            type: :noul,
+            instructions:
+              "The assistant's last turn was a task it carried out with tools (the browser, " <>
+                "a shop's checkout, a connected service). Does this message carry that task " <>
+                "on: answering something it asked (an address, an email, a phone number, a " <>
+                "choice, a yes or no), or telling it to go on or do the next step, rather " <>
+                "than starting something new or asking a question about something else?"
+          }),
+        else: questions
+
+    chrome = if TinyAxe.Chrome.on?(), do: ["chrome"], else: []
+
+    case TinyAxe.MCP.running() ++ chrome do
       [] ->
         questions
 
@@ -185,12 +208,25 @@ defmodule TinyAxe.Pipeline do
   defp describe_server("site"),
     do: "site: searches the user's past chats with tiny-axe, and links to them"
 
+  defp describe_server("chrome"),
+    do:
+      "chrome: the user's own Chrome browser, signed in to their shops and sites " <>
+        "(for browsing and buying there)"
+
   defp describe_server(name), do: name
 
   # Commands go to the Commander, file tasks (moving, organising, writing
   # documents) to the Organizer, and requests that need connected services to
   # the agent; when several look likely, the likeliest wins.
-  defp task(route) do
+  # Carrying on an agent's task goes back to the agent, before anything else.
+  defp task(route, true) do
+    if TinyAxe.Agent.available?() and
+         Decider.yes?(route, :continues, config(:route_threshold, 0.5)),
+       do: :agent,
+       else: task(route, false)
+  end
+
+  defp task(route, false) do
     command = if config(:commands, true), do: Decider.p(route, :command) || 0, else: 0
     organize = if config(:file_ops, true), do: Decider.p(route, :organize) || 0, else: 0
     agent = if TinyAxe.Agent.available?(), do: Decider.p(route, :tools) || 0, else: 0

@@ -566,11 +566,12 @@ defmodule TinyAxe.TUI do
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, MemoryChat.ask(state, prompt)}
 
-      # cd, pwd, tools, /site, /remote, /account, /token and /credit-card are handled
+      # cd, pwd, tools, /site, /remote, /chrome, /account, /token and /credit-card are handled
       # here, like shell built-ins: no model involved.
       prompt in ["pwd", "tools", "/account", "/token", "/site"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
-        prompt =~ ~r/\A\/remote(\s|\z)/ or String.starts_with?(prompt, "/credit-card") ->
+        prompt =~ ~r/\A\/(remote|chrome|leash)(\s|\z)/ or
+          String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, builtin(state, prompt)}
 
@@ -625,7 +626,61 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  # The leash (TinyAxe.Leash): browser actions, and orders whose checks all
+  # pass, go through without asking, for this session.
+  defp builtin(state, "/leash" <> rest) do
+    case String.trim(rest) do
+      "on" ->
+        TinyAxe.Leash.set(true)
+
+        add_meta(
+          state,
+          "🔓 leash on for this session: browser actions run without asking, and an order " <>
+            "whose checks all pass (what you asked for, the limits, the shop, the card) is " <>
+            "placed without asking. Commands, a card's PIN and the 🌐 chat still ask. /leash off"
+        )
+
+      "off" ->
+        TinyAxe.Leash.set(false)
+        add_meta(state, "🔒 leash off: browser actions and orders ask you again")
+
+      _ ->
+        add_meta(
+          state,
+          "leash #{if TinyAxe.Leash.on?(), do: "on", else: "off"} (/leash on · /leash off)"
+        )
+    end
+  end
+
   defp builtin(state, "/remote" <> rest), do: RemoteChat.command(state, String.trim(rest))
+
+  # The user's own Chrome for the agent (TinyAxe.Chrome).
+  defp builtin(state, "/chrome" <> rest) do
+    case String.trim(rest) do
+      "on" ->
+        TinyAxe.Chrome.set_on(true)
+
+        add_meta(
+          state,
+          "🧭 your Chrome is on for the agent (when Claude drives; the Claude in Chrome extension must be " <>
+            "connected). It looks freely, asks before acting on a site you haven't allowed for the task, " <>
+            "and never places an order without you."
+        )
+
+      "off" ->
+        TinyAxe.Chrome.set_on(false)
+        add_meta(state, "🧭 your Chrome is off for the agent")
+
+      "" ->
+        add_meta(
+          state,
+          "🧭 your Chrome for the agent: #{if TinyAxe.Chrome.on?(), do: "on", else: "off (/chrome on)"}"
+        )
+
+      _ ->
+        add_meta(state, "/chrome · /chrome on · /chrome off")
+    end
+  end
 
   defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
 
@@ -936,6 +991,15 @@ defmodule TinyAxe.TUI do
       "✗ tiny-axe won't buy at #{s["host"] || "this shop"}#{if s["total_text"], do: " (#{s["total_text"]})"}: " <>
         Enum.join(failed, "; ")
     )
+  end
+
+  defp apply_event({:purchase_leashed, %{summary: s, mode: mode}}, state) do
+    what =
+      if mode == :card_step,
+        do: "filling your card in at #{s["host"]}",
+        else: "placing the order at #{s["host"]} for #{s["total_text"]}"
+
+    add_meta(state, "🔓 on the leash, every check passed: #{what}")
   end
 
   defp apply_event({:purchase_changed, why}, state),

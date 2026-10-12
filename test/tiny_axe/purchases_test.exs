@@ -128,13 +128,9 @@ defmodule TinyAxe.PurchasesTest do
       assert why =~ "in USD, you asked in GBP"
     end
 
-    test "no intent, no maximum, or no total read from the page fails" do
+    test "no intent, or no total read from the page fails; no maximum is the per-order limit" do
       assert "you didn't ask to buy anything in this request" in failed(nil, @summary)
-
-      assert "you didn't say the most to spend (e.g. \"under $50\")" in failed(
-               %{@intent | max: nil},
-               @summary
-             )
+      assert [] == failed(%{@intent | max: nil}, @summary)
 
       assert "tiny-axe couldn't read the total on the page" in failed(
                @intent,

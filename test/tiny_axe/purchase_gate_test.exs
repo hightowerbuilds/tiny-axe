@@ -226,10 +226,15 @@ defmodule TinyAxe.PurchaseGateTest do
     assert placed() == []
   end
 
-  test "no maximum given: the agent is told to ask the user for one", ctx do
+  test "no maximum given: the per-order limit stands in for it", ctx do
+    buy(ctx, open_task(ctx, %{@intent | max: nil}))
+    assert_received {:asked, %{checks: checks}}
+    assert {:ok, "you named no maximum, so the per-order limit is it"} in checks
+    assert placed() == [:order]
+
+    limits(per_order_max: 10.0, daily_max: 200.0)
     result = buy(ctx, open_task(ctx, %{@intent | max: nil}))
-    assert text(result) =~ "Ask the user the most they want to spend"
-    assert placed() == []
+    assert text(result) =~ "over the $10.00 limit per order"
   end
 
   test "the user never asked to buy anything: refused", ctx do

@@ -19,6 +19,8 @@ defmodule TinyAxe.TUI.View do
 
   def input_height, do: @input_height
 
+  defp leash_label, do: if(TinyAxe.Leash.on?(), do: "  ·  🔓 leash", else: "")
+
   def render(state, frame) do
     area = %Rect{x: 0, y: 0, width: frame.width, height: frame.height}
     [transcript_area, status_area, input_area] = split(area)
@@ -225,7 +227,7 @@ defmodule TinyAxe.TUI.View do
   defp status_widget(%{run: nil} = state) do
     %Paragraph{
       text:
-        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}#{TinyAxe.TUI.RemoteChat.label(state)}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
+        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}#{leash_label()}#{TinyAxe.TUI.RemoteChat.label(state)}  ·  pgup/pgdn/↑/↓ scroll · ctrl+y copy · ctrl+z undo · ctrl+k compact · ctrl+t sidebar · ctrl+c quit",
       style: %Style{fg: :dark_gray}
     }
   end
@@ -233,7 +235,7 @@ defmodule TinyAxe.TUI.View do
   defp status_widget(state) do
     %Throbber{
       label:
-        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}#{TinyAxe.TUI.RemoteChat.label(state)}",
+        " #{state.status}#{Chats.status_label(state)}  ·  #{ctx_label(state)}#{remote_label()}#{leash_label()}#{TinyAxe.TUI.RemoteChat.label(state)}",
       step: state.tick,
       throbber_style: %Style{fg: :cyan}
     }
