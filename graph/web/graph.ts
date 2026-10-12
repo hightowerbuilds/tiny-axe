@@ -398,7 +398,14 @@ export class GraphView {
   }
 
   private positioned({ positions, moving }: FromLayout) {
-    if (positions.length !== this.positions.length) return; // from a graph since replaced
+    // From a graph since replaced: ask for the new one's. The layout sends
+    // positions only when asked, so dropping these without asking would
+    // leave every note where it is (all on one spot, on a fresh page) for
+    // good, as a running task's notes arriving during the first frames did.
+    if (positions.length !== this.positions.length) {
+      this.ack = true;
+      return;
+    }
     this.positions = positions;
     const centres = this.dots.geometry.getAttribute("aCenter") as InstancedBufferAttribute;
     (centres.array as Float32Array).set(positions);
