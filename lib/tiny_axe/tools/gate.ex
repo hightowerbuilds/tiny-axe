@@ -157,8 +157,6 @@ defmodule TinyAxe.Tools.Gate do
       _ ->
         :ok
     end
-
-    TinyAxe.Vault.task_closed(id)
   end
 
   defp capture(task) do
@@ -1812,7 +1810,6 @@ defmodule TinyAxe.Tools.Gate do
     case Enum.find(tasks, fn {_id, t} -> t[:monitor] == ref end) do
       {id, t} ->
         for server <- t.leased, do: Task.start(fn -> Browser.release(server, id) end)
-        TinyAxe.Vault.task_closed(id)
         {:noreply, Map.delete(tasks, id)}
 
       nil ->

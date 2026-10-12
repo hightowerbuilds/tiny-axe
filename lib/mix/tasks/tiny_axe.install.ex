@@ -10,9 +10,10 @@ defmodule Mix.Tasks.TinyAxe.Install do
     * settings live in `~/.config/tiny-axe/env`; if that file doesn't exist and
       this repo has a `.env`, it's copied there (readable only by you)
 
-  The know-how graph and the chats are on tiny-axe's website now
-  (`docs/plan-lobsterattack.md`); a copy of the old local viewer that an
-  earlier install left in `~/.local/share/tiny-axe/graph` is removed.
+  The chats are on tiny-axe's website (`docs/plan-lobsterattack.md`). What
+  the know-how graph left behind (the old local viewer and the vault in
+  `~/.local/share/tiny-axe`, and `reviews.jsonl` in its state folder) is
+  removed.
 
       mix tiny_axe.install
 
@@ -55,8 +56,13 @@ defmodule Mix.Tasks.TinyAxe.Install do
     File.rm_rf!(release)
     File.rename!(build, release)
 
-    # The old local graph viewer (now the website) that earlier installs put here.
+    # The know-how graph is gone: its local viewer, its vault and the chats' reviews.
+    state =
+      Path.join(System.get_env("XDG_STATE_HOME") || Path.expand("~/.local/state"), "tiny-axe")
+
     File.rm_rf!(Path.join(data, "graph"))
+    File.rm_rf!(Path.join(data, "vault"))
+    File.rm(Path.join(state, "reviews.jsonl"))
 
     File.mkdir_p!(bin)
     launcher = Path.join(bin, "tiny-axe")

@@ -1,9 +1,9 @@
 defmodule TinyAxe.Agent.SiteTool do
   @moduledoc """
-  `site_open`, the gate's own tool for showing the user their page of
+  `site_open`, the gate's own tool for showing the user their chats on
   tiny-axe's website: it opens in the user's own browser, already signed in
-  (`TinyAxe.Graph.open_in_browser/2`). Offered to agent tasks that have the
-  site (`graph`) among their servers.
+  (`TinyAxe.Site.open_in_browser/1`). Offered to agent tasks that have the
+  site (`site`) among their servers.
 
   It's `:local`: it opens a window on this computer for the user, and what it
   fetches is a one-time sign-in link to the user's own page, which goes to
@@ -11,15 +11,15 @@ defmodule TinyAxe.Agent.SiteTool do
   link). So it runs without asking.
   """
 
-  alias TinyAxe.Graph
+  alias TinyAxe.Site
 
   @name "site_open"
 
   def name, do: @name
 
   @doc "Whether a task gets the tool: the site is one of its servers (`:all`: it's connected)."
-  def offered?(:all), do: Graph.running?()
-  def offered?(servers) when is_list(servers), do: Graph.name() in servers
+  def offered?(:all), do: Site.running?()
+  def offered?(servers) when is_list(servers), do: Site.name() in servers
   def offered?(_servers), do: false
 
   @doc "The tool's MCP definition."
@@ -27,15 +27,13 @@ defmodule TinyAxe.Agent.SiteTool do
     %{
       "name" => @name,
       "description" =>
-        "Open the user's page of tiny-axe's website in their own browser, already signed in " <>
-          "as them: the know-how graph, one note (`focus`, a note id), or their chats " <>
-          "(`page: \"chats\"`). Use it when they want to see or go to the site. You never see " <>
-          "or type a password; this needs none.",
+        "Open the user's chats on tiny-axe's website in their own browser, already signed in " <>
+          "as them: all of them, or one (`chat`, its id from site__chat_search). Use it when " <>
+          "they want to see or go to the site. You never see or type a password; this needs none.",
       "inputSchema" => %{
         "type" => "object",
         "properties" => %{
-          "focus" => %{"type" => "string", "description" => "A note's id, to open that note."},
-          "page" => %{"type" => "string", "enum" => ["graph", "chats"]}
+          "chat" => %{"type" => "string", "description" => "A chat's id, to open that chat."}
         },
         "required" => []
       },
@@ -45,15 +43,13 @@ defmodule TinyAxe.Agent.SiteTool do
 
   @doc "Opens it; an MCP result."
   def run(args) do
-    page = if args["page"] == "chats", do: "chats"
-
-    case Graph.open_in_browser(args["focus"], page: page) do
+    case Site.open_in_browser(args["chat"]) do
       {:ok, link} ->
         text("Opened #{link} in the user's browser, signed in. They can see it now.")
 
       {:error, why} ->
         Map.put(
-          text("Couldn't open it (#{why}). Give them the link from graph__graph_link instead."),
+          text("Couldn't open it (#{why}). Give them the link from site__site_link instead."),
           "isError",
           true
         )

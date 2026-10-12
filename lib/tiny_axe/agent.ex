@@ -151,7 +151,7 @@ defmodule TinyAxe.Agent do
       "agent that handed you this part to combine with the others' answers."
   end
 
-  # A gate task, with what the know-how graph shows of it (task.json).
+  # A gate task, with what it was for in its journal (task.json).
   defp open(notify, opts) do
     with {:ok, task} <- Gate.open_task(notify, opts) do
       Tools.Journal.info(task.id, %{
@@ -297,7 +297,7 @@ defmodule TinyAxe.Agent do
     Never type passwords or card details: ask the user (browser_handoff). To buy \
     something, go through the shop to the final "Place order" (or "Pay") button and \
     click it: tiny-axe then shows the order to the user, who decides.
-    #{graph_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}
+    #{site_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
     """ <> browser
@@ -309,8 +309,8 @@ defmodule TinyAxe.Agent do
   defp shell_line(true), do: "\n" <> ShellTool.instructions() <> "\n"
   defp shell_line(_), do: ""
 
-  # Only when the graph server is connected, so its tool exists.
-  defp graph_line(servers) do
+  # Only when the site server is connected, so its tools exist.
+  defp site_line(servers) do
     account =
       case TinyAxe.Capabilities.account() do
         "" -> ""
@@ -318,15 +318,13 @@ defmodule TinyAxe.Agent do
       end
 
     site =
-      if TinyAxe.Graph.name() in servers,
+      if TinyAxe.Site.name() in servers,
         do:
-          "\nWhat tiny-axe has learned is on the user's page of its website. To answer from it, " <>
-            "use graph__graph_search and graph__graph_note (graph__graph_overview for the numbers). " <>
-            "When the user wants to see it, go to the site, or see the graph, call site_open: it " <>
-            "opens their page in their own browser, already signed in (page \"chats\" for their " <>
-            "chat history). If it can't, give them graph__graph_link's link. " <>
-            "When they ask you to remember or write down something worth keeping, save it with " <>
-            "graph__graph_add_note (they're asked first). " <>
+          "\nEvery chat with tiny-axe is on the user's page of its website. When they ask what " <>
+            "was said, decided or done before, find it with site__chat_search and read it with " <>
+            "site__chat_read. When they want to see their chats or go to the site, call " <>
+            "site_open: it opens their page in their own browser, already signed in. If it " <>
+            "can't, give them site__site_link's link. " <>
             "You can't open a browser for them, so never say you did.\n",
         else: ""
 

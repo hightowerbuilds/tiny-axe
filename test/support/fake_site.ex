@@ -3,9 +3,8 @@ defmodule TinyAxe.FakeSite do
   tiny-axe's website as tests need it: `/api/mcp` on 127.0.0.1 (MCP over
   HTTP, plain JSON, as the real one answers), with one key. Every tool call
   is sent to the test process that started it as `{:site_call, tool, args}`.
-  `vault_push` takes every note except any whose id starts with "bad"; a
-  `fail: true` start answers every call with a 500, and `link: base` answers
-  graph_link with links on another site.
+  A `fail: true` start answers every call with a 500, and `link: base`
+  answers site_link with links on another site.
 
   `start/1` returns `%{url: base_url, key: key, stop: fun}`.
   """
@@ -59,7 +58,7 @@ defmodule TinyAxe.FakeSite do
   defp answer(%{"method" => "tools/list"}, _test, _base) do
     tools =
       for name <-
-            ~w(graph_overview graph_search graph_note graph_link graph_add_note signin_link vault_push chat_push review_push),
+            ~w(chat_search chat_read site_link signin_link chat_push),
           do: %{name: name, description: name, inputSchema: %{type: "object"}}
 
     %{tools: tools}
@@ -70,42 +69,17 @@ defmodule TinyAxe.FakeSite do
     send(test, {:site_call, tool, args})
 
     case tool do
-      "vault_push" ->
-        {bad, good} = Enum.split_with(args["notes"], &String.starts_with?(&1["id"], "bad"))
-
-        text(%{
-          written: length(good),
-          unchanged: 0,
-          refused: Enum.map(bad, &%{id: &1["id"], reason: "bad note"})
-        })
-
       "chat_push" ->
         text(%{id: args["chat"]["id"], written: true})
 
-      "review_push" ->
-        text(%{chat_id: args["review"]["chat_id"], written: true})
-
       "signin_link" ->
-        path =
-          cond do
-            args["page"] == "chats" -> "/chats"
-            args["focus"] -> "/note/" <> URI.encode(args["focus"], &URI.char_unreserved?/1)
-            true -> "/graph"
-          end
+        text(base <> path(args) <> "#signin=one-time-token")
 
-        text(base <> path <> "#signin=one-time-token")
+      "site_link" ->
+        text(base <> path(args))
 
-      "graph_link" ->
-        cond do
-          args["page"] == "chats" ->
-            text(base <> "/chats")
-
-          args["focus"] ->
-            text(base <> "/note/" <> URI.encode(args["focus"], &URI.char_unreserved?/1))
-
-          true ->
-            text(base <> "/graph")
-        end
+      "chat_search" ->
+        text(%{results: [%{id: "20261012-100000-1", title: "a chat", snippet: args["q"]}]})
 
       _ ->
         text("{}")
@@ -114,6 +88,11 @@ defmodule TinyAxe.FakeSite do
 
   defp answer(%{"id" => _}, _test, _base), do: %{}
   defp answer(_notification, _test, _base), do: nil
+
+  defp path(%{"chat" => chat}) when is_binary(chat) and chat != "",
+    do: "/chats/" <> URI.encode(chat, &URI.char_unreserved?/1)
+
+  defp path(_args), do: "/chats"
 
   defp text(value) when is_binary(value), do: %{content: [%{type: "text", text: value}]}
   defp text(value), do: text(JSON.encode!(value))

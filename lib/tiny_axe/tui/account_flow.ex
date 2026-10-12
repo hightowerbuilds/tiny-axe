@@ -43,7 +43,7 @@ defmodule TinyAxe.TUI.AccountFlow do
   defp steps do
     %{
       welcome:
-        {"tiny-axe keeps what it learns, and your chats, on your own page of its website. Let's set up your account.",
+        {"tiny-axe keeps your chats on your own page of its website, where you can search them. Let's set up your account.",
          :choice},
       about:
         {"What would you like to be called? A name or a nickname is fine: I'll suggest usernames from it.",

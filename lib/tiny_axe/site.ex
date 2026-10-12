@@ -1,31 +1,28 @@
-defmodule TinyAxe.Graph do
+defmodule TinyAxe.Site do
   @moduledoc """
-  tiny-axe's website (`docs/plan-lobsterattack.md`) as an MCP server: what
-  tiny-axe has learned, and every chat, on the user's own page of the site,
-  for them (and whoever they let in) to see after signing in. It's connected
-  under the reserved name `graph`, over HTTP to `<site>/api/mcp`, with the
-  account's key from the keyring (`TinyAxe.Account`); so it's there once
-  there's an account.
+  tiny-axe's website (`docs/plan-lobsterattack.md`) as an MCP server: every
+  chat, on the user's own page of the site, searchable, for them (and whoever
+  they let in) to see after signing in. It's connected under the reserved
+  name `site`, over HTTP to `<site>/api/mcp`, with the account's key from the
+  keyring (`TinyAxe.Account`); so it's there once there's an account.
 
   Agents reach it through the gate like any other server. Its read tools
-  (`graph_overview`, `graph_search`, `graph_note`, `graph_link`) only read
-  the user's own page, so they run without asking. `graph_add_note` (the
-  model saving a note there) is outward: the user is asked each time. `vault_push`,
-  `chat_push`, `review_push` and `signin_link` are hidden from agents: only tiny-axe's own
-  code sends notes and chats (`TinyAxe.Sync`) and opens the site signed in
-  (`open_in_browser/2`, for `/graph` and the agent's `site_open`).
+  (`chat_search`, `chat_read`, `site_link`) only read the user's own page,
+  so they run without asking. `chat_push` and `signin_link` are hidden from
+  agents: only tiny-axe's own code sends chats (`TinyAxe.Sync`) and opens
+  the site signed in (`open_in_browser/1`, for `/site` and the agent's
+  `site_open`).
 
-  `config :tiny_axe, :graph`: `enabled: false` leaves it unconnected;
+  `config :tiny_axe, :site`: `enabled: false` leaves it unconnected;
   `opener` is how a link is opened in the user's browser (`xdg-open` by
   default; `false` never opens one, as in tests; tests may give a function).
   """
 
   alias TinyAxe.{Account, MCP}
 
-  @name "graph"
-  @read ["graph_overview", "graph_search", "graph_note", "graph_link"]
-  @outward ["graph_add_note"]
-  @hidden ["vault_push", "chat_push", "review_push", "signin_link"]
+  @name "site"
+  @read ["chat_search", "chat_read", "site_link"]
+  @hidden ["chat_push", "signin_link"]
 
   def name, do: @name
 
@@ -55,7 +52,7 @@ defmodule TinyAxe.Graph do
         "type" => "http",
         "url" => Account.site_url() <> "/api/mcp",
         "headers" => %{"authorization" => "Bearer " <> key},
-        "policy" => %{"read" => @read, "outward" => @outward, "hidden" => @hidden}
+        "policy" => %{"read" => @read, "hidden" => @hidden}
       }
     else
       _ -> nil
@@ -78,31 +75,24 @@ defmodule TinyAxe.Graph do
   end
 
   @doc """
-  The link to the user's page of the site, optionally one note (`focus`) or
-  the chats (`page: "chats"`). Never opens a browser.
+  The link to the user's chats on the site, or to one chat (its id). Never
+  opens a browser.
   """
-  @spec open(String.t() | nil, keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def open(focus \\ nil, opts \\ []) do
-    args =
-      %{}
-      |> then(&if(focus in [nil, ""], do: &1, else: Map.put(&1, "focus", focus)))
-      |> then(&if(opts[:page], do: Map.put(&1, "page", opts[:page]), else: &1))
-
-    with {:ok, text} <- call("graph_link", args, 30_000), do: url(text)
+  @spec open(String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
+  def open(chat \\ nil) do
+    with {:ok, text} <- call("site_link", args(chat), 30_000), do: url(text)
   end
 
   @doc """
-  Opens the user's page of the site in their own browser, already signed in:
-  the site gives a one-time sign-in link (`signin_link`; the token is in its
-  #fragment, used once by the page), which is handed to the browser and
-  nothing else. `{:ok, link}` with the plain link (no token), or why not.
+  Opens the user's chats on the site (or one chat) in their own browser,
+  already signed in: the site gives a one-time sign-in link (`signin_link`;
+  the token is in its #fragment, used once by the page), which is handed to
+  the browser and nothing else. `{:ok, link}` with the plain link (no
+  token), or why not.
   """
-  @spec open_in_browser(String.t() | nil, keyword()) :: {:ok, String.t()} | {:error, String.t()}
-  def open_in_browser(focus \\ nil, opts \\ []) do
-    args =
-      %{}
-      |> then(&if(focus in [nil, ""], do: &1, else: Map.put(&1, "focus", focus)))
-      |> then(&if(opts[:page], do: Map.put(&1, "page", opts[:page]), else: &1))
+  @spec open_in_browser(String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
+  def open_in_browser(chat \\ nil) do
+    args = args(chat)
 
     with {:ok, opener} <- opener(),
          {:ok, text} <- call("signin_link", args, 30_000),
@@ -111,6 +101,9 @@ defmodule TinyAxe.Graph do
       {:ok, link |> String.split("#", parts: 2) |> hd()}
     end
   end
+
+  defp args(chat) when chat in [nil, ""], do: %{}
+  defp args(chat), do: %{"chat" => chat}
 
   # A function (tests), or a command: on a desktop with xdg-open.
   defp opener do
@@ -191,5 +184,5 @@ defmodule TinyAxe.Graph do
     end
   end
 
-  defp settings, do: Application.get_env(:tiny_axe, :graph, [])
+  defp settings, do: Application.get_env(:tiny_axe, :site, [])
 end

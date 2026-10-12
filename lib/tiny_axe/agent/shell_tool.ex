@@ -21,7 +21,7 @@ defmodule TinyAxe.Agent.ShellTool do
   The result is the exit status and the end of the output, which goes to
   the driver (off this machine for Claude or Codex): secrets are hidden from
   commands (`TinyAxe.Shell.hidden_paths/0`) and the gate redacts results.
-  The journal keeps the call as any other; the vault records only the tool.
+  The journal keeps the call as any other.
   """
 
   alias TinyAxe.{Location, Ops, Shell}

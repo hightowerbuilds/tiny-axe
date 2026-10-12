@@ -150,10 +150,6 @@ defmodule TinyAxe.History do
 
   defp summary_from(_), do: nil
 
-  @doc "A kept chat's document as the file holds it (`TinyAxe.Review` reads these)."
-  @spec doc(String.t(), Path.t()) :: {:ok, map()} | {:error, term()}
-  def doc(id, dir \\ dir()), do: read(id, dir)
-
   defp read(id, dir \\ dir()) do
     with true <- id?(id) || {:error, :bad_id},
          {:ok, body} <- File.read(Path.join(dir, id <> ".json")),
@@ -303,10 +299,8 @@ defmodule TinyAxe.History do
          :ok <- File.write(tmp, JSON.encode!(doc)),
          :ok <- File.chmod(tmp, 0o600),
          :ok <- File.rename(tmp, path) do
-      # And on to the user's page of the site (TinyAxe.Sync), once reviewed
-      # for the session graph (TinyAxe.Review).
+      # And on to the user's page of the site (TinyAxe.Sync).
       TinyAxe.Sync.soon()
-      TinyAxe.Review.soon()
     end
   end
 

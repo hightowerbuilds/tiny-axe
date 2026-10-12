@@ -160,9 +160,9 @@ defmodule TinyAxe.Pipeline do
   end
 
   # With MCP servers connected, the router also asks whether the request needs
-  # them; their names make the question concrete. The graph runs whenever Node
-  # does, so it's named for what it does: a bare "graph" would pull in
-  # questions about graphs in general.
+  # them; their names make the question concrete. The site runs whenever there's
+  # an account, so it's named for what it does: a bare "site" would pull in
+  # questions about websites in general.
   defp route_questions do
     questions =
       put_in(@route_questions.command.instructions, TinyAxe.Capabilities.command_question())
@@ -182,8 +182,8 @@ defmodule TinyAxe.Pipeline do
     end
   end
 
-  defp describe_server("graph"),
-    do: "graph: gives the user a link to a page of what tiny-axe itself has learned"
+  defp describe_server("site"),
+    do: "site: searches the user's past chats with tiny-axe, and links to them"
 
   defp describe_server(name), do: name
 

@@ -71,7 +71,7 @@ defmodule TinyAxe.MCP do
   end
 
   @doc """
-  Every configured server (and tiny-axe's browser and graph): whether it's running, its
+  Every configured server (and tiny-axe's browser and site): whether it's running, its
   tools by class, and why it isn't running, if it failed.
   """
   @spec status() :: [map()]
@@ -190,8 +190,8 @@ defmodule TinyAxe.MCP do
   defdelegate call(server, tool, args, timeout \\ 120_000), to: Client
 
   # tiny-axe's own servers run under these names: its browser (TinyAxe.Browser)
-  # and the know-how graph (TinyAxe.Graph).
-  @reserved ["browser", "graph"]
+  # and its website (TinyAxe.Site).
+  @reserved ["browser", "site"]
 
   defp reserved?(name) when name in @reserved do
     Logger.warning(
