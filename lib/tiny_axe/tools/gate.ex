@@ -145,7 +145,10 @@ defmodule TinyAxe.Tools.Gate do
         # gate has seen of it, and the sites the user allowed for this task.
         chrome: Keyword.get(opts, :chrome, false),
         chrome_seen: Chrome.new(),
-        chrome_sites: MapSet.new()
+        chrome_sites: MapSet.new(),
+        # An order in the user's Chrome: approved (one click may go), then
+        # clicking, clicked, until its receipt.
+        chrome_purchase: nil
       }
 
       :ok = GenServer.call(__MODULE__, {:open, task})
@@ -1056,13 +1059,16 @@ defmodule TinyAxe.Tools.Gate do
   """
   @spec observe(map(), map()) :: :ok
   def observe(task, %{"tool_name" => tool} = hook) do
-    if Chrome.tool?(tool),
-      do:
-        GenServer.call(
-          __MODULE__,
-          {:chrome_seen, task.id, tool, hook["tool_input"] || %{}, hook["tool_response"]}
-        ),
-      else: :ok
+    input = hook["tool_input"] || %{}
+
+    if Chrome.tool?(tool) do
+      case GenServer.call(__MODULE__, {:chrome_seen, task.id, tool, input, hook["tool_response"]}) do
+        %{} = now -> chrome_receipt(now, tool, input, hook["tool_response"])
+        _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   def observe(_task, _hook), do: :ok
@@ -1124,17 +1130,12 @@ defmodule TinyAxe.Tools.Gate do
       :refused ->
         {:refused, chrome_deny(reason)}
 
-      # Purchases through Chrome come with the purchase gate for it (P2).
       :commit ->
-        {:refused,
-         chrome_deny(
-           "#{reason} would place an order, and placing orders in the user's Chrome isn't " <>
-             "switched on yet. Stop here and tell the user what's in the basket, the total, " <>
-             "and that they can place the order themselves"
-         )}
+        chrome_commit(task, input, reason)
 
       :act ->
         if host && MapSet.member?(task.chrome_sites, host) do
+          chrome_acted(task, input)
           {:allowed_for_session, chrome_allow(input)}
         else
           where = if host, do: " on #{host}", else: ""
@@ -1149,16 +1150,228 @@ defmodule TinyAxe.Tools.Gate do
           # "a" allows the whole site for this task, when there is one.
           case ask(task, pseudo, input, :outward, reason, %{session_ok: host != nil, site: host}) do
             :once ->
+              chrome_acted(task, input)
               {:approved, chrome_allow(input)}
 
             :session ->
               GenServer.call(__MODULE__, {:chrome_site, task.id, host})
+              chrome_acted(task, input)
               {:approved, chrome_allow(input)}
 
             :deny ->
               {:denied, chrome_deny("the user said no")}
           end
         end
+    end
+  end
+
+  # A page read before this action no longer says what the tab shows.
+  defp chrome_acted(task, input),
+    do: GenServer.call(__MODULE__, {:chrome_acted, task.id, Chrome.tab(input)})
+
+  # An order in the user's Chrome. Claude Code holds the browser, so tiny-axe
+  # can't read the page or click itself: the click is held while code builds
+  # the summary from the page's text (the hook gave it), runs the checks and
+  # the user types the total; then the agent reads the page once more and
+  # clicks again, and that one click goes through if nothing changed.
+  defp chrome_commit(task, input, reason) do
+    tab = Chrome.tab(input)
+    permit = task.chrome_purchase
+
+    cond do
+      not Purchases.enabled?() ->
+        {:refused,
+         chrome_deny(
+           "#{reason} would place an order, and buying is off (the user turns it on with " <>
+             "`mix tiny_axe.purchases on`). Stop here and tell the user what's in the basket and the total"
+         )}
+
+      permit && permit.status in [:clicking, :clicked] ->
+        {:refused,
+         chrome_deny(
+           "an order may already have gone through in this task, and tiny-axe never places one twice. " <>
+             "Read the page (get_page_text) to see whether it was placed, and tell the user"
+         )}
+
+      permit && permit.status == :approved && permit.tab == tab && permit.reason == reason ->
+        chrome_place(task, input, permit)
+
+      true ->
+        case Chrome.fresh_page(task.chrome_seen, tab) do
+          nil ->
+            {:refused,
+             chrome_deny(
+               "tiny-axe holds this order: read the page with get_page_text first (tiny-axe checks " <>
+                 "what it says), then #{String.replace_prefix(reason, "clicks", "click")} again"
+             )}
+
+          page ->
+            chrome_order(task, input, reason, page)
+        end
+    end
+  end
+
+  defp chrome_order(task, input, reason, page) do
+    tab = Chrome.tab(input)
+    summary = Chrome.Checkout.summary(page.text, page.url, task.chrome_seen.chosen[tab])
+
+    case summary do
+      # Which card would pay isn't on the page's text: the agent picks one.
+      %{"payment" => nil, "cards" => [_, _ | _] = cards} ->
+        {:refused,
+         chrome_deny(
+           "the page shows several cards (#{Enum.join(cards, ", ")}) and tiny-axe can't tell which " <>
+             "is chosen: click the one to pay with by its name, then read the page and " <>
+             "#{String.replace_prefix(reason, "clicks", "click")} again"
+         )}
+
+      summary ->
+        chrome_ask_order(task, input, reason, summary)
+    end
+  end
+
+  defp chrome_ask_order(task, input, reason, summary) do
+    summary = Map.put(summary, "paying_with", Purchases.paying_with(summary))
+    id = Purchases.start(task.intent)
+
+    Purchases.event(id, %{
+      t: "summary",
+      summary: summary,
+      reason: reason,
+      action: %{tool: "chrome:computer", args: Redact.deep(input)}
+    })
+
+    checks = Purchases.checks(task.intent, summary, nil)
+
+    case for({:fail, why} <- checks, do: why) do
+      [] ->
+        case ask_purchase(task, summary, checks, [], :order) do
+          {:confirm, _ref} ->
+            Purchases.event(id, %{t: "confirmed"})
+
+            GenServer.call(
+              __MODULE__,
+              {:chrome_permit, task.id,
+               %{
+                 id: id,
+                 tab: Chrome.tab(input),
+                 reason: reason,
+                 summary: summary,
+                 status: :approved
+               }}
+            )
+
+            {:refused,
+             chrome_deny(
+               "the user approved this order. Now read the page once more (get_page_text) and " <>
+                 "#{String.replace_prefix(reason, "clicks", "click")} again: tiny-axe checks that " <>
+                 "nothing changed, then lets that one click through"
+             )}
+
+          {:deny, _ref} ->
+            Purchases.event(id, %{t: "declined"})
+            {:denied, chrome_deny("the user didn't confirm the purchase")}
+        end
+
+      failed ->
+        Purchases.event(id, %{t: "refused", checks: failed})
+        task.notify.({:purchase_refused, %{summary: summary, failed: failed}})
+
+        hint =
+          if task.intent && task.intent.max == nil,
+            do: " Ask the user the most they want to spend, then they can ask again.",
+            else: ""
+
+        {:refused,
+         chrome_deny("tiny-axe won't place this order: #{Enum.join(failed, "; ")}.#{hint}")}
+    end
+  end
+
+  # The one click, after the page was read again since the user approved.
+  defp chrome_place(task, input, permit) do
+    case Chrome.fresh_page(task.chrome_seen, permit.tab, permit.seq) do
+      nil ->
+        {:refused,
+         chrome_deny(
+           "the user approved this order: read the page once more (get_page_text) first, then " <>
+             "#{String.replace_prefix(permit.reason, "clicks", "click")} again"
+         )}
+
+      page ->
+        again = Chrome.Checkout.summary(page.text, page.url, task.chrome_seen.chosen[permit.tab])
+
+        changed =
+          cond do
+            again["host"] != permit.summary["host"] ->
+              "the shop changed (#{again["host"]})"
+
+            again["total"] != permit.summary["total"] ->
+              "the total changed from #{permit.summary["total_text"]} to #{again["total_text"] || "nothing"}"
+
+            again["payment"] != permit.summary["payment"] ->
+              "the card changed (#{again["payment"] || "not clear"})"
+
+            true ->
+              nil
+          end
+
+        if changed do
+          Purchases.event(permit.id, %{t: "changed", why: changed})
+          task.notify.({:purchase_changed, changed})
+          GenServer.call(__MODULE__, {:chrome_permit, task.id, nil})
+
+          {:refused,
+           chrome_deny(
+             "#{changed} while the user was deciding, so nothing was bought. Look again"
+           )}
+        else
+          # Write-ahead: if tiny-axe stops now, the next start says the order
+          # may have gone through, and it's never clicked again.
+          Purchases.event(permit.id, %{t: "clicking"})
+          GenServer.call(__MODULE__, {:chrome_permit, task.id, %{permit | status: :clicking}})
+          chrome_acted(task, input)
+          {:approved, chrome_allow(input)}
+        end
+    end
+  end
+
+  # After the click: it happened (the hook saw its result), then the
+  # confirmation page (the next text read of that tab) is the receipt.
+  defp chrome_receipt(task, tool, input, response) do
+    permit = task.chrome_purchase
+    short = Chrome.short(tool)
+
+    cond do
+      permit == nil or Chrome.tab(input) != permit.tab ->
+        :ok
+
+      permit.status == :clicking and short == "computer" ->
+        Purchases.event(permit.id, %{t: "clicked"})
+        GenServer.call(__MODULE__, {:chrome_permit, task.id, %{permit | status: :clicked}})
+
+      permit.status == :clicked and short == "get_page_text" ->
+        text = Chrome.Checkout.text(response)
+        dir = Purchases.dir(permit.id)
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "receipt.txt"), Redact.text(text))
+        order = Chrome.Checkout.order_number(text)
+        Purchases.event(permit.id, %{t: "receipt", order: order})
+
+        task.notify.(
+          {:purchased,
+           %{
+             host: permit.summary["host"],
+             total_text: permit.summary["total_text"],
+             id: permit.id,
+             order: order,
+             dir: dir
+           }}
+        )
+
+        GenServer.call(__MODULE__, {:chrome_permit, task.id, nil})
+
+      true ->
+        :ok
     end
   end
 
@@ -1911,11 +2124,27 @@ defmodule TinyAxe.Tools.Gate do
      if(Map.has_key?(tasks, id), do: put_in(tasks, [id, :card_used], used), else: tasks)}
   end
 
-  def handle_call({:chrome_seen, id, tool, input, response}, _from, tasks),
+  def handle_call({:chrome_seen, id, tool, input, response}, _from, tasks) do
+    tasks =
+      update_task(tasks, id, fn task ->
+        %{task | chrome_seen: Chrome.observe(task.chrome_seen, tool, input, response)}
+      end)
+
+    {:reply, tasks[id], tasks}
+  end
+
+  def handle_call({:chrome_acted, id, tab}, _from, tasks),
+    do:
+      {:reply, :ok,
+       update_task(tasks, id, &%{&1 | chrome_seen: Chrome.acted(&1.chrome_seen, tab)})}
+
+  # An approved order remembers the moment, so the page must be read after it.
+  def handle_call({:chrome_permit, id, permit}, _from, tasks),
     do:
       {:reply, :ok,
        update_task(tasks, id, fn task ->
-         %{task | chrome_seen: Chrome.observe(task.chrome_seen, tool, input, response)}
+         permit = if permit, do: Map.put_new(permit, :seq, task.chrome_seen.seq), else: nil
+         %{task | chrome_purchase: permit}
        end)}
 
   def handle_call({:chrome_site, id, host}, _from, tasks),

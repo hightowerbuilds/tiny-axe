@@ -48,7 +48,14 @@ defmodule TinyAxe.Chrome do
   @checkout ~r/\b(order total|total due|amount due|place (your )?order|pay now|review your order|complete (your )?(order|purchase))\b/i
 
   @type class :: :read | :act | :commit | :refused
-  @type seen :: %{tabs: %{integer() => String.t()}, labels: map(), pages: map()}
+  @type seen :: %{
+          tabs: %{integer() => String.t()},
+          labels: map(),
+          pages: map(),
+          seq: non_neg_integer(),
+          acted: %{integer() => non_neg_integer()},
+          chosen: %{integer() => String.t()}
+        }
 
   ## On or off
 
@@ -86,7 +93,27 @@ defmodule TinyAxe.Chrome do
 
   @doc "Nothing seen yet."
   @spec new() :: seen()
-  def new, do: %{tabs: %{}, labels: %{}, pages: %{}}
+  def new, do: %{tabs: %{}, labels: %{}, pages: %{}, seq: 0, acted: %{}, chosen: %{}}
+
+  @doc """
+  Notes that an action was let through on a tab: a page read before it no
+  longer says what the tab shows (`fresh_page/2`).
+  """
+  @spec acted(seen(), integer() | nil) :: seen()
+  def acted(seen, nil), do: seen
+  def acted(seen, tab), do: %{seen | acted: Map.put(seen.acted, tab, seen.seq)}
+
+  @doc """
+  The tab's page, if it was read after the last action let through on it
+  (and after `since`, a moment in `seen.seq`): `%{url, text, seq}` or nil.
+  """
+  @spec fresh_page(seen(), integer() | nil, non_neg_integer()) :: map() | nil
+  def fresh_page(seen, tab, since \\ 0) do
+    case seen.pages[tab] do
+      %{seq: seq} = page -> if seq > Map.get(seen.acted, tab, 0) and seq > since, do: page
+      _ -> nil
+    end
+  end
 
   @doc """
   Takes in a result the hook passed on: `tool_name`, `tool_input` and
@@ -98,7 +125,7 @@ defmodule TinyAxe.Chrome do
   def observe(seen, tool, input, response) do
     text = text(response)
     tab = tab_of(input, text)
-    seen = %{seen | tabs: Map.merge(seen.tabs, tabs(text))}
+    seen = %{seen | tabs: Map.merge(seen.tabs, tabs(text)), seq: seen.seq + 1}
 
     case short(tool) do
       name when name in ["find", "read_page"] and tab != nil ->
@@ -106,12 +133,25 @@ defmodule TinyAxe.Chrome do
         %{seen | labels: Map.merge(seen.labels, labels)}
 
       "get_page_text" when tab != nil ->
-        page = %{url: page_url(text), text: String.slice(text, 0, 50_000)}
+        page = %{url: page_url(text), text: String.slice(text, 0, 50_000), seq: seen.seq}
         %{seen | pages: Map.put(seen.pages, tab, page)}
 
       # The page changed under these refs: what they named is gone.
       name when name in ["navigate"] and tab != nil ->
-        %{seen | labels: drop_tab(seen.labels, tab), pages: Map.delete(seen.pages, tab)}
+        %{
+          seen
+          | labels: drop_tab(seen.labels, tab),
+            pages: Map.delete(seen.pages, tab),
+            chosen: Map.delete(seen.chosen, tab)
+        }
+
+      # A card picked by its name, which the page's text won't say.
+      "computer" when tab != nil ->
+        label = seen.labels[{tab, input["ref"]}]
+
+        if click?(input["action"]) and TinyAxe.Chrome.Checkout.card?(label),
+          do: %{seen | chosen: Map.put(seen.chosen, tab, label)},
+          else: seen
 
       _ ->
         seen
@@ -271,6 +311,9 @@ defmodule TinyAxe.Chrome do
     end
   end
 
+  @doc "The tab a call is on (its `tabId`)."
+  def tab(input), do: input["tabId"]
+
   # The site a call acts on: its own URL, else the tab's last known address.
   defp host(seen, input), do: host_of(input["url"]) || host_of(seen.tabs[input["tabId"]])
 
@@ -294,8 +337,11 @@ defmodule TinyAxe.Chrome do
     call: make one call at a time (never browser_batch); find a button with \
     find or read_page and click it by its ref (a click by position is refused); read a page with get_page_text before pressing Enter on it; never type card numbers (pick a \
     card the page already shows). Acting on a site the user hasn't allowed for \
-    this task waits for their yes. A click that places an order is held by \
-    tiny-axe: when it is, do what its message says.\
+    this task waits for their yes. To buy something: if the page offers several \
+    saved cards, click the one to pay with by its name; then click the final \
+    "Place order" (or "Pay") by its ref. tiny-axe holds that click, shows the \
+    order to the user, and tells you what to do next (read the page with \
+    get_page_text, click again): follow its messages exactly.\
     """
   end
 

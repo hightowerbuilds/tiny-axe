@@ -1,6 +1,6 @@
 # Plan: purchases through Claude in Chrome
 
-Status (2026-10-12): P0 done; P1 built and live-checked (below); P2 next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
+Status (2026-10-12): P0 done; P1 and P2 built and live-checked (below); P3 (approving on the Chat tab) next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
 
 ## What the user asked for
 
@@ -145,6 +145,32 @@ instead), Enter is refused on a page tiny-axe hasn't read, and on a
 checkout "Continue / Submit / Confirm / Complete" count as placing the order.
 The rerun: Haiku found the button, clicked it by ref, the gate held it, and
 Haiku told the user it hadn't ordered.
+
+## P2: what was built (2026-10-12)
+
+- `TinyAxe.Chrome.Checkout`: the checkout summary from `get_page_text`'s
+  text (a port of the browser server's rules: the grand total line, items,
+  ship-to, the card shown), and the order number on a confirmation page.
+- The gate, for a commit in Chrome (with buying on):
+  1. the page must have been read after the last action on that tab, or
+     the click is held with "read the page first";
+  2. code builds the summary and runs `Purchases.checks/3` (maximum, caps,
+     currency, Jev on the items, how it's paid); a failed check refuses;
+  3. the red popup, the user types the total (`{:purchase_approval, …}`);
+  4. the click is refused with "the user approved: read the page once more
+     and click again"; when it comes back after a fresh read, with the same
+     shop, total and card, that one click is let through (`clicking`);
+  5. the hook sees the click's result (`clicked`) and then the next read of
+     the tab is the receipt (`receipt.txt`, order number, `{:purchased, …}`);
+  6. while an order may have gone through, no other is placed in the task.
+- **Which card:** Chrome's page text and `read_page` don't say which radio
+  is selected (checked in a probe). One card shown is that card; with
+  several, the card the agent clicked by its name on that page is the one,
+  and with none clicked the order is held until it picks.
+- Live (fixture shop, real Haiku, the popup answered "confirm"): held →
+  read → popup ($16.00, Mastercard ending in 5555, every check passed) →
+  confirm → read → one click → receipt `TA-1001`; journal `intent → summary
+  → confirmed → clicking → clicked → receipt`.
 
 ## Phases
 
