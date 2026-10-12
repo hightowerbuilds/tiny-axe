@@ -1,6 +1,6 @@
 # Plan: chat with tiny-axe from lobsterattack.yachts
 
-Status (2026-10-12): plan only. Branch `remote-chat` (worktree `../tiny-axe-remote`).
+Status (2026-10-12): R1 written (lobsterattack branch `remote-chat`); migration not applied, functions not deployed. Branch `remote-chat` (worktree `../tiny-axe-remote`).
 
 ## What the user asked for
 
@@ -50,10 +50,16 @@ browser (lobsterattack.yachts)          Supabase                     this machin
 | `remote-pending` | tiny-axe | unanswered messages for its account |
 | `remote-reply` | tiny-axe | saves the finished reply (redacted on the machine first) and marks the message answered |
 
-Signing the JWT needs the project's JWT secret as an edge-function secret.
-Check in R1 that the project still accepts HS256 tokens. If it only uses the
-new signing keys, the fallback is a machine user in Supabase Auth with a
-random password in the keyring, signing in for a normal session.
+Decided in R1: the project signs sessions with ES256 (its JWKS lists one EC
+key), so nothing can be minted. `ta-remote-token` instead asks Auth's admin
+API for a magic-link token for the owner (no email is sent) and verifies it on
+the spot: an ordinary session of the owner, no refresh token handed out. The
+old session is signed out when tiny-axe renews (`previous`). Both ends are
+then the same user, so the Realtime rule is just `topic = 'remote:' ||
+auth.uid()`.
+
+Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
+`-history` (the page's first load), since the Supabase project is shared.
 
 ## Database (migration 0009)
 
