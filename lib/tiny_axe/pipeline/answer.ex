@@ -273,7 +273,11 @@ defmodule TinyAxe.Pipeline.Answer do
       "(`secret-tool store --label=\"tiny-axe card\" service tiny-axe key card-1`, then " <>
       "`mix tiny_axe.purchases card add \"My card\" --keyring card-1`), and tiny-axe's code " <>
       "fills it in at checkout. No model, including you, ever sees it. A card saved at the " <>
-      "shop works too. If the user asks about any of this, explain it accurately."
+      "shop works too. If the user asks about any of this, explain it accurately." <>
+      case TinyAxe.Capabilities.account() do
+        "" -> ""
+        account -> " " <> account
+      end
   end
 
   defp config(key, default), do: Application.get_env(:tiny_axe, key, default)

@@ -309,16 +309,25 @@ defmodule TinyAxe.Agent do
 
   # Only when the graph server is connected, so its tool exists.
   defp graph_line(servers) do
-    if TinyAxe.Graph.name() in servers,
-      do:
-        "\nWhat tiny-axe has learned is on the user's page of its website. To answer from it, " <>
-          "use graph__graph_search and graph__graph_note (graph__graph_overview for the numbers). " <>
-          "When the user wants to see it, or the graph, call graph__graph_link and give them the " <>
-          "link; for their chat history, call it with page \"chats\". They sign in to see it. " <>
-          "When they ask you to remember or write down something worth keeping, save it with " <>
-          "graph__graph_add_note (they're asked first). " <>
-          "You can't open a browser for them, so never say you did.\n",
-      else: ""
+    account =
+      case TinyAxe.Capabilities.account() do
+        "" -> ""
+        text -> "\n" <> text <> "\n"
+      end
+
+    site =
+      if TinyAxe.Graph.name() in servers,
+        do:
+          "\nWhat tiny-axe has learned is on the user's page of its website. To answer from it, " <>
+            "use graph__graph_search and graph__graph_note (graph__graph_overview for the numbers). " <>
+            "When the user wants to see it, or the graph, call graph__graph_link and give them the " <>
+            "link; for their chat history, call it with page \"chats\". They sign in to see it. " <>
+            "When they ask you to remember or write down something worth keeping, save it with " <>
+            "graph__graph_add_note (they're asked first). " <>
+            "You can't open a browser for them, so never say you did.\n",
+        else: ""
+
+    account <> site
   end
 
   @doc false

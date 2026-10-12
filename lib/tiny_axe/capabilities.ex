@@ -93,6 +93,29 @@ defmodule TinyAxe.Capabilities do
       "#{minutes()}."
   end
 
+  @doc """
+  The user's tiny-axe account and website, for every model that talks with
+  them (the answer route and the agent), so "the site", "my page" or "my
+  username" mean something; "" while there's no account. From
+  `TinyAxe.Account`, so it's the real one.
+  """
+  @spec account() :: String.t()
+  def account do
+    case TinyAxe.Account.current() do
+      %{username: name, site: site} ->
+        "The user's tiny-axe account is #{name}, on tiny-axe's website #{site}: " <>
+          "\"the site\", \"the website\", \"my page\" or \"lobsterattack\" mean this. tiny-axe " <>
+          "sends what it learns (the know-how graph) and every chat there, for the user (and " <>
+          "anyone they let in) to see after signing in. Their username (#{name}) isn't secret; " <>
+          "their password is, and only they ever type it. To show them the site, give them the " <>
+          "link (`/graph`, or graph__graph_link for an agent): they open it in their own browser " <>
+          "and sign in themselves. Never sign in for them or fill in its sign-in form."
+
+      nil ->
+        ""
+    end
+  end
+
   @doc "The router's question: does the request want a command run?"
   @spec command_question() :: String.t()
   def command_question do

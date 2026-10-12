@@ -268,4 +268,26 @@ defmodule TinyAxe.AccountTest do
       refute inspect(state) =~ "horse"
     end
   end
+
+  describe "what models are told" do
+    test "with an account, the agent and the answer route know its username and site" do
+      site()
+      type("correct horse battery")
+      {:ok, "axeman"} = Account.create("axeman")
+
+      text = TinyAxe.Capabilities.account()
+      assert text =~ "account is axeman, on tiny-axe's website http://site.test"
+      assert text =~ "\"the site\""
+      assert text =~ "Never sign in for them"
+      refute text =~ "correct horse"
+
+      prompt = TinyAxe.Agent.system_prompt([], "")
+      assert prompt =~ "account is axeman"
+    end
+
+    test "without one, nothing is said" do
+      assert TinyAxe.Capabilities.account() == ""
+      refute TinyAxe.Agent.system_prompt([], "") =~ "tiny-axe account"
+    end
+  end
 end
