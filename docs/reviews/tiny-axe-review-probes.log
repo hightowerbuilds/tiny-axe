@@ -1,0 +1,19 @@
+warning: the following files do not match any of the configured `:test_load_filters` / `:test_ignore_filters`:
+
+/tmp/tiny-axe-review-probes.exs
+
+This might indicate a typo in a test file name (for example, using "foo_tests.exs" instead of "foo_test.exs").
+
+See the configuration for `:test_pattern` under `mix help test` for more information.
+
+Running ExUnit with seed: 65314, max_cases: 24
+
+REVIEW_PROBE redaction: synthetic email and short password survive history redaction unchanged
+.REVIEW_PROBE honesty: verifier flags false claim at 0.99 on all 3 attempts; final answer still says it ran npm install
+.REVIEW_PROBE location: task starts in project-a; subsequent default shell plan uses project-b after shared location changes
+.
+13:41:16.192 [info] fitted a request into the context window: %{cut: ["attached material"], after: 6581, before: 9468}
+REVIEW_PROBE context: source tail absent from model input; whole-file replacement still offered; no file applied
+.
+Finished in 0.1 seconds (0.00s async, 0.1s sync)
+4 tests, 0 failures

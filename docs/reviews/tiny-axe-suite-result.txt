@@ -1,0 +1,10 @@
+Command: mix test
+Baseline: 2c97742f7545c164fa830a3e023c6580b3dc0e7a
+Date: 2026-10-12
+
+Running ExUnit with seed: 820322, max_cases: 24
+Finished in 508.7 seconds (12.5s async, 496.1s sync)
+3 doctests, 790 tests, 0 failures
+
+Test-code warnings and test-fixture error logs occurred; the suite reported zero failures.
+Full execution log: /tmp/tiny-axe-harsh-review-tests.log
