@@ -1,7 +1,8 @@
 defmodule TinyAxe.TUI.Pulse do
   @moduledoc """
-  The prompt cursor's pulse: about once a second the cursor flares and a ring
-  blasts outward from it across the prompt box, with a dimmer ring trailing.
+  The prompt cursor's pulse: every couple of seconds the cursor warms from
+  orange to green and a soft green ring spreads from it across the prompt
+  box, with a dimmer ring trailing. Tiny-axe's colours, kept quiet.
 
   Rings only tint the background of the cells they cross (a borderless Block
   with a style), so the text underneath stays as typed. They run while
@@ -15,14 +16,18 @@ defmodule TinyAxe.TUI.Pulse do
 
   @frame_ms 70
   # Frames per pulse; the ring travels for the first @ring_frames of them.
-  @frames 16
-  @ring_frames 8
+  @frames 28
+  @ring_frames 10
   # Rows the ring grows per frame; a cell is twice as tall as it is wide, so
   # it grows twice as many columns.
   @speed 1.0
 
-  @hot {170, 250, 255}
-  @cool {10, 45, 60}
+  # The ring: tiny-axe's green, never at full strength, over a dark ember.
+  @hot {96, 160, 88}
+  @cool {40, 28, 14}
+  # The cursor: its orange, warming to green as each ring leaves.
+  @orange {190, 120, 50}
+  @green {126, 211, 115}
 
   @doc "Whether the pulse is on."
   def enabled?, do: Application.get_env(:tiny_axe, :cursor_pulse, true)
@@ -44,7 +49,7 @@ defmodule TinyAxe.TUI.Pulse do
   @doc "The cursor's own style: a flare as each ring leaves, settling to a steady glow."
   def cursor_style(%{run: nil, pulse: %{frame: frame}}) do
     glow = max(0.0, 1.0 - frame / @ring_frames)
-    %Style{fg: :black, bg: rgb(mix({0, 150, 190}, {235, 255, 255}, glow))}
+    %Style{fg: :black, bg: rgb(mix(@orange, @green, glow))}
   end
 
   def cursor_style(_state), do: %Style{fg: :black, bg: :dark_gray}
@@ -79,14 +84,14 @@ defmodule TinyAxe.TUI.Pulse do
         {x, y} != {cx, cy},
         level = level(radius - :math.sqrt(:math.pow((x - cx) / 2, 2) + :math.pow(y - cy, 2))),
         level > 0 do
-      {x, y, mix(@cool, @hot, fade * level)}
+      {x, y, mix(@cool, @hot, 0.8 * fade * level)}
     end
     |> Enum.chunk_while(nil, &run/2, &close/1)
   end
 
   # The ring's leading edge is full strength; just behind it, a dimmer trail.
   defp level(behind) when behind >= 0 and behind < 0.75, do: 1.0
-  defp level(behind) when behind >= 0.75 and behind < 1.75, do: 0.45
+  defp level(behind) when behind >= 0.75 and behind < 1.75, do: 0.35
   defp level(_), do: 0
 
   defp run({x, y, color}, {{x0, y, len}, color}) when x == x0 + len,

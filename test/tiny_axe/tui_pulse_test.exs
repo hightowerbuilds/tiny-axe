@@ -98,7 +98,7 @@ defmodule TinyAxe.TUIPulseTest do
     # The cursor is on the 8th line; the box shows 4, so the first shown is the 5th.
     assert state.pulse.top == 4
 
-    {:noreply, state} = TUI.handle_info(:pulse, frame(state, 15))
+    {:noreply, state} = TUI.handle_info(:pulse, frame(state, 27))
     assert state.pulse.frame == 0
   end
 
