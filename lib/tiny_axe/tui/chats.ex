@@ -51,7 +51,9 @@ defmodule TinyAxe.TUI.Chats do
     ops_monitor: nil,
     scroll: :bottom,
     usage: nil,
-    copy_back: 0
+    copy_back: 0,
+    # The chat the site's /remote page talks to (TinyAxe.TUI.RemoteChat).
+    remote_chat: false
   }
 
   @fields Map.keys(@blank)
@@ -271,6 +273,24 @@ defmodule TinyAxe.TUI.Chats do
     |> Map.put(:chats, chats)
   end
 
+  @doc """
+  A chat after the others, put aside (the one on screen stays), with
+  `fields`. Returns it with the new chat's id.
+  """
+  def open_aside(state, fields) do
+    id = state.chats.next
+    chat = @blank |> Map.put(:saved_as, TinyAxe.History.new_id()) |> Map.merge(fields)
+
+    chats = %{
+      state.chats
+      | order: state.chats.order ++ [id],
+        next: id + 1,
+        parked: Map.put(state.chats.parked, id, chat)
+    }
+
+    {%{state | chats: chats}, id}
+  end
+
   @doc "The open chat kept in the history as `saved_as`, if any."
   def kept_as(state, saved_as),
     do: Enum.find(state.chats.order, &(chat(state, &1).saved_as == saved_as))
@@ -370,6 +390,9 @@ defmodule TinyAxe.TUI.Chats do
 
   def position(state, id), do: Enum.find_index(state.chats.order, &(&1 == id)) + 1
 
+  @doc "Chat `id`'s own fields (see `blank/0`), wherever it is; nil if it's closed."
+  def get(state, id), do: chat(state, id)
+
   defp chat(state, id),
     do: if(id == state.chats.active, do: Map.take(state, @fields), else: state.chats.parked[id])
 
@@ -391,9 +414,15 @@ defmodule TinyAxe.TUI.Chats do
     end
   end
 
-  @doc "A chat's name: the start of its first prompt."
+  @doc "A chat's name: the start of its first prompt (🌐 for the site's /remote chat)."
   def title(state, id, max) do
-    case Enum.find(chat(state, id).transcript, &match?({:user, _}, &1)) do
+    %{transcript: transcript, remote_chat: remote?} = chat(state, id)
+    title = name(transcript, if(remote?, do: max - 2, else: max))
+    if remote?, do: "🌐 " <> title, else: title
+  end
+
+  defp name(transcript, max) do
+    case Enum.find(transcript, &match?({:user, _}, &1)) do
       {:user, text} ->
         line = text |> String.split("\n", parts: 2) |> hd() |> String.trim()
         if String.length(line) > max, do: String.slice(line, 0, max - 1) <> "…", else: line

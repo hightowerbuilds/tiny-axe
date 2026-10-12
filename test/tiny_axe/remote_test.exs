@@ -3,6 +3,10 @@ defmodule TinyAxe.RemoteTest do
 
   alias TinyAxe.{FakeRealtime, Remote}
 
+  # Real sockets on 127.0.0.1: under the whole suite's load a handshake can
+  # take longer than assert_receive's default 100 ms.
+  @wait 2_000
+
   # The fake is linked to the test, so it stops with it.
   setup do
     %{fake: FakeRealtime.start()}
@@ -27,9 +31,9 @@ defmodule TinyAxe.RemoteTest do
 
   # Waits for the join, then for tiny-axe to say it's online (presence track).
   defp online(pid) do
-    assert_receive {:realtime, :socket, socket, _query}
-    assert_receive {:realtime, :in, %{"event" => "phx_join"}}
-    assert_receive {:realtime, :in, %{"event" => "presence"}}
+    assert_receive {:realtime, :socket, socket, _query}, @wait
+    assert_receive {:realtime, :in, %{"event" => "phx_join"}}, @wait
+    assert_receive {:realtime, :in, %{"event" => "presence"}}, @wait
     assert Remote.status(pid).phase == :online
     socket
   end
@@ -56,17 +60,17 @@ defmodule TinyAxe.RemoteTest do
        %{fake: fake} do
     pid = start(fake)
 
-    assert_receive {:realtime, :token, nil}
-    assert_receive {:realtime, :socket, _socket, query}
+    assert_receive {:realtime, :token, nil}, @wait
+    assert_receive {:realtime, :socket, _socket, query}, @wait
     assert query == %{"apikey" => "public-key", "vsn" => "1.0.0"}
 
-    assert_receive {:realtime, :in, %{"event" => "phx_join"} = join}
+    assert_receive {:realtime, :in, %{"event" => "phx_join"} = join}, @wait
     assert join["topic"] == FakeRealtime.topic()
     assert join["payload"]["access_token"] == "session-1"
     assert join["payload"]["config"]["private"] == true
     assert join["payload"]["config"]["presence"]["key"] == "tiny-axe"
 
-    assert_receive {:realtime, :in, %{"event" => "presence", "payload" => track}}
+    assert_receive {:realtime, :in, %{"event" => "presence", "payload" => track}}, @wait
     assert track["event"] == "track"
     assert %{phase: :online, error: nil} = Remote.status(pid)
   end
@@ -95,12 +99,12 @@ defmodule TinyAxe.RemoteTest do
     socket = online(pid)
 
     assert Remote.subscribe(pid).phase == :online
-    assert_receive {:realtime, :pending, "session-1"}
-    assert_receive {:remote, {:message, %{id: "a", body: "hello a"}}}
-    assert_receive {:remote, {:interrupted, %{id: "b"}}}
+    assert_receive {:realtime, :pending, "session-1"}, @wait
+    assert_receive {:remote, {:message, %{id: "a", body: "hello a"}}}, @wait
+    assert_receive {:remote, {:interrupted, %{id: "b"}}}, @wait
 
     FakeRealtime.message(socket, row("c"))
-    assert_receive {:remote, {:message, %{id: "c"}}}
+    assert_receive {:remote, {:message, %{id: "c"}}}, @wait
 
     # The same message again (its update to "working", say), or tiny-axe's own reply: nothing.
     FakeRealtime.message(socket, row("c"))
@@ -123,12 +127,12 @@ defmodule TinyAxe.RemoteTest do
 
     FakeRealtime.set(fake, :pending, [row("a"), row("b")])
     Remote.subscribe(pid)
-    assert_receive {:remote, {:message, %{id: "a"}}}
-    assert_receive {:remote, {:message, %{id: "b"}}}
+    assert_receive {:remote, {:message, %{id: "a"}}}, @wait
+    assert_receive {:remote, {:message, %{id: "b"}}}, @wait
 
     # A subscriber that comes back (a restarted TUI) is handed them again.
     Remote.subscribe(pid)
-    assert_receive {:remote, {:message, %{id: "a"}}}
+    assert_receive {:remote, {:message, %{id: "a"}}}, @wait
   end
 
   test "a message the channel missed is still picked up: it asks again while online",
@@ -136,11 +140,11 @@ defmodule TinyAxe.RemoteTest do
     pid = start(fake, sweep: 30)
     Remote.subscribe(pid)
     online(pid)
-    assert_receive {:realtime, :pending, _}
+    assert_receive {:realtime, :pending, _}, @wait
 
     FakeRealtime.set(fake, :pending, [row("missed")])
-    assert_receive {:remote, {:message, %{id: "missed"}}}
-    assert_receive {:realtime, :pending, _}
+    assert_receive {:remote, {:message, %{id: "missed"}}}, @wait
+    assert_receive {:realtime, :pending, _}, @wait
     refute_receive {:remote, {:message, _}}, 100
   end
 
@@ -150,25 +154,61 @@ defmodule TinyAxe.RemoteTest do
     token = "sk_live_" <> String.duplicate("a1", 16)
 
     Remote.progress(pid, "a", "running a command")
-    Remote.delta(pid, "a", "the key is #{token}")
+    Remote.draft(pid, "a", "the key is #{token}")
 
-    assert_receive {:realtime, :in, %{"event" => "broadcast", "payload" => status}}
+    assert_receive {:realtime, :in, %{"event" => "broadcast", "payload" => status}}, @wait
     assert status["event"] == "status"
     assert status["payload"] == %{"reply_to" => "a", "text" => "running a command"}
 
-    assert_receive {:realtime, :in, %{"event" => "broadcast", "payload" => delta}}
-    assert delta["payload"]["text"] == "the key is [token removed]"
+    assert_receive {:realtime, :in, %{"event" => "broadcast", "payload" => draft}}, @wait
+    assert draft["event"] == "draft"
+    assert draft["payload"]["text"] == "the key is [token removed]"
 
     assert {:ok, _} = Remote.reply(pid, "a", "answered", "done: #{token}")
-    assert_receive {:realtime, :reply, "session-1", reply}
+    assert_receive {:realtime, :reply, "session-1", reply}, @wait
     assert reply == %{"id" => "a", "status" => "answered", "body" => "done: [token removed]"}
+  end
+
+  test "the outbox: replies go in order, and one written offline goes once it's back",
+       %{fake: fake} do
+    pid = start(fake, enabled: false)
+    Remote.send_reply(pid, "a", "working")
+    Remote.send_reply(pid, "a", "answered", "done")
+    refute_receive {:realtime, :reply, _, _}, 50
+
+    # A message whose reply is on its way isn't handed out as interrupted.
+    FakeRealtime.set(fake, :pending, [row("a", "working")])
+    Remote.subscribe(pid)
+    Remote.connect(pid)
+
+    assert_receive {:realtime, :reply, "session-1", %{"id" => "a", "status" => "working"}}, @wait
+    assert_receive {:realtime, :reply, "session-1", %{"id" => "a", "status" => "answered"}}, @wait
+    assert_receive {:realtime, :pending, _}, @wait
+    refute_receive {:remote, {:interrupted, _}}, 50
+  end
+
+  test "the outbox drops a reply the site will never take, and keeps one it couldn't send yet",
+       %{fake: fake} do
+    pid = start(fake)
+    online(pid)
+
+    FakeRealtime.set(fake, :reply_status, 409)
+    Remote.send_reply(pid, "a", "answered", "late")
+    Remote.send_reply(pid, "b", "answered", "next")
+    assert_receive {:realtime, :reply, _, %{"id" => "a"}}, @wait
+    assert_receive {:realtime, :reply, _, %{"id" => "b"}}, @wait
+
+    FakeRealtime.set(fake, :reply_status, 500)
+    Remote.send_reply(pid, "c", "answered", "kept")
+    assert_receive {:realtime, :reply, _, %{"id" => "c"}}, @wait
+    assert [%{id: "c"}] = :sys.get_state(pid).outbox
   end
 
   test "not connected: nothing to reply with, and pieces are dropped", %{fake: fake} do
     pid = start(fake, enabled: false)
 
     assert {:error, "not connected to the site"} = Remote.reply(pid, "a", "working")
-    Remote.delta(pid, "a", "x")
+    Remote.draft(pid, "a", "x")
     assert Remote.status(pid).phase == :off
     refute_receive {:realtime, _, _}, 50
   end
@@ -177,36 +217,37 @@ defmodule TinyAxe.RemoteTest do
     FakeRealtime.set(fake, :refuse_join, true)
     pid = start(fake, backoff: [300])
 
-    assert_receive {:realtime, :token, nil}
-    assert_receive {:realtime, :in, %{"event" => "phx_join"}}
+    assert_receive {:realtime, :token, nil}, @wait
+    assert_receive {:realtime, :in, %{"event" => "phx_join"}}, @wait
     FakeRealtime.set(fake, :refuse_join, false)
     Process.sleep(50)
 
     assert %{phase: :waiting, error: "Realtime refused the channel: Unauthorized"} =
              Remote.status(pid)
 
-    assert_receive {:realtime, :token, nil}, 1_000
+    assert_receive {:realtime, :token, nil}, @wait
 
     assert_receive {:realtime, :in,
                     %{"event" => "phx_join", "payload" => %{"access_token" => "session-2"}}},
-                   1_000
+                   @wait
 
-    assert_receive {:realtime, :in, %{"event" => "presence"}}
+    assert_receive {:realtime, :in, %{"event" => "presence"}}, @wait
   end
 
   test "the socket closing reconnects, keeping the session that's still good", %{fake: fake} do
     pid = start(fake)
     Remote.subscribe(pid)
     socket = online(pid)
-    assert_receive {:realtime, :token, nil}
+    assert_receive {:realtime, :token, nil}, @wait
     flush()
 
     FakeRealtime.close(socket)
-    assert_receive {:remote, {:status, :waiting}}
-    assert_receive {:remote, {:status, :online}}
+    assert_receive {:remote, {:status, :waiting}}, @wait
+    assert_receive {:remote, {:status, :online}}, @wait
 
     assert_receive {:realtime, :in,
-                    %{"event" => "phx_join", "payload" => %{"access_token" => "session-1"}}}
+                    %{"event" => "phx_join", "payload" => %{"access_token" => "session-1"}}},
+                   @wait
 
     refute_received {:realtime, :token, _}
   end
@@ -214,13 +255,13 @@ defmodule TinyAxe.RemoteTest do
   test "a heartbeat with no reply means the connection is dead: reconnects", %{fake: fake} do
     pid = start(fake, heartbeat: 30)
     online(pid)
-    assert_receive {:realtime, :in, %{"event" => "heartbeat", "topic" => "phoenix"}}
+    assert_receive {:realtime, :in, %{"event" => "heartbeat", "topic" => "phoenix"}}, @wait
 
     FakeRealtime.set(fake, :silent_heartbeat, true)
-    assert_receive {:realtime, :socket, _socket, _query}, 1_000
-    assert_receive {:realtime, :in, %{"event" => "phx_join"}}
+    assert_receive {:realtime, :socket, _socket, _query}, @wait
+    assert_receive {:realtime, :in, %{"event" => "phx_join"}}, @wait
     FakeRealtime.set(fake, :silent_heartbeat, false)
-    assert_receive {:realtime, :in, %{"event" => "presence"}}
+    assert_receive {:realtime, :in, %{"event" => "presence"}}, @wait
   end
 
   test "renews the session before it runs out, signing the old one out", %{fake: fake} do
@@ -228,8 +269,8 @@ defmodule TinyAxe.RemoteTest do
     pid = start(fake, renew_floor: 30)
     online(pid)
 
-    assert_receive {:realtime, :token, "session-1"}, 1_000
-    assert_receive {:realtime, :in, %{"event" => "access_token", "payload" => payload}}, 1_000
+    assert_receive {:realtime, :token, "session-1"}, @wait
+    assert_receive {:realtime, :in, %{"event" => "access_token", "payload" => payload}}, @wait
     assert payload == %{"access_token" => "session-2"}
     assert Remote.status(pid).phase == :online
   end
@@ -240,12 +281,12 @@ defmodule TinyAxe.RemoteTest do
     online(pid)
 
     Remote.disconnect(pid)
-    assert_receive {:remote, {:status, :off}}
+    assert_receive {:remote, {:status, :off}}, @wait
     refute_receive {:realtime, :socket, _, _}, 100
     flush()
 
     Remote.connect(pid)
-    assert_receive {:remote, {:status, :online}}
+    assert_receive {:remote, {:status, :online}}, @wait
   end
 
   test "the session never shows in the process's state" do

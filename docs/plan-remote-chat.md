@@ -1,6 +1,6 @@
 # Plan: chat with tiny-axe from lobsterattack.yachts
 
-Status (2026-10-12): R1 done (migration 0009 applied, ta-remote-* deployed, scripts/remote-check.ts 23/23). R2 done: `TinyAxe.Remote` (own Phoenix-channels client on `mint_web_socket`), 15 tests on a fake Realtime, live-checked against the real project. R3 next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
+Status (2026-10-12): R1 done (migration 0009 applied, ta-remote-* deployed, scripts/remote-check.ts 23/23). R2 done: `TinyAxe.Remote` (own Phoenix-channels client on `mint_web_socket`), live-checked. R3 done: the 🌐 chat in the TUI (`TUI.RemoteChat`), `/remote on|off`, live-checked with Gemma against the real site. R4 (the page) next. Branch `remote-chat` (worktree `../tiny-axe-remote`).
 
 ## What the user asked for
 
@@ -84,17 +84,32 @@ Functions are named `ta-remote-token`, `-send`, `-pending`, `-reply`, and
   (Realtime's database broadcasts warming up); kept rows make that safe. It gets a token, joins the
   channel, tracks presence, sends a heartbeat every 25 s, reconnects with
   backoff, and renews the token.
-- **Where a remote message runs:** in a chat of its own in the running TUI,
-  named "remote", through the same `Run.request` path (the router, Jev,
-  Gemma/Haiku, and every gate). You see it locally and can stop it. It works
-  only while tiny-axe is open; a headless service mode can come later.
-- **Approvals:** for now any step that would ask y/n is refused in the remote
-  chat ("needs approval at the machine"). Purchases are never allowed from
-  remote. Proper approvals are part of the security pass.
-- **Redaction:** replies and deltas go through `TinyAxe.Tools.Redact` before
-  they leave, like Sync.
-- **Off switch:** `/remote on|off` in the TUI and `remote: false` in
-  settings; off is the default until R4.
+- **Where a remote message runs** (R3, `TUI.RemoteChat`): a 🌐 chat of its
+  own, made when the first message comes and put aside like any chat (it
+  works while you use another; `/chat N` shows it, `esc` there cancels). The
+  same path as the prompt (`Run.request`: the router, Jev, Gemma/Haiku, every
+  gate). One message at a time; the rest queue. It works only while tiny-axe
+  is open; a headless mode can come later.
+- **Live:** the chat's status line goes out as `status` broadcasts and the
+  reply so far as `draft` (the whole text, at most every 250 ms). Once the
+  chat is idle, its answer, any commands' output and what was refused are the
+  reply.
+- **Approvals:** nothing in the 🌐 chat waits for someone at the machine.
+  Commands that change things, file plans and edits, tool calls, purchases
+  and sending a request to Claude or Codex are refused on the spot (the reply
+  says which). Read-only commands still run, as everywhere. Proper approvals
+  are part of the security pass.
+- **Replies are never lost:** `Remote.send_reply/4` goes through an outbox
+  (in order, kept until the site has it). A message tiny-axe has taken up is
+  never handed out again, even if the site still lists it as working.
+  `{:interrupted, msg}` (taken up by an earlier run of tiny-axe) gets a failed
+  reply: send it again.
+- **Redaction:** a card number in a message is removed before any model sees
+  it (as at the prompt); replies, drafts and status are redacted
+  (`Redact.secrets/1`) before they leave.
+- **Off switch:** `/remote on|off` in the TUI, kept in
+  `<state_dir>/remote.json` for the next start; `/remote` says how it stands;
+  🌐 in the status bar while it's on. Off by default.
 
 ## Site side (lobsterattack)
 

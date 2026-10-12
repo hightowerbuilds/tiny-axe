@@ -12,7 +12,8 @@ defmodule TinyAxe.FakeRealtime do
 
   Sessions are `"session-1"`, `"session-2"`, … in order. `set/3` changes how
   it behaves: `:pending` (the waiting messages), `:refuse_join`,
-  `:silent_heartbeat`, `:expires_in` (seconds). `message/2` puts a
+  `:silent_heartbeat`, `:expires_in` (seconds), `:reply_status` (what
+  `ta-remote-reply` answers: 200, or an error status). `message/2` puts a
   `buster_ta_remote` row on the socket, as the table's trigger would;
   `close/1` closes the socket from the server's end.
 
@@ -27,7 +28,14 @@ defmodule TinyAxe.FakeRealtime do
   def start do
     {:ok, control} =
       Agent.start_link(fn ->
-        %{tokens: 0, pending: [], refuse_join: false, silent_heartbeat: false, expires_in: 3600}
+        %{
+          tokens: 0,
+          pending: [],
+          refuse_join: false,
+          silent_heartbeat: false,
+          expires_in: 3600,
+          reply_status: 200
+        }
       end)
 
     plug = {__MODULE__, %{test: self(), control: control}}
@@ -121,7 +129,14 @@ defmodule TinyAxe.FakeRealtime do
 
       "ta-remote-reply" ->
         send(test, {:realtime, :reply, session, body})
-        reply(conn, 200, %{message: %{id: body["id"], status: body["status"]}, reply: nil})
+
+        case Agent.get(control, & &1.reply_status) do
+          200 ->
+            reply(conn, 200, %{message: %{id: body["id"], status: body["status"]}, reply: nil})
+
+          status ->
+            reply(conn, status, %{error: "no"})
+        end
 
       _ ->
         Plug.Conn.send_resp(conn, 404, "")

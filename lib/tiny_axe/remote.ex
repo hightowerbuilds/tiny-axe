@@ -22,17 +22,23 @@ defmodule TinyAxe.Remote do
     once, and `{:remote, {:interrupted, msg}}` for one that was being worked
     on when tiny-axe stopped. `msg` is `%{id:, body:, created_at:}`. Nobody
     subscribed: nothing is taken, the message waits.
-  - **Answering:** `progress/3` and `delta/3` go straight out on the channel
-    (they're not kept); `reply/4` saves where a message stands and its reply
-    through `ta-remote-reply`. Everything is redacted
-    (`Tools.Redact.secrets/1`) before it leaves.
+  - **Answering:** `progress/3` (what tiny-axe is doing) and `draft/3` (the
+    reply so far) go straight out on the channel; they're not kept.
+    `send_reply/4` saves where a message stands and its reply through
+    `ta-remote-reply`, from an outbox: in order, and kept until the site has
+    it, so a reply written while offline goes once tiny-axe is back. A
+    message tiny-axe has sent a reply for is never handed out again, even if
+    the site still lists it (a reconnect midway through an answer). Everything is
+    redacted (`Tools.Redact.secrets/1`) before it leaves.
 
   `{:remote, {:status, phase}}` goes to subscribers whenever the phase
   changes: `:off`, `:connecting`, `:joining`, `:online` or `:waiting` (with
   `status/1`'s `error` saying why).
 
-  `config :tiny_axe, :remote, enabled:` (off by default), `url:` (the
-  Supabase project; `TINY_AXE_SUPABASE_URL` overrides it).
+  On or off: `/remote on|off` in the TUI (`set_on/1`, kept in
+  `<state_dir>/remote.json`), or `config :tiny_axe, :remote, enabled: true`;
+  off by default. `url:` is the Supabase project (`TINY_AXE_SUPABASE_URL`
+  overrides it).
   """
 
   use GenServer
@@ -64,7 +70,26 @@ defmodule TinyAxe.Remote do
   end
 
   @doc "Whether it connects when tiny-axe starts."
-  def enabled?, do: Keyword.get(settings(), :enabled, false)
+  def enabled?, do: Keyword.get(settings(), :enabled, false) or on?()
+
+  @doc "Whether `/remote on` was the last word."
+  def on? do
+    with {:ok, text} <- File.read(path()),
+         {:ok, %{"on" => true}} <- JSON.decode(text) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  @doc "Remembers `/remote on` or `off` for the next start."
+  @spec set_on(boolean()) :: :ok | {:error, term()}
+  def set_on(on) when is_boolean(on) do
+    with :ok <- File.mkdir_p(Path.dirname(path())),
+         do: File.write(path(), JSON.encode!(%{on: on}))
+  end
+
+  def path, do: Path.join(TinyAxe.Ops.Journal.state_dir(), "remote.json")
 
   @doc "The Supabase project's address, without a trailing slash."
   def url do
@@ -94,9 +119,9 @@ defmodule TinyAxe.Remote do
 
   def unsubscribe(server \\ __MODULE__), do: GenServer.call(server, {:unsubscribe, self()})
 
-  @doc "A piece of the reply to `id`, as it's written (not kept)."
-  def delta(server \\ __MODULE__, id, text),
-    do: GenServer.cast(server, {:broadcast, "delta", %{reply_to: id, text: Redact.secrets(text)}})
+  @doc "The reply to `id` so far, as it's written (not kept)."
+  def draft(server \\ __MODULE__, id, text),
+    do: GenServer.cast(server, {:broadcast, "draft", %{reply_to: id, text: Redact.secrets(text)}})
 
   @doc "What tiny-axe is doing about `id` (\"running a command\"; not kept)."
   def progress(server \\ __MODULE__, id, text),
@@ -105,7 +130,19 @@ defmodule TinyAxe.Remote do
 
   @doc """
   Saves where message `id` stands (`"working"`, `"answered"`, `"failed"`) and
-  its reply. Runs in the caller, so a slow site never holds up this process.
+  its reply, through the outbox (see the moduledoc). Returns at once.
+  """
+  @spec send_reply(GenServer.server(), String.t(), String.t(), String.t() | nil) :: :ok
+  def send_reply(server \\ __MODULE__, id, status, body \\ nil),
+    do:
+      GenServer.cast(
+        server,
+        {:outbox, %{id: id, status: status, body: body && Redact.secrets(body)}}
+      )
+
+  @doc """
+  Saves where message `id` stands and its reply now, and says how it went.
+  Runs in the caller, so a slow site never holds up this process.
   """
   @spec reply(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
           {:ok, map()} | {:error, String.t()}
@@ -139,7 +176,13 @@ defmodule TinyAxe.Remote do
       timers: %{},
       attempt: 0,
       subscribers: %{},
-      seen: MapSet.new()
+      seen: MapSet.new(),
+      # Replies waiting to go, oldest first, and the one being sent.
+      outbox: [],
+      sending: nil,
+      # Messages this tiny-axe has taken up (sent a reply for): never handed
+      # out again, even if the site still lists them as working.
+      claimed: MapSet.new()
     }
 
     if Keyword.get(opts, :enabled, enabled?()),
@@ -194,6 +237,11 @@ defmodule TinyAxe.Remote do
 
   def handle_cast({:broadcast, _event, _payload}, s), do: {:noreply, s}
 
+  def handle_cast({:outbox, item}, s),
+    do:
+      {:noreply,
+       flush(%{s | outbox: s.outbox ++ [item], claimed: MapSet.put(s.claimed, item.id)})}
+
   @impl true
   def handle_info({:token, gen, renewal?, result}, %{gen: gen} = s),
     do: {:noreply, token(s, renewal?, result)}
@@ -207,6 +255,27 @@ defmodule TinyAxe.Remote do
   end
 
   def handle_info({:reconnect, gen}, %{gen: gen} = s), do: {:noreply, start(s)}
+
+  def handle_info({:sent, ref, result}, %{sending: ref, outbox: [item | rest]} = s) do
+    case result do
+      {:ok, _} ->
+        {:noreply, flush(%{s | outbox: rest, sending: nil})}
+
+      # The site will never take it (an unknown message, or one already settled).
+      {:error, "ta-remote-reply: " <> code = reason}
+      when binary_part(code, 0, 3) in ["404", "409"] ->
+        Logger.warning("remote chat: dropped the reply to #{item.id}: #{reason}")
+        {:noreply, flush(%{s | outbox: rest, sending: nil})}
+
+      {:error, reason} ->
+        Logger.warning("remote chat: couldn't send a reply yet: #{reason}")
+        Process.send_after(self(), :flush, 30_000)
+        {:noreply, %{s | sending: nil}}
+    end
+  end
+
+  def handle_info({:sent, _stale, _result}, s), do: {:noreply, s}
+  def handle_info(:flush, s), do: {:noreply, flush(s)}
 
   def handle_info({:beat, gen}, %{gen: gen, beat: nil} = s) do
     {ref, s} = next_ref(s)
@@ -380,6 +449,7 @@ defmodule TinyAxe.Remote do
         |> timer(:beat, {:beat, s.gen}, s.heartbeat)
         |> timer(:sweep, {:sweep, s.gen}, s.sweep)
         |> renew_timer()
+        |> flush()
         |> catch_up()
 
       other ->
@@ -432,7 +502,9 @@ defmodule TinyAxe.Remote do
         _ -> nil
       end
 
-    if kind && not MapSet.member?(s.seen, id) do
+    # One this tiny-axe has taken up is being (or was) answered: not waiting,
+    # not interrupted.
+    if kind && not MapSet.member?(s.claimed, id) && not MapSet.member?(s.seen, id) do
       msg = %{id: id, body: message["body"], created_at: message["created_at"]}
       for pid <- Map.keys(s.subscribers), do: send(pid, {:remote, {kind, msg}})
       %{s | seen: MapSet.put(s.seen, id)}
@@ -442,6 +514,25 @@ defmodule TinyAxe.Remote do
   end
 
   defp deliver(s, _message, _how), do: s
+
+  # Sends the oldest reply waiting, one at a time so they arrive in order.
+  defp flush(%{sending: nil, outbox: [item | _]} = s) do
+    if fresh?(s.session, 30) do
+      me = self()
+      ref = make_ref()
+      %{url: base, session: %{token: token}} = s
+
+      Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+        send(me, {:sent, ref, Api.reply(base, token, item.id, item.status, item.body)})
+      end)
+
+      %{s | sending: ref}
+    else
+      s
+    end
+  end
+
+  defp flush(s), do: s
 
   ## Plumbing
 
