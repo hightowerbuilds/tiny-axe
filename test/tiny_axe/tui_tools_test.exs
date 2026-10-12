@@ -51,6 +51,59 @@ defmodule TinyAxe.TUIToolsTest do
     assert screen =~ "y allow once · a allow this tool for the session · n refuse"
   end
 
+  test "every question says how risky it is: a banner and the border's colour" do
+    for {class, banner} <- [
+          read: "● ONLY READS",
+          local: "▲ CHANGES SOMETHING ON THIS COMPUTER",
+          outward: "■ SENDS SOMETHING OFF THIS MACHINE · CAN'T BE TAKEN BACK",
+          commit: "■ SPENDS MONEY · CAN'T BE UNDONE"
+        ] do
+      {state, _} = asking(running())
+      assert draw(%{state | tool_ask: %{state.tool_ask | class: class}}) =~ banner
+    end
+  end
+
+  test "d shows everything it sends, and d again hides it; the keys stay in view" do
+    {state, ref} = asking(running())
+    screen = draw(state)
+    assert screen =~ "title: Release notes for 0.2"
+    refute screen =~ "Everything it sends:"
+    assert screen =~ "n refuse · d show details"
+
+    {:noreply, state} = TUI.handle_event(key("d"), state)
+    screen = draw(state)
+    assert screen =~ "Everything it sends:"
+    assert screen =~ "Opens an issue in a repository."
+    assert screen =~ "d hide details"
+    refute_received {:tool_answer, ^ref, _}
+
+    {:noreply, state} = TUI.handle_event(key("d"), state)
+    refute draw(state) =~ "Everything it sends:"
+  end
+
+  test "the questions waiting behind it are listed, in order" do
+    {state, _} = asking(running())
+    {state, _} = asking(state)
+
+    shell = %{
+      tool: "shell_run",
+      server: nil,
+      description: "Run a shell command.",
+      args: %{"command" => "npm install"},
+      class: :outward,
+      session_ok: false,
+      shell: %{command: "npm install", dir: "~/code/web"},
+      reply_to: self(),
+      ref: make_ref()
+    }
+
+    state = event(state, {:tool_approval, shell})
+    screen = draw(state)
+    assert screen =~ "2 more questions waiting, in this order:"
+    assert screen =~ "1. github__create_issue (sends something off this machine)"
+    assert screen =~ "2. run $ npm install"
+  end
+
   test "y, a and n answer the waiting call" do
     for {k, answer} <- [{"y", :once}, {"a", :session}, {"n", :deny}, {"esc", :deny}] do
       {state, ref} = asking(running())
@@ -212,6 +265,7 @@ defmodule TinyAxe.TUIToolsTest do
     state = event(running(), {:tool_approval, ask})
     screen = draw(state)
 
+    assert screen =~ "■ RUNS A COMMAND · CAN'T BE UNDONE WITH CTRL+Z"
     assert screen =~ "The agent wants to run a command"
     assert screen =~ "in ~/code/web"
     assert screen =~ "$ npm install"
@@ -306,7 +360,7 @@ defmodule TinyAxe.TUIToolsTest do
       {state, _} = purchase(running())
       screen = draw(state)
 
-      assert screen =~ "This spends money. It can't be undone with ctrl+z."
+      assert screen =~ "■ SPENDS MONEY · CAN'T BE UNDONE"
       assert screen =~ "Shop: shop.example"
       assert screen =~ "Total: $16.00 USD"
       assert screen =~ "Blue mug × 1 — $12.00"

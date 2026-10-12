@@ -22,11 +22,16 @@ defmodule TinyAxe.TUI do
   working, `/chats` lists them, `/chat N` switches, `/chat close` closes an
   idle one. Questions from any chat show up wherever you are.
 
-  `/token` shows token use by Claude Haiku, Jev and the local model
-  (`TUI.TokenDash`).
-
+  The panel (`TUI.Panel`): one popup with a tab each for Remote, Token,
+  Wallet and Search, opened on its tab by `/remote`, `/token`, `/wallet` (or
+  `/credit-card`) and `/search`; tab and the arrows switch, esc closes.
   `/remote on|off` lets the site's /remote page reach this tiny-axe: its
   messages are answered in a 🌐 chat of their own (`TUI.RemoteChat`).
+
+  Questions (a tool call, a command, a purchase, a bigger model) share one
+  layout (`TUI.Overlays`): how risky, who asks, what, `d` for the details,
+  and every question waiting behind it. `/route on|off` shows or hides the
+  decider's route line above each answer (hidden by default).
 
   History (`TUI.ChatHistory`, `TinyAxe.History`): every chat is kept on disk;
   `/history` lists the recent ones, `/history N` reopens one, `/history words`
@@ -48,6 +53,7 @@ defmodule TinyAxe.TUI do
     CommandWorkflow,
     CompactionWorkflow,
     FileWorkflow,
+    Panel,
     Pulse,
     Run,
     Transcript,
@@ -146,8 +152,11 @@ defmodule TinyAxe.TUI do
        # running job's ref, so a stale answer is dropped.
        account_flow: first_account_flow(opts),
        account_job: nil,
-       # /token's popup (TinyAxe.TUI.TokenDash), while it's open.
-       token_dash: nil,
+       # The panel (TinyAxe.TUI.Panel), while it's open: its tab and what each shows.
+       panel: nil,
+       # Whether each request's route line (the decider's scores) is shown: /route.
+       route_line:
+         Keyword.get_lazy(opts, :route_line, fn -> TinyAxe.TUI.Prefs.get("route_line") end),
        # The site's /remote page (TinyAxe.TUI.RemoteChat): its connection, the
        # message being answered in the 🌐 chat and those queued.
        remote_link: RemoteChat.new(opts),
@@ -282,7 +291,8 @@ defmodule TinyAxe.TUI do
         {:noreply, %{state | card_flow: flow}}
 
       {:done, message} ->
-        {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
+        {:noreply,
+         %{state | card_flow: nil, status: "ready"} |> add_meta(message) |> Panel.refresh()}
 
       {:cancel, message} ->
         {:noreply, %{state | card_flow: nil, status: "ready"} |> add_meta(message)}
@@ -349,6 +359,11 @@ defmodule TinyAxe.TUI do
     end
   end
 
+  # d shows or hides a question's details (TUI.Overlays).
+  defp on_event(%Event.Key{code: "d", modifiers: []}, %{tool_ask: ask} = state)
+       when is_map(ask) and :erlang.map_get(:class, ask) != :handoff,
+       do: {:noreply, %{state | tool_ask: Map.update(ask, :details, true, &(!&1))}}
+
   # The agent's call waits for this answer in the gate.
   defp on_event(%Event.Key{code: code}, %{tool_ask: ask} = state) when ask != nil do
     handoff? = ask[:class] == :handoff
@@ -406,12 +421,13 @@ defmodule TinyAxe.TUI do
     {:noreply, FileWorkflow.edit_key(code, edit, state)}
   end
 
-  # /token: esc closes it; other keys wait until it's closed.
-  defp on_event(%Event.Key{code: code}, %{token_dash: dash} = state) when dash != nil do
-    if TinyAxe.TUI.TokenDash.close?(code),
-      do: {:noreply, %{state | token_dash: nil}},
-      else: {:noreply, state, render?: false}
-  end
+  # The panel: while it's open, keys go to it.
+  defp on_event(%Event.Key{code: code, modifiers: mods}, %{panel: panel} = state)
+       when panel != nil,
+       do: Panel.key(state, code, mods)
+
+  defp on_event(%Event.Paste{content: content}, %{panel: panel} = state) when panel != nil,
+    do: {:noreply, Panel.paste(state, content)}
 
   defp on_event(%Event.Key{code: "esc"}, %{run: run} = state) when run != nil do
     {:noreply, %{Run.cancel(state) | status: "cancelled"}}
@@ -566,10 +582,12 @@ defmodule TinyAxe.TUI do
         ExRatatui.textarea_set_value(state.input, "")
         {:noreply, MemoryChat.ask(state, prompt)}
 
-      # cd, pwd, tools, /site, /remote, /chrome, /account, /token and /credit-card are handled
-      # here, like shell built-ins: no model involved.
-      prompt in ["pwd", "tools", "/account", "/token", "/site"] or
-        prompt =~ ~r/\Acd(\s|\z)/ or
+      # cd, pwd, tools, /site, /remote, /chrome, /leash, /account, /route, the
+      # panel's commands and /credit-card are handled here, like shell built-ins:
+      # no model involved.
+      prompt in ~w(pwd tools /account /token /wallet /site /route) or
+        prompt in ["/route on", "/route off"] or
+        prompt =~ ~r/\A(cd|\/search)(\s|\z)/ or
         prompt =~ ~r/\A\/(remote|chrome|leash)(\s|\z)/ or
           String.starts_with?(prompt, "/credit-card") ->
         ExRatatui.textarea_set_value(state.input, "")
@@ -682,34 +700,43 @@ defmodule TinyAxe.TUI do
     end
   end
 
-  defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
+  # The decider's route line above each answer: hidden unless asked for.
+  defp builtin(state, "/route" <> rest) do
+    case String.trim(rest) do
+      "" ->
+        add_meta(
+          state,
+          "route line #{if state.route_line, do: "shown", else: "hidden"} (/route on · /route off)"
+        )
+
+      arg ->
+        on = arg == "on"
+        TinyAxe.TUI.Prefs.put("route_line", on)
+
+        add_meta(
+          %{state | route_line: on},
+          if(on,
+            do: "route line shown: each request says which way it went, and the decider's scores",
+            else: "route line hidden (/route on shows it again)"
+          )
+        )
+    end
+  end
+
+  # The panel (TinyAxe.TUI.Panel): each of these opens it on its own tab.
+  defp builtin(state, "/token"), do: Panel.open(state, :token)
+  defp builtin(state, "/wallet"), do: Panel.open(state, :wallet)
+  defp builtin(state, "/search" <> rest), do: Panel.open(state, :search, String.trim(rest))
 
   defp builtin(state, "/credit-card" <> rest) do
     case String.split(String.trim(rest), " ", parts: 2) do
       [""] ->
-        %{state | card_flow: TinyAxe.TUI.CardFlow.new(), status: "adding a card…"}
+        Panel.open(state, :wallet)
 
       ["list"] ->
         case TinyAxe.Cards.list() do
-          [] ->
-            add_meta(state, "no cards yet; add one with /credit-card")
-
-          cards ->
-            Enum.reduce(cards, state, fn c, st ->
-              until =
-                cond do
-                  c[:remember] == "session" or c[:keyring] == nil -> "this session only"
-                  c[:expires_at] -> "until #{String.slice(c.expires_at, 0, 10)}"
-                  true -> "until you remove it"
-                end
-
-              add_meta(
-                st,
-                "💳 #{c.label} (#{c[:brand]} ••#{c[:last4]}) · #{until}" <>
-                  if(c[:purpose], do: " · for #{c.purpose}", else: "") <>
-                  if(c[:pin], do: " · PIN", else: "")
-              )
-            end)
+          [] -> add_meta(state, "no cards yet; add one with a in /wallet")
+          cards -> Enum.reduce(cards, state, &add_meta(&2, Panel.card_line(&1)))
         end
 
       ["forget", label] ->
@@ -836,8 +863,8 @@ defmodule TinyAxe.TUI do
   defp on_info({:site, {:error, message}}, state),
     do: {:noreply, %{add_meta(state, "✗ site: #{message}") | status: "ready"}}
 
-  defp on_info({:token_dash, ref}, %{token_dash: dash} = state) when dash != nil,
-    do: {:noreply, %{state | token_dash: TinyAxe.TUI.TokenDash.refresh(dash, ref)}}
+  defp on_info({:token_dash, ref}, %{panel: %{token: dash}} = state) when dash != nil,
+    do: {:noreply, Panel.token_tick(state, ref)}
 
   defp on_info({:token_dash, _closed}, state), do: {:noreply, state, render?: false}
 
@@ -891,11 +918,8 @@ defmodule TinyAxe.TUI do
       "route → #{kind.choice} (#{pct(kind.probabilities[kind.choice])}, confidence #{pct(kind.confidence)})" <>
         web
 
-    %{
-      state
-      | transcript: state.transcript ++ [{:meta, meta}],
-        status: "generating (#{kind.choice})…"
-    }
+    shown = if state.route_line, do: [{:meta, meta}], else: []
+    %{state | transcript: state.transcript ++ shown, status: "generating (#{kind.choice})…"}
   end
 
   defp apply_event({:search, s}, state) do

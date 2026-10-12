@@ -355,7 +355,7 @@ defmodule TinyAxe.TUI.RemoteChat do
         add_meta(state, "🌐 remote chat off: the site can't reach this tiny-axe")
 
       "" ->
-        add_meta(state, "🌐 remote chat: " <> describe(link))
+        TinyAxe.TUI.Panel.open(state, :remote)
 
       _ ->
         add_meta(state, "/remote · /remote on · /remote off")
@@ -371,10 +371,11 @@ defmodule TinyAxe.TUI.RemoteChat do
     :exit, _ -> :ok
   end
 
-  defp describe(%{phase: :off}), do: "off (/remote on)"
-  defp describe(%{phase: :online} = link), do: "on, online#{busy(link)}"
-  defp describe(%{phase: :waiting, error: error}), do: "on, not connected: #{error}"
-  defp describe(%{phase: _connecting}), do: "on, connecting…"
+  @doc "How the link stands, in a few words."
+  def describe(%{phase: :off}), do: "off"
+  def describe(%{phase: :online} = link), do: "on, online#{busy(link)}"
+  def describe(%{phase: :waiting, error: error}), do: "on, not connected: #{error}"
+  def describe(%{phase: _connecting}), do: "on, connecting…"
 
   defp busy(%{current: nil}), do: ""
 

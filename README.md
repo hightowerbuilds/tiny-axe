@@ -58,7 +58,14 @@ tiny-axe keeps track of where it is, like a shell: the title shows 📍 and the 
 
 The website account and chat archive are optional. `/account` sets up or shows your account, and `/site` opens its chat archive. Automatic website sync is off by default (`config :tiny_axe, :sync, enabled: true` enables it for ordinary chats). Local memory conversations are always excluded from sync. The site's search tools are remote; use `/memory` for on-machine search. See [docs/plan-lobsterattack.md](docs/plan-lobsterattack.md).
 
-`/token` shows how many tokens Claude Haiku, Jev and the local model (Gemma) have used this session, today and in the last 7 days, with Claude's 5-hour and 7-day usage windows and today's use by hour. The counts are kept in `usage.jsonl` in tiny-axe's state folder (no prompts or answers, no prices; 90 days). `esc` closes it. See [docs/plan-token-dashboard.md](docs/plan-token-dashboard.md).
+The panel is one popup with a tab each for **Remote**, **Token**, **Wallet** and **Search**. Each command opens it on its own tab: `/remote`, `/token`, `/wallet` (or `/credit-card`) and `/search words`. `tab` and the arrow keys switch tabs, and `esc` closes it. Questions still come up on top of it. See [docs/plan-panels.md](docs/plan-panels.md).
+
+- **Remote** shows whether the site can reach this tiny-axe, and `enter` turns it on or off.
+- **Token** shows how many tokens Claude Haiku, Jev and the local model (Gemma) have used this session, today and in the last 7 days, with Claude's 5-hour and 7-day usage windows and today's use by hour. The counts are kept in `usage.jsonl` in tiny-axe's state folder (no prompts or answers, no prices; 90 days). See [docs/plan-token-dashboard.md](docs/plan-token-dashboard.md).
+- **Wallet** lists your cards (masked). `a` adds one, and `f` forgets the one chosen.
+- **Search** finds kept chats that have all your words; `enter` opens the chosen one.
+
+Every question uses the same layout: a coloured banner for how risky it is (green only reads, yellow changes something or leaves the machine, red spends money or can't be taken back), who's asking, what it is, the keys, and the questions waiting behind it. `d` shows everything a tool call would send. The decider's route line above each answer is hidden unless you turn it on with `/route on`.
 
 Type `/new` to start another chat; the one you leave keeps working in the background, and its questions still pop up wherever you are ("asked by chat 1"). `/chats` lists them (what each is about, and whether it's working, waiting for you or idle), `/chat N` or `ctrl+o` switches, and `/chat close` closes the one on screen once it's idle. The status bar shows which chat you're in and what the others are doing; `esc` cancels only the chat on screen, `ctrl+c` quits them all.
 

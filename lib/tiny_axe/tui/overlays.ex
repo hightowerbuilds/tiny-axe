@@ -144,20 +144,26 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" add a card ", Enum.filter(lines, & &1), 0, area)
   end
 
+  ## Questions: one layout for every ask (docs/plan-panels.md)
+  #
+  # A banner saying how risky it is (green only reads, yellow changes
+  # something or leaves the machine, red spends money or can't be taken
+  # back), who asks, what it is, details behind `d`, the keys, and every
+  # question waiting behind it.
+
   def render(%{purchase_ask: ask} = state, area) when ask != nil do
     s = ask.summary
-    red = %Style{fg: :red, modifiers: [:bold]}
     card_step? = ask[:mode] == :card_step
 
-    warning =
-      if card_step?,
-        do: "This sends your card details to #{s["host"]}. Nothing is bought yet.",
-        else: "This spends money. It can't be undone with ctrl+z."
+    risk = if card_step?, do: :outward, else: :money
 
     lines =
       [
-        Line.new([Span.new(warning, style: red)]),
-        styled(""),
+        card_step? &&
+          styled("This sends your card details to #{s["host"]}. Nothing is bought yet.", nil, [
+            :bold
+          ]),
+        card_step? && styled(""),
         styled("Shop: #{s["host"]}", nil, [:bold]),
         !card_step? && styled("Total: #{s["total_text"]} #{s["currency"]}", nil, [:bold])
       ] ++
@@ -173,25 +179,10 @@ defmodule TinyAxe.TUI.Overlays do
         end) ++
         [styled("")] ++
         purchase_prompt(ask) ++
-        [
-          ask[:hint] && styled(ask.hint, :yellow),
-          styled("esc refuse", :dark_gray),
-          queue_line(state, ask)
-        ]
+        [ask[:hint] && styled(ask.hint, :yellow)]
 
-    [
-      {%Popup{
-         content: %Paragraph{text: Enum.filter(lines, & &1), wrap: true},
-         block: %Block{
-           title: if(card_step?, do: " use your card here? ", else: " buy this? "),
-           borders: [:all],
-           border_type: :rounded,
-           border_style: %Style{fg: :red}
-         },
-         percent_width: 80,
-         percent_height: 80
-       }, area}
-    ]
+    title = if card_step?, do: " use your card here? ", else: " buy this? "
+    ask_popup(state, ask, title, risk, lines, [], "esc refuse", area)
   end
 
   def render(%{asking: ask} = state, area) when ask != nil do
@@ -203,15 +194,12 @@ defmodule TinyAxe.TUI.Overlays do
       styled(
         "It leaves this machine: the request, the recent conversation, any files and web " <>
           "pages it was given, and what its tools return go to #{ask.to} on your " <>
-          "subscription (never an API key).",
-        :yellow
-      ),
-      styled(""),
-      styled("y yes, for this session · n no, keep everything local this session", :dark_gray),
-      queue_line(state, ask)
+          "subscription (never an API key)."
+      )
     ]
 
-    popup(" use a bigger model? ", Enum.filter(lines, & &1), 0, area)
+    keys = "y yes, for this session · n no, keep everything local this session"
+    ask_popup(state, ask, " use a bigger model? ", :leaves, lines, [], keys, area)
   end
 
   # The agent needs the user to do something in the browser window.
@@ -223,32 +211,17 @@ defmodule TinyAxe.TUI.Overlays do
       styled(""),
       styled(
         "Do it in the browser window (tiny-axe never types passwords or card numbers), " <>
-          "then come back here.",
-        :yellow
-      ),
-      styled(""),
-      styled("y done · n I won't", :dark_gray),
-      queue_line(state, ask)
+          "then come back here."
+      )
     ]
 
-    popup(" over to you ", Enum.filter(lines, & &1), 0, area)
+    ask_popup(state, ask, " over to you ", :you, lines, [], "y done · n I won't", area)
   end
 
   # The agent's shell_run, for a command that can change things: asked
-  # about every time (TinyAxe.Agent.ShellTool).
+  # about every time (TinyAxe.Agent.ShellTool). The command is always shown
+  # in full: it's what's being agreed to.
   def render(%{tool_ask: %{shell: shell} = ask} = state, area) do
-    header = [
-      Line.new([
-        Span.new("The agent wants to run a command", style: %Style{modifiers: [:bold]})
-      ]),
-      styled("in #{shell.dir}", :cyan),
-      styled(
-        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
-        :cyan
-      ),
-      styled("")
-    ]
-
     command =
       shell.command
       |> String.split("\n")
@@ -257,55 +230,73 @@ defmodule TinyAxe.TUI.Overlays do
         styled(if(i == 0, do: "$ ", else: "  ") <> line, nil, [:bold])
       end)
 
-    footer =
-      Enum.filter(
-        [
-          styled(""),
-          styled("Commands can't be undone with ctrl+z.", :dark_gray),
-          styled("y run · n refuse", :dark_gray),
-          queue_line(state, ask)
-        ],
-        & &1
-      )
+    lines =
+      [
+        styled("The agent wants to run a command", nil, [:bold]),
+        styled("in #{shell.dir}", :cyan),
+        styled("")
+      ] ++ command
 
-    popup(" run this command? ", header ++ command ++ footer, 0, area)
+    details = [
+      styled(
+        "Only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; the network is on.",
+        :cyan
+      )
+    ]
+
+    ask_popup(
+      state,
+      ask,
+      " run this command? ",
+      :command,
+      lines,
+      details,
+      "y run · n refuse",
+      area
+    )
   end
 
   def render(%{tool_ask: ask} = state, area) when ask != nil do
-    args =
-      case ask.args do
-        args when args == %{} -> ["(no arguments)"]
-        args -> args |> JSON.encode!() |> pretty_json() |> String.split("\n")
-      end
-
     lines =
       [
         Line.new([
           Span.new("The agent wants to use ", style: %Style{modifiers: [:bold]}),
           Span.new(ask.tool, style: %Style{fg: :cyan, modifiers: [:bold]})
         ]),
-        styled(
-          "from the #{ask.server} MCP server · #{TinyAxe.Tools.Policy.describe(ask.class)}",
-          :yellow
-        ),
+        styled("from the #{ask.server} MCP server · #{TinyAxe.Tools.Policy.describe(ask.class)}"),
         ask[:reason] && styled("It #{ask.reason}.", :yellow, [:bold]),
-        styled(""),
+        styled("")
+      ] ++ brief_args(ask.args)
+
+    details =
+      [
         ask.description && styled(ask.description, :dark_gray),
         ask.description && styled(""),
-        styled("With:", nil, [:bold])
-      ]
-      |> Enum.filter(& &1)
-
-    body = Enum.map(args, &styled("  " <> &1))
+        ask.args != %{} && styled("Everything it sends:", nil, [:bold])
+      ] ++
+        if ask.args == %{},
+          do: [],
+          else:
+            ask.args
+            |> JSON.encode!()
+            |> pretty_json()
+            |> String.split("\n")
+            |> Enum.map(&styled("  " <> &1))
 
     keys =
       if Map.get(ask, :session_ok, true),
         do: "y allow once · a allow this tool for the session · n refuse",
         else: "y allow · n refuse"
 
-    footer = Enum.filter([styled(""), styled(keys, :dark_gray), queue_line(state, ask)], & &1)
+    risk =
+      case ask.class do
+        :read -> :read
+        :local -> :change
+        :commit -> :money
+        _ -> :outward
+      end
 
-    popup(" allow this tool call? ", lines ++ body ++ footer, 0, area)
+    ask_popup(state, ask, " allow this tool call? ", risk, lines, details, keys, area)
   end
 
   def render(%{recovery: plan} = state, area) when plan != nil do
@@ -417,26 +408,6 @@ defmodule TinyAxe.TUI.Overlays do
   # Below everything that asks the user something.
   def render(%{pending_edits: [_ | _]} = state, area), do: edit_popup(state, area)
 
-  # Its columns line up only unwrapped, so it's sized to fit its lines.
-  def render(%{token_dash: dash}, area) when dash != nil do
-    lines = TinyAxe.TUI.TokenDash.lines(dash)
-
-    [
-      {%Popup{
-         content: %Paragraph{text: lines, wrap: false},
-         block: %Block{
-           title: " token use ",
-           borders: [:all],
-           border_type: :rounded,
-           border_style: %Style{fg: :cyan},
-           padding: {1, 1, 0, 0}
-         },
-         fixed_width: min(TinyAxe.TUI.TokenDash.width() + 4, area.width),
-         fixed_height: min(length(lines) + 2, area.height)
-       }, area}
-    ]
-  end
-
   def render(_state, _area), do: []
 
   defp plan_step_lines(op) do
@@ -474,27 +445,127 @@ defmodule TinyAxe.TUI.Overlays do
   defp diff_line({:eq, l}, pad), do: styled(pad <> "  " <> l, :dark_gray)
   defp diff_line(:gap, pad), do: styled(pad <> "  ⋯", :dark_gray)
 
-  # Long lines wrap rather than run off the edge: a command or warning cut off
-  # there is one the user approves without seeing in full.
-  # Who is asking (an agent or chat, when it isn't the one in front of the
-  # user) and how many other questions wait behind this one.
-  defp queue_line(state, ask) do
-    from = if ask[:from], do: "asked by #{ask.from}"
-    more = Map.get(state, :waiting, [])
+  # The risk, as a colour and a banner.
+  defp risk(:read), do: {:green, "● ONLY READS"}
+  defp risk(:change), do: {:yellow, "▲ CHANGES SOMETHING ON THIS COMPUTER"}
+  defp risk(:leaves), do: {:yellow, "↗ LEAVES THIS MACHINE"}
+  defp risk(:outward), do: {:red, "■ SENDS SOMETHING OFF THIS MACHINE · CAN'T BE TAKEN BACK"}
+  defp risk(:command), do: {:red, "■ RUNS A COMMAND · CAN'T BE UNDONE WITH CTRL+Z"}
+  defp risk(:money), do: {:red, "■ SPENDS MONEY · CAN'T BE UNDONE"}
+  defp risk(:you), do: {:cyan, "◆ YOUR TURN"}
 
-    waiting =
-      case length(more) do
-        0 -> nil
-        1 -> "1 more question waiting"
-        n -> "#{n} more questions waiting"
+  # Every question in the same shape: banner, who asks, what it is, the keys,
+  # the questions waiting behind it, and details (behind `d`).
+  defp ask_popup(state, ask, title, risk, lines, details, keys, area) do
+    {color, banner} = risk(risk)
+    details = Enum.filter(details, & &1)
+    shown? = ask[:details] == true and details != []
+
+    head = [
+      styled(banner, color, [:bold]),
+      ask[:from] && styled("asked by #{ask.from}", :magenta),
+      styled("")
+    ]
+
+    more =
+      cond do
+        details == [] -> []
+        shown? -> [styled("")] ++ details
+        true -> []
       end
 
-    case Enum.filter([from, waiting], & &1) do
-      [] -> nil
-      parts -> styled(Enum.join(parts, " · "), :magenta)
+    keys =
+      if details == [],
+        do: keys,
+        else: keys <> " · d #{if shown?, do: "hide", else: "show"} details"
+
+    # The keys before the details, so a long one never pushes them out of sight.
+    text =
+      Enum.filter(head ++ lines ++ [styled(""), styled(keys, :dark_gray)], & &1) ++
+        waiting_lines(state) ++ more
+
+    [
+      {%Popup{
+         content: %Paragraph{text: text, wrap: true},
+         block: %Block{
+           title: title,
+           borders: [:all],
+           border_type: :rounded,
+           border_style: %Style{fg: color}
+         },
+         percent_width: 90,
+         percent_height: 85
+       }, area}
+    ]
+  end
+
+  # What a tool call sends, a line per argument and each cut short; all of
+  # it is under details.
+  defp brief_args(args) when args == %{}, do: [styled("(no arguments)", :dark_gray)]
+
+  defp brief_args(args) do
+    shown =
+      args
+      |> Enum.take(6)
+      |> Enum.map(fn {k, v} ->
+        value = if is_binary(v), do: v, else: JSON.encode!(v)
+        value = value |> String.replace(~r/\s+/, " ") |> cut(72)
+        Line.new([Span.new("  #{k}: ", style: %Style{fg: :dark_gray}), Span.new(value)])
+      end)
+
+    rest = map_size(args) - length(shown)
+    shown ++ if(rest > 0, do: [styled("  …and #{rest} more (d)", :dark_gray)], else: [])
+  end
+
+  defp cut(text, n),
+    do: if(String.length(text) > n, do: String.slice(text, 0, n - 1) <> "…", else: text)
+
+  # The questions waiting behind this one, a line each.
+  defp waiting_lines(state) do
+    case Map.get(state, :waiting, []) do
+      [] ->
+        []
+
+      waiting ->
+        rows =
+          waiting
+          |> Enum.take(5)
+          |> Enum.with_index(1)
+          |> Enum.map(fn {{field, ask}, n} ->
+            from = if ask[:from], do: " · asked by #{ask.from}", else: ""
+            styled("  #{n}. #{waiting_what(field, ask)}#{from}", :magenta)
+          end)
+
+        rest = length(waiting) - length(rows)
+        count = length(waiting)
+
+        [
+          styled(""),
+          styled(
+            "#{count} more question#{if count == 1, do: "", else: "s"} waiting, in this order:",
+            :magenta,
+            [:bold]
+          )
+        ] ++ rows ++ if(rest > 0, do: [styled("  …and #{rest} more", :magenta)], else: [])
     end
   end
 
+  defp waiting_what(:asking, ask), do: "send a request to #{ask.to}"
+
+  defp waiting_what(:purchase_ask, %{mode: :card_step} = ask),
+    do: "use your card at #{ask.summary["host"]}"
+
+  defp waiting_what(:purchase_ask, ask), do: "buy at #{ask.summary["host"]}"
+  defp waiting_what(:tool_ask, %{class: :handoff}), do: "your turn in the browser"
+  defp waiting_what(:tool_ask, %{shell: shell}), do: "run $ " <> cut(shell.command, 50)
+
+  defp waiting_what(:tool_ask, ask),
+    do: "#{ask.tool} (#{TinyAxe.Tools.Policy.describe(ask.class)})"
+
+  defp waiting_what(_field, _ask), do: "a question"
+
+  # Long lines wrap rather than run off the edge: a command or warning cut off
+  # there is one the user approves without seeing in full.
   defp popup(title, lines, scroll, area) do
     [
       {%Popup{
