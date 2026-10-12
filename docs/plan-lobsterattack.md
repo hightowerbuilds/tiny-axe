@@ -1,7 +1,7 @@
 # Plan: LobsterAttack, tiny-axe's hosted home
 
-Status (2026-10-11): L1 built (lobsterattack branch `tiny-axe-home`, not
-pushed or deployed; the migration isn't applied yet). Site work in
+Status (2026-10-11): L1 and L2 built (lobsterattack branch `tiny-axe-home`,
+not pushed or deployed; the migration isn't in the Supabase project yet). Site work in
 `../lobsterattack` (repo hightowerbuilds/lobsterattack, deployed by Vercel);
 tiny-axe work on branch `lobsterattack` (worktree `../tiny-axe-lobster`).
 
@@ -163,9 +163,18 @@ go-ahead.
    `chat`, `changes`, the local viewer's JSON shapes). `bun test api/test`
    runs against an in-memory store; tiny-axe's own `TinyAxe.MCP.Client`
    connected, listed the tools and pushed the fixture.
-2. **L2, the site.** Solid rebuild with the viewer's pages, sign in, posts
-   feed removed. Checked in headless Chrome against fixture data
-   (`test/fixtures/vault`).
+2. **L2, the site.** Done 2026-10-11: React, TanStack and the posts feed
+   are gone; `src/` is the viewer (its own small router kept), with a sign-in
+   page and a Sign out button. `/api/changes?since=` says which notes and
+   chats changed, so polling (every 15 s, paused while the tab is hidden)
+   updates the page as the event stream did. `vercel.json` adds the viewer's
+   CSP (plus the Supabase origin for signing in), `noindex` and HSTS. Checked
+   in headless Chrome on the built site with Vercel's headers, the fixture
+   pushed through `/api/mcp`, and Supabase's sign-in faked: sign-in, wrong
+   password, graph, overview, note after reload, chats, a chat pushed while
+   open appearing, sign out, an account not let in, phone width; no CSP
+   errors. The coral-reef images and ASCII hero went with the feed (in git
+   history if wanted back).
 3. **L3, tiny-axe pushes.** `TinyAxe.Graph` over HTTP, outbox, backfill,
    `/graph` link, keyring key. Tested with a fake MCP server, then live.
 4. **L4, the model writes.** `graph_add_note`, gate policy, live test with
