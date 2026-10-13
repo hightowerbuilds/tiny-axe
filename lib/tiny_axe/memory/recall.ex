@@ -116,7 +116,13 @@ defmodule TinyAxe.Memory.Recall do
       |> Enum.with_index(1)
       |> Enum.map(fn {p, n} -> Map.put(p, :source, n) end)
 
-    shown = Enum.map(evidence, &Map.take(&1, [:source, :kind, :text, :updated]))
+    # Times in Pacific, as the user reads them, so answers about "when" match.
+    shown =
+      Enum.map(evidence, fn e ->
+        e
+        |> Map.take([:source, :kind, :text, :updated])
+        |> Map.update(:updated, nil, &TinyAxe.Clock.pacific/1)
+      end)
 
     with false <- evidence == [],
          {:ok, result} <-
@@ -134,7 +140,7 @@ defmodule TinyAxe.Memory.Recall do
          {:ok, text, used} <- validate(result, evidence, opts) do
       sources =
         Enum.map_join(used, "\n\n", fn {n, quote, p} ->
-          "[#{n}] #{p.hit.title} · chat updated #{p.updated} · #{p.kind} · entry #{p.hit.position + 1}\n“#{quote}”"
+          "[#{n}] #{p.hit.title} · chat updated #{TinyAxe.Clock.pacific(p.updated)} · #{p.kind} · entry #{p.hit.position + 1}\n“#{quote}”"
         end)
 
       {:ok,

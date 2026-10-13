@@ -61,7 +61,8 @@ defmodule TinyAxe.TUI.MemoryChat do
 
       add_meta(
         state,
-        "Source: #{hit.title} · #{hit.chat_id} · chat updated #{hit.updated}\n\n" <> entries
+        "Source: #{hit.title} · chat updated #{TinyAxe.Clock.pacific(hit.updated)}\n\n" <>
+          entries
       )
     else
       {:error, :stale_source} ->
@@ -178,7 +179,7 @@ defmodule TinyAxe.TUI.MemoryChat do
     |> Enum.reduce(state, fn {hit, n}, s ->
       add_meta(
         s,
-        "#{n} · #{hit.title} · #{hit.kind} · entry #{hit.position + 1} · chat updated #{hit.updated}" <>
+        "#{n} · #{hit.title} · #{hit.kind} · entry #{hit.position + 1} · chat updated #{TinyAxe.Clock.pacific(hit.updated)}" <>
           if(Map.has_key?(hit, :generated_note),
             do: " · found via generated Gemma note; original quote below",
             else: ""
