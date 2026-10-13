@@ -69,6 +69,7 @@ defmodule TinyAxe.Tools.Gate do
 
   alias TinyAxe.{Browser, MCP, Ops, Purchases, Tools}
   alias TinyAxe.Agent.{Dispatch, ShellTool, SiteTool}
+  alias TinyAxe.Desktop.OsRun
   alias TinyAxe.Browser.{Choices, Decisions, Examples, Outcomes}
   alias TinyAxe.Tools.{Policy, Redact}
 
@@ -218,6 +219,10 @@ defmodule TinyAxe.Tools.Gate do
   defp shells?(%{driver: driver}) when driver != nil, do: ShellTool.available?()
   defp shells?(_task), do: false
 
+  # Changing the computer outside the sandbox: an agent's own task only.
+  defp os_runs?(%{driver: driver, depth: 0}) when driver != nil, do: OsRun.available?()
+  defp os_runs?(_task), do: false
+
   @doc "The MCP config that gives a driver this task's gate and nothing else."
   @spec mcp_config(map()) :: map()
   def mcp_config(%{url: url, token: token}) do
@@ -265,6 +270,7 @@ defmodule TinyAxe.Tools.Gate do
     listed = if Enum.any?(all, &browser?/1), do: listed ++ Decisions.definitions(), else: listed
     listed = if dispatches?(task), do: listed ++ [Dispatch.definition()], else: listed
     listed = if shells?(task), do: listed ++ [ShellTool.definition()], else: listed
+    listed = if os_runs?(task), do: listed ++ [OsRun.definition()], else: listed
     if SiteTool.offered?(task.servers), do: listed ++ [SiteTool.definition()], else: listed
   end
 
@@ -554,6 +560,15 @@ defmodule TinyAxe.Tools.Gate do
           policy: %{"gate" => true, "shell" => true}
         }
 
+      own == OsRun.name() and os_runs?(task) ->
+        %{
+          name: own,
+          server: nil,
+          tool: own,
+          definition: OsRun.definition(),
+          policy: %{"gate" => true, "os" => true}
+        }
+
       own == SiteTool.name() and SiteTool.offered?(task.servers) ->
         %{
           name: own,
@@ -576,6 +591,7 @@ defmodule TinyAxe.Tools.Gate do
   defp gate?(tool), do: tool.policy["gate"] == true
   defp dispatch?(tool), do: tool.policy["dispatch"] == true
   defp shell?(tool), do: tool.policy["shell"] == true
+  defp os?(tool), do: tool.policy["os"] == true
   defp site?(tool), do: tool.policy["site"] == true
 
   # Browser actions are assessed by what they'd do on the page (the gate
@@ -598,6 +614,13 @@ defmodule TinyAxe.Tools.Gate do
       # A window on this computer, on the user's own page: runs without asking.
       site?(tool) ->
         {:local, "opens the user's page of tiny-axe's website in their browser", task}
+
+      # A few desktop reads run at once; anything else asks, every time.
+      os?(tool) ->
+        case OsRun.check(args) do
+          {:refused, why} -> {:refused, why, task}
+          {class, reason, plan} -> {class, reason, Map.put(task, :os, plan)}
+        end
 
       # Read-only runs at once; anything else asks (decide/5).
       shell?(tool) ->
@@ -1133,6 +1156,18 @@ defmodule TinyAxe.Tools.Gate do
   defp decide(task, %{policy: %{"dispatch" => true}}, args, _class, _allowed),
     do: {:ran, Dispatch.run(task, args)}
 
+  # os_run: outside the sandbox, so asked about every time, never for the
+  # session; the run snapshots ~/.config around itself (TinyAxe.Desktop.OsRun).
+  defp decide(task, %{policy: %{"os" => true}}, _args, {:read, _reason}, _allowed),
+    do: {:ran, OsRun.run(task, task.os)}
+
+  defp decide(task, %{policy: %{"os" => true}} = tool, args, {:outward, reason}, _allowed) do
+    case ask(task, tool, args, :outward, reason, %{shell: OsRun.shown(task.os)}) do
+      :deny -> {:denied, refusal("the user said no to this command")}
+      _once -> {:approved, OsRun.run(task, task.os)}
+    end
+  end
+
   # A command waits here for its run; one that changes things asks first,
   # every time: allowing shell_run for the session would allow any command.
   defp decide(task, %{policy: %{"shell" => true}}, _args, {:read, _reason}, _allowed),
@@ -1618,7 +1653,7 @@ defmodule TinyAxe.Tools.Gate do
        # Browser actions are asked about one by one.
        session_ok:
          tool.policy["browser"] != true and tool.policy["shell"] != true and
-           class == :outward,
+           tool.policy["os"] != true and class == :outward,
        reply_to: self(),
        ref: ref
      }

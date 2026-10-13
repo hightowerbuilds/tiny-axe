@@ -82,6 +82,7 @@ defmodule TinyAxe.Desktop do
               {:doubtful, _, _} = doubtful -> {:fell_short, doubtful}
               {:gave_up, _, _} -> {:fell_short, best}
               {:reply, _} = reply -> {:ok, reply}
+              {:unsupported, _} = unsupported -> {:ok, unsupported}
               {:error, reason} -> {:error, reason, best}
             end
           end
@@ -119,11 +120,39 @@ defmodule TinyAxe.Desktop do
       {:reply, reply} ->
         done(notify, reply)
 
+      {:unsupported, reply} ->
+        hand_over(history, prompt, reply, site?, remote, notify)
+
       {:error, reason} ->
         notify.({:error, reason})
     end
 
     :ok
+  end
+
+  # Nothing in the list does it (a keybinding, a window rule, a service):
+  # the agent (Claude Haiku 5.5) takes it, with os_run, which asks before
+  # every command and snapshots ~/.config (TinyAxe.Desktop.OsRun). Not from
+  # the site, whose approvals are refused anyway.
+  defp hand_over(history, prompt, reply, site?, remote, notify) do
+    cond do
+      site? ->
+        done(
+          notify,
+          "That needs a change outside tiny-axe's desktop settings, which can only be " <>
+            "approved on this computer. Ask tiny-axe there."
+        )
+
+      not TinyAxe.Desktop.OsRun.available?() ->
+        done(notify, reply)
+
+      true ->
+        notify.(
+          {:escalate, %{to: "the agent", reason: "none of tiny-axe's desktop settings does that"}}
+        )
+
+        TinyAxe.Agent.run(history, prompt, notify, remote: remote)
+    end
   end
 
   # The plan waits for the user's y/n in the TUI (the commands popup); only
@@ -237,9 +266,10 @@ defmodule TinyAxe.Desktop do
             required: ["setting", "value"]
           }
         },
-        reply: %{type: "string"}
+        reply: %{type: "string"},
+        unsupported: %{type: "boolean"}
       },
-      required: ["changes", "reply"]
+      required: ["changes", "reply", "unsupported"]
     }
   end
 
@@ -283,8 +313,12 @@ defmodule TinyAxe.Desktop do
 
   defp planned(answer, messages, context, settings, notify, round, reviewed?) do
     reply = text(answer["reply"])
+    unsupported? = answer["unsupported"] == true
 
     case check(answer["changes"], settings, context.request) do
+      {:ok, [], _already} when unsupported? ->
+        {:unsupported, reply}
+
       {:ok, [], _already} ->
         {:reply, reply}
 
@@ -590,8 +624,11 @@ defmodule TinyAxe.Desktop do
     range; "+2" or "-2" changes a number from its current value. "bigger"/"smaller" means \
     about 2 points or pixels.
     - "reply": one short sentence for the user about what you're doing. If the user only \
-    asks how something is set, leave "changes" empty and answer from the current values. \
-    If nothing in the list can do what they ask, leave "changes" empty and say so.
+    asks how something is set, leave "changes" empty and answer from the current values.
+    - "unsupported": true only when the user wants the computer changed or something done \
+    that no item in the list can do (a keybinding, a window rule, a service, a config \
+    file, installing software); then leave "changes" empty, and tiny-axe hands the request \
+    to a bigger model that can run commands. Otherwise false.
 
     Only change or do what the user asked for. The terminal is Ghostty; "terminal" \
     settings only change it, while "text_size" scales text everywhere (bar, apps and \

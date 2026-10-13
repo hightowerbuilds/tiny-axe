@@ -237,17 +237,13 @@ defmodule TinyAxe.TUI.Overlays do
   # The agent's shell_run, for a command that can change things: asked
   # about every time (TinyAxe.Agent.ShellTool).
   def render(%{tool_ask: %{shell: shell} = ask} = state, area) do
-    header = [
-      Line.new([
-        Span.new("The agent wants to run a command", style: %Style{modifiers: [:bold]})
-      ]),
-      styled("in #{shell.dir}", :cyan),
-      styled(
-        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
-        :cyan
-      ),
-      styled("")
-    ]
+    header =
+      [
+        Line.new([
+          Span.new("The agent wants to run a command", style: %Style{modifiers: [:bold]})
+        ]),
+        styled("in #{shell.dir}", :cyan)
+      ] ++ sandbox_note(shell) ++ [styled("")]
 
     command =
       shell.command
@@ -261,7 +257,13 @@ defmodule TinyAxe.TUI.Overlays do
       Enum.filter(
         [
           styled(""),
-          styled("Commands can't be undone with ctrl+z.", :dark_gray),
+          styled(
+            if(shell[:unsandboxed],
+              do: "~/.config is snapshotted first: /look undo puts it back.",
+              else: "Commands can't be undone with ctrl+z."
+            ),
+            :dark_gray
+          ),
           styled("y run · n refuse", :dark_gray),
           queue_line(state, ask)
         ],
@@ -619,5 +621,28 @@ defmodule TinyAxe.TUI.Overlays do
     if String.length(json) < 70,
       do: json,
       else: json |> :json.decode() |> :json.format() |> IO.iodata_to_binary()
+  end
+
+  # os_run (TinyAxe.Desktop.OsRun) runs outside the sandbox; shell_run in it.
+  defp sandbox_note(%{unsandboxed: true} = shell) do
+    why = if shell[:why] in [nil, ""], do: [], else: [styled(shell.why, :cyan)]
+
+    why ++
+      [
+        styled(
+          "runs OUTSIDE the sandbox, as you, with your real home folder and files",
+          :yellow,
+          [:bold]
+        )
+      ]
+  end
+
+  defp sandbox_note(_shell) do
+    [
+      styled(
+        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
+        :cyan
+      )
+    ]
   end
 end

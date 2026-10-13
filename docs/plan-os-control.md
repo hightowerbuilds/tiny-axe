@@ -344,3 +344,46 @@ the request names outright.
 - **Undo:** `Undo.push_snapshot/3` records the before and after pair, and
   `/look undo` restores it, then reloads Hyprland and the terminals.
 - **Tests:** `test/tiny_axe/desktop_snapshot_test.exs`.
+
+## O3 as built (2026-10-12)
+
+- **`Desktop.OsRun`** is the gate tool `os_run {command, why}`, offered to
+  an agent's own task (not sub-agents'), and switched off with
+  `config :tiny_axe, :os_run, false`.
+  - It runs `sh -c` as the user, outside the sandbox (the user's choice),
+    in the current folder. Stdin is empty, secret env vars are removed
+    (the D-Bus address is kept), and it's stopped after 5 min or when the
+    run is cancelled.
+  - It asks every time, never for the session. The popup shows the
+    command and the reason, and warns in bold yellow: "runs OUTSIDE the
+    sandbox".
+  - Only desktop reads run at once: `hyprctl getoption|binds|monitors…`,
+    `wpctl`/`pactl` reads, `bluetoothctl show`, `nmcli … show`,
+    `systemctl --user status|is-active…`, `powerprofilesctl get`,
+    `xdg-settings get`, `gsettings get`, and Omarchy's
+    current/list commands. They may be piped through
+    grep/head/tail/jq/wc/sort/uniq/cut/tr, with no `;`, `&`, `$`,
+    backticks or redirection.
+  - Refused outright: sudo/su/doas/pkexec, `curl|sh`, `rm` of `~`,
+    `~/.config` or `/`, tiny-axe's own settings and state, and stopping
+    tiny-axe.
+  - Each run takes a snapshot before, writes the interrupted-run marker,
+    takes a snapshot after, runs the Hyprland guard, and records an undo
+    when files changed. The result lists the changed files and the
+    guard's outcome.
+- **Handoff:** Gemma's JSON has an `unsupported` field. When nothing in
+  the list can do the request, `Desktop.run` hands it to the agent
+  (Haiku), whose system prompt now includes `OsRun.instructions/0`. The
+  instructions cover Omarchy's bind form,
+  `o.bind("SUPER + ALT + N", "Obsidian", { launch = "obsidian" })`, and
+  checking `hyprctl binds` first.
+  - Requests from the site don't hand over.
+  - With `os_run` off, Gemma's reply stands.
+- **Live checks:**
+  - Gemma flagged all four out-of-list requests (keybinding, window
+    rule, service, install) and none of the in-list ones.
+  - Real Haiku, with every `os_run` answered no: it read the configs in
+    the sandbox, checked `hyprctl binds`, noticed Brave isn't installed
+    and stopped, and for Obsidian proposed exactly Omarchy's form.
+- **Tests:** `test/tiny_axe/desktop_os_run_test.exs`. Full suite: 845
+  tests, 0 failures.
