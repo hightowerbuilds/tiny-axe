@@ -45,6 +45,7 @@ defmodule TinyAxe.TUI.Welcome do
     Map.get(state, :section, :chat) == :chat and
       state.history == [] and state.run == nil and state.streaming == nil and
       state.running_cmd == nil and state.account_flow == nil and state.card_flow == nil and
+      state.pin_flow == nil and
       state.recovery == nil and state.pending_plan == nil and state.pending_commands == nil and
       state.pending_edits == [] and state.confirm_undo == nil and state.asking == nil and
       state.tool_ask == nil and state.purchase_ask == nil and

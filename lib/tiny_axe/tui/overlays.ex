@@ -144,6 +144,20 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" add a card ", Enum.filter(lines, & &1), 0, area)
   end
 
+  def render(%{pin_flow: flow}, area) when flow != nil do
+    lines =
+      flow
+      |> TinyAxe.TUI.PinFlow.lines()
+      |> Enum.map(fn
+        "  " <> dots -> styled("  " <> dots <> "▌", :yellow, [:bold])
+        "✗ " <> _ = error -> styled(error, :red)
+        "esc cancels" = keys -> styled(keys, :dark_gray)
+        line -> styled(line)
+      end)
+
+    popup(" approval PIN ", lines, 0, area)
+  end
+
   ## Questions: one layout for every ask (docs/plan-panels.md)
   #
   # A banner saying how risky it is (green only reads, yellow changes

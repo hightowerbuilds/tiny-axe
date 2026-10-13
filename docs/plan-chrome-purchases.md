@@ -1,6 +1,6 @@
 # Plan: purchases through Claude in Chrome
 
-Status (2026-10-12): P0 done; P1 and P2 built and live-checked (below); P3 (approving on the Chat tab) next. Branch `chrome-purchases` (worktree `../tiny-axe-chrome`).
+Status (2026-10-12): P0 done; P1 and P2 built and live-checked, merged into main. P3 (approving on the Chat tab) designed below, building on branch `remote-approvals` (worktrees `../tiny-axe-approvals`, `../lobsterattack-approvals`).
 
 ## What the user asked for
 
@@ -171,6 +171,73 @@ Haiku told the user it hadn't ordered.
   read → popup ($16.00, Mastercard ending in 5555, every check passed) →
   confirm → read → one click → receipt `TA-1001`; journal `intent → summary
   → confirmed → clicking → clicked → receipt`.
+
+## P3: approving from the Chat tab (designed 2026-10-12)
+
+### The user's choices
+
+- **An approval PIN** proves it's the user, not just someone with the site
+  login: set at the machine (`/remote pin`, 6 to 64 characters), never
+  stored on the site. Three wrong tries switch remote approvals off until
+  they're switched on again at the machine.
+- **The same caps** as at the machine ($150 an order, $300 a day).
+- **What the phone can approve:** purchases, tool calls (acting off the
+  shop, MCP tools that send or change), sending a request to Claude, and
+  sandboxed commands. **Still refused from the site:** desktop and OS
+  changes (`os_run`, desktop plans), a card's PIN or CVC, file plans and
+  edits, and "your turn in the browser".
+
+### Who can do what (the threat)
+
+Someone with the site password can read the 🌐 chat, send messages, and
+see approval cards. Without the PIN they can't approve anything; at worst
+they deny, or burn the three tries (remote approvals go off: no money moves).
+
+- **The PIN never leaves the machine as itself.** tiny-axe keeps
+  `H = PBKDF2-SHA256(pin, salt, 600k)` in the keyring (`service tiny-axe key
+  remote-approval`). Each approval carries a fresh `nonce`; the page derives
+  `H` from the typed PIN (WebCrypto) and sends `HMAC-SHA256(H, "id|nonce|approve|total")`.
+  tiny-axe recomputes it and compares in constant time. A proof is good for
+  one approval, one decision and one total.
+- **Proofs only reach key holders.** The approval table is read and written
+  by tiny-axe with its **site key** (`ta-remote-approval`), not a session, so
+  the site login alone can't create approval cards or read answers back
+  (which would allow guessing the PIN offline). The page answers through
+  `ta-remote-approve` (owner session), which only writes; the broadcast and
+  the history leave the proof out.
+- **tiny-axe decides, in code.** The page's answer is a claim: tiny-axe acts
+  only on an approval it opened itself, still waiting, with a valid proof
+  and (for a purchase) the exact total it computed. Anything else is a no.
+  The gate then works as at the machine: read the page again, same shop,
+  total and card, one click.
+
+### How it flows
+
+1. An ask comes up in the 🌐 chat (purchase, tool, model, commands). If it's
+   one the phone may approve and approvals are ready (a PIN, switched on, not
+   locked), tiny-axe takes it out of the machine's popups and opens an
+   approval on the site (`ta-remote-approval open`: kind, what it is,
+   redacted; nonce, salt, iterations; expires in 9 minutes, inside the gate's
+   10). Otherwise it's refused as before, with why (no PIN yet: "set one with
+   /remote pin at the machine").
+2. The page shows a card: what it is, the checks, a PIN box (and the total to
+   type for a purchase), Approve and Deny.
+3. `ta-remote-approve` saves the answer once (only while waiting and not
+   expired); the table's trigger nudges tiny-axe on the channel. tiny-axe
+   also checks every 3 seconds while an approval waits (a missed broadcast
+   can't strand it), and reads the answer back with its key.
+4. tiny-axe verifies and answers the ask (yes once, or no), closes the
+   approval with its outcome (`approved`, `denied`, `wrong PIN`, `expired`,
+   `withdrawn`), and the reply says what happened.
+
+### Recovery
+
+- Every failure is a no: a lost connection, a missing or late answer, a
+  closed chat, a restarted tiny-axe (approvals live only in the running
+  TUI; the gate's own timeout denies too).
+- `/remote approvals off` stops it at once; `/remote off` stops everything.
+- The migration only adds a table, a trigger and two functions; undoing it
+  is dropping them. The page hides cards when there are none.
 
 ## Phases
 

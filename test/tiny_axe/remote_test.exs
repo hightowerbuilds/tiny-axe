@@ -346,4 +346,87 @@ defmodule TinyAxe.RemoteTest do
 
     assert Remote.realtime_url("http://127.0.0.1:4001", "pk") =~ "ws://127.0.0.1:4001/realtime"
   end
+
+  describe "approvals" do
+    @params %{
+      message_id: "m1",
+      kind: "tool",
+      body: %{title: "Use a tool"},
+      nonce: "nonce-1234567890abcdef",
+      salt: "salt-1234567890abcdef",
+      iterations: 600_000,
+      expires_in: 540
+    }
+
+    test "opened with the key (not the session); the answer comes back once, from polling",
+         %{fake: fake} do
+      pid = start(fake, approval_poll: 30)
+      online(pid)
+      Remote.subscribe(pid)
+      ref = make_ref()
+      Remote.open_approval(pid, ref, @params)
+
+      assert_receive {:realtime, :approval, %{"action" => "open", "kind" => "tool"}}, @wait
+      assert_receive {:remote, {:approval_opened, ^ref, %{"id" => "approval-1"}}}, @wait
+
+      # Still waiting: read back, nothing handed out yet.
+      assert_receive {:realtime, :approval, %{"action" => "get", "id" => "approval-1"}}, @wait
+      refute_received {:remote, {:approval_answer, _, _}}
+
+      FakeRealtime.answer_approval(fake, "approval-1", %{"decision" => "deny"})
+
+      assert_receive {:remote,
+                      {:approval_answer, "approval-1", %{"answer" => %{"decision" => "deny"}}}},
+                     @wait
+
+      # Handed out once; then no more reading.
+      flush_approvals()
+      Process.sleep(100)
+      refute_received {:realtime, :approval, %{"action" => "get"}}
+
+      Remote.close_approval(pid, "approval-1", "denied")
+      assert_receive {:realtime, :approval, %{"action" => "close", "outcome" => "denied"}}, @wait
+    end
+
+    test "a broadcast that it was answered reads it back at once", %{fake: fake} do
+      # Polling too slow to matter here.
+      pid = start(fake, approval_poll: 60_000)
+      socket = online(pid)
+      Remote.subscribe(pid)
+      ref = make_ref()
+      Remote.open_approval(pid, ref, @params)
+      assert_receive {:remote, {:approval_opened, ^ref, %{"id" => id}}}, @wait
+
+      FakeRealtime.answer_approval(fake, id, %{
+        "decision" => "approve",
+        "proof" => "p",
+        "total" => ""
+      })
+
+      FakeRealtime.approval(socket, %{"id" => id, "status" => "answered"})
+
+      assert_receive {:remote,
+                      {:approval_answer, ^id, %{"answer" => %{"decision" => "approve"}}}},
+                     @wait
+    end
+
+    test "the site refusing to open one says why", %{fake: fake} do
+      pid = start(fake, key: fn -> {:ok, "not-the-key"} end)
+      Remote.subscribe(pid)
+      ref = make_ref()
+      Remote.open_approval(pid, ref, @params)
+
+      assert_receive {:remote,
+                      {:approval_failed, ^ref, "ta-remote-approval: 401 Not a tiny-axe key."}},
+                     @wait
+    end
+  end
+
+  defp flush_approvals do
+    receive do
+      {:realtime, :approval, _} -> flush_approvals()
+    after
+      0 -> :ok
+    end
+  end
 end

@@ -57,3 +57,6 @@ config :tiny_axe, desktop_runner: TinyAxe.FakeDesktop
 config :tiny_axe, :desktop,
   ghostty_config: Path.join(System.tmp_dir!(), "tiny_axe_test_ghostty_#{System.pid()}"),
   hypr_look: Path.join(System.tmp_dir!(), "tiny_axe_test_looknfeel_#{System.pid()}.lua")
+
+# Remote approvals' PIN hash, cheap in tests (600k on the machine).
+config :tiny_axe, :remote_approvals, iterations: 1_000

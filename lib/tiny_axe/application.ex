@@ -35,6 +35,8 @@ defmodule TinyAxe.Application do
         TinyAxe.Usage,
         # The site account: its password, while it's being typed, lives only here.
         TinyAxe.Account,
+        # The approval PIN for the Chat tab (/remote pin): while it's typed, it lives only here.
+        TinyAxe.Remote.Approvals,
         # The user's MCP servers, one supervised connection each (TinyAxe.MCP).
         {Registry, keys: :unique, name: TinyAxe.MCP.Registry},
         {DynamicSupervisor, name: TinyAxe.MCP.Supervisor, strategy: :one_for_one},

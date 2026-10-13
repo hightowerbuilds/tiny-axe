@@ -167,6 +167,8 @@ defmodule TinyAxe.TUI do
        waiting: [],
        # /credit-card in progress (TinyAxe.TUI.CardFlow): nothing secret in it.
        card_flow: nil,
+       # /remote pin (TinyAxe.TUI.PinFlow): how many characters, never what they are.
+       pin_flow: nil,
        # Making or signing in to the account (TinyAxe.TUI.AccountFlow): on
        # screen from the start while one is required and there's none. Its
        # running job's ref, so a stale answer is dropped.
@@ -292,6 +294,7 @@ defmodule TinyAxe.TUI do
       [
         :account_flow,
         :card_flow,
+        :pin_flow,
         :recovery,
         :confirm_undo,
         :pending_commands,
@@ -360,6 +363,7 @@ defmodule TinyAxe.TUI do
   defp on_event(%Event.Key{code: "c", modifiers: ["ctrl"]}, state) do
     if state.card_flow, do: TinyAxe.Cards.discard_entry()
     if state.account_flow, do: TinyAxe.Account.discard_entry()
+    if state.pin_flow, do: TinyAxe.Remote.Approvals.discard_entry()
     {:stop, state |> Chats.cancel_all() |> Run.cancel()}
   end
 
@@ -383,6 +387,14 @@ defmodule TinyAxe.TUI do
         {:noreply, card_notice(%{state | card_flow: nil, status: "ready"}, message)}
     end
   end
+
+  # The approval PIN: every key goes to the flow (and the PIN to Approvals);
+  # a paste is ignored, so it's typed.
+  defp on_event(%Event.Key{code: code}, %{pin_flow: flow} = state) when flow != nil,
+    do: {:noreply, TinyAxe.TUI.PinFlow.key(state, code)}
+
+  defp on_event(%Event.Paste{}, %{pin_flow: flow} = state) when flow != nil,
+    do: {:noreply, state}
 
   defp on_event(%Event.Paste{content: content}, %{card_flow: flow} = state) when flow != nil,
     do: {:noreply, %{state | card_flow: TinyAxe.TUI.CardFlow.paste(flow, content)}}

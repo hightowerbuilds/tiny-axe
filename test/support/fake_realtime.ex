@@ -17,6 +17,11 @@ defmodule TinyAxe.FakeRealtime do
   `buster_ta_remote` row on the socket, as the table's trigger would;
   `close/1` closes the socket from the server's end.
 
+  Approvals (`ta-remote-approval`, with the key): kept here as the site
+  would; each call is sent as `{:realtime, :approval, body}`.
+  `answer_approval/3` answers one as the page would, and `approval/2` puts
+  an `approval` broadcast on the socket.
+
   `start/0` returns `%{url:, key:, control:, stop:}`.
   """
 
@@ -34,7 +39,8 @@ defmodule TinyAxe.FakeRealtime do
           refuse_join: false,
           silent_heartbeat: false,
           expires_in: 3600,
-          reply_status: 200
+          reply_status: 200,
+          approvals: %{}
         }
       end)
 
@@ -68,6 +74,28 @@ defmodule TinyAxe.FakeRealtime do
   end
 
   def close(socket), do: send(socket, :close)
+
+  def answer_approval(%{control: control}, id, answer) do
+    Agent.update(control, fn c ->
+      put_in(
+        c.approvals[id],
+        Map.merge(c.approvals[id], %{"status" => "answered", "answer" => answer})
+      )
+    end)
+  end
+
+  def approval(socket, row) do
+    send(
+      socket,
+      {:send,
+       %{
+         topic: topic(),
+         event: "broadcast",
+         payload: %{type: "broadcast", event: "approval", payload: row},
+         ref: nil
+       }}
+    )
+  end
 
   ## Plug
 
@@ -117,6 +145,41 @@ defmodule TinyAxe.FakeRealtime do
       apikey: "public-key"
     })
   end
+
+  defp function(conn, "ta-remote-approval", @key, body, %{test: test, control: control}) do
+    send(test, {:realtime, :approval, body})
+
+    case body["action"] do
+      "open" ->
+        approval =
+          Agent.get_and_update(control, fn c ->
+            id = "approval-#{map_size(c.approvals) + 1}"
+            row = Map.merge(Map.drop(body, ["action"]), %{"id" => id, "status" => "pending"})
+            {row, put_in(c.approvals[id], row)}
+          end)
+
+        reply(conn, 200, %{approval: approval})
+
+      "get" ->
+        case Agent.get(control, & &1.approvals[body["id"]]) do
+          nil -> reply(conn, 404, %{error: "No such approval."})
+          row -> reply(conn, 200, %{approval: row})
+        end
+
+      "close" ->
+        Agent.update(control, fn c ->
+          update_in(
+            c.approvals[body["id"]],
+            &Map.merge(&1, %{"status" => "closed", "outcome" => body["outcome"]})
+          )
+        end)
+
+        reply(conn, 200, %{approval: %{id: body["id"]}})
+    end
+  end
+
+  defp function(conn, "ta-remote-approval", _bearer, _body, _opts),
+    do: reply(conn, 401, %{error: "Not a tiny-axe key."})
 
   defp function(conn, "ta-remote-token", _bearer, _body, _opts),
     do: reply(conn, 401, %{error: "A valid tiny-axe key is needed"})

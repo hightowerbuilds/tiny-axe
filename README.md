@@ -103,6 +103,15 @@ Background review reads bounded passages throughout each entry, including long m
 
 Run the repeatable synthetic GPU check with `mix run --no-start scripts/memory-review-eval.exs`. It uses only local Gemma and temporary fixture chats, leaving your archive untouched.
 
+Approving from your phone: in the 🌐 remote chat, what needs a yes shows up as a card on the site's Chat tab. Set an approval PIN at the machine first with `/remote pin`.
+- **What the phone can approve:** purchases (you also type the exact total), tool calls, sending a request to Claude, and sandboxed commands.
+- **What it can't:** desktop and OS changes, a card's PIN or CVC, file plans and edits.
+- **How the PIN is checked:** the page sends only a one-time proof made from the PIN, and tiny-axe checks it on this machine. The site never stores the PIN.
+- **Wrong PINs:** three wrong tries switch approvals off. `/remote approvals on|off` switches them back on or off.
+- **No answer:** a card nobody answers within 9 minutes counts as a no.
+
+See [docs/plan-chrome-purchases.md](docs/plan-chrome-purchases.md) (P3).
+
 `/leash on` gives the browser agent a longer leash for the session. Browser actions run without asking, on any site and in your own Chrome too. An order whose checks all pass (what you asked for, the per-order and daily limits, the shop, the card's rules) is placed without asking, with a receipt line afterwards. Commands, a card's PIN and the 🌐 remote chat still ask, and `/leash off` puts the questions back. A purchase request that doesn't name a maximum price uses the per-order limit as its maximum. After an agent's turn, a reply that carries its task on (an address it asked for, "yes", "go on") goes back to the agent, not to a plain answer. See [docs/plan-leash.md](docs/plan-leash.md).
 
 tiny-axe remembers browser paths that didn't work, per site (dead ends). Each failed or unconfirmed action is kept by site, page, action and label for 30 days. Jev judges whether it's a real dead end or a one-off, and two failures make it a dead end. When the agent reaches a site, it's told that site's dead ends, and it can't repeat one that fails again in the same task. `mix tiny_axe.dead_ends` lists them and `mix tiny_axe.dead_ends forget HOST` (or `--all`) forgets them.

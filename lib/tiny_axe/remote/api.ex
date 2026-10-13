@@ -22,6 +22,13 @@ defmodule TinyAxe.Remote.Api do
   def reply(base, session, id, status, body \\ nil),
     do: post(base, "ta-remote-reply", session, %{id: id, status: status, body: body})
 
+  @doc """
+  Approvals on the Chat tab (`ta-remote-approval`), with tiny-axe's site
+  key: `%{action: "open" | "get" | "close", …}` → `{:ok, %{"approval" => …}}`.
+  """
+  @spec approval(String.t(), String.t(), map()) :: result()
+  def approval(base, key, params), do: post(base, "ta-remote-approval", key, params)
+
   defp post(base, function, bearer, body) do
     case Req.post("#{base}/functions/v1/#{function}",
            json: body,

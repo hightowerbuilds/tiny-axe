@@ -33,6 +33,15 @@ defmodule TinyAxe.Remote do
     it, so a reply written while offline goes once tiny-axe is back. Everything is
     redacted (`Tools.Redact.secrets/1`) before it leaves.
 
+  - **Approvals** (`docs/plan-chrome-purchases.md`, P3): `open_approval/3`
+    puts a card on the Chat tab (`ta-remote-approval`, with the site key, not
+    the session), and the caller gets `{:remote, {:approval_opened, ref,
+    approval}}` or `{:approval_failed, ref, why}`. While one waits, it's read
+    back when the channel says it changed and every 3 s anyway; once it's
+    answered the caller gets `{:remote, {:approval_answer, id, approval}}`
+    (with the answer, whose proof only the key can read). `close_approval/3`
+    records tiny-axe's word on it.
+
   `{:remote, {:status, phase}}` goes to subscribers whenever the phase
   changes: `:off`, `:connecting`, `:joining`, `:online` or `:waiting` (with
   `status/1`'s `error` saying why).
@@ -57,6 +66,7 @@ defmodule TinyAxe.Remote do
   # Renew a session this many seconds before it runs out.
   @renew_before 300
   @presence_key "tiny-axe"
+  @approval_poll 3_000
 
   @type phase :: :off | :connecting | :joining | :online | :waiting
 
@@ -143,6 +153,18 @@ defmodule TinyAxe.Remote do
       )
 
   @doc """
+  Opens an approval on the Chat tab (`params`: `message_id`, `kind`, `body`,
+  `nonce`, `salt`, `iterations`, `expires_in`). The answer comes as messages
+  to the caller (see the moduledoc), tagged with `ref`.
+  """
+  def open_approval(server \\ __MODULE__, ref, params),
+    do: GenServer.cast(server, {:open_approval, self(), ref, params})
+
+  @doc "tiny-axe's word on an approval (`approved`, `denied`, `wrong_pin`, `expired`, `withdrawn`, `refused`)."
+  def close_approval(server \\ __MODULE__, id, outcome),
+    do: GenServer.cast(server, {:close_approval, id, outcome})
+
+  @doc """
   Saves where message `id` stands and its reply now, and says how it went.
   Runs in the caller, so a slow site never holds up this process.
   """
@@ -184,7 +206,11 @@ defmodule TinyAxe.Remote do
       sending: nil,
       # Messages this tiny-axe has taken up or replied to: never handed out
       # again.
-      claimed: MapSet.new()
+      claimed: MapSet.new(),
+      # Approvals waiting for an answer: id => the pid that opened it.
+      approvals: %{},
+      approval_poll: opts[:approval_poll] || @approval_poll,
+      polling: false
     }
 
     if Keyword.get(opts, :enabled, enabled?()),
@@ -238,6 +264,30 @@ defmodule TinyAxe.Remote do
        push(s, s.session.topic, "broadcast", %{type: "broadcast", event: event, payload: payload})}
 
   def handle_cast({:broadcast, _event, _payload}, s), do: {:noreply, s}
+
+  def handle_cast({:open_approval, pid, ref, params}, s) do
+    me = self()
+
+    approval_task(s, fn base, key ->
+      send(
+        me,
+        {:approval_opened, pid, ref, Api.approval(base, key, Map.put(params, :action, "open"))}
+      )
+    end)
+
+    {:noreply, s}
+  end
+
+  def handle_cast({:close_approval, id, outcome}, s) do
+    approval_task(s, fn base, key ->
+      case Api.approval(base, key, %{action: "close", id: id, outcome: outcome}) do
+        {:ok, _} -> :ok
+        {:error, reason} -> Logger.info("remote approvals: couldn't close #{id}: #{reason}")
+      end
+    end)
+
+    {:noreply, %{s | approvals: Map.delete(s.approvals, id)}}
+  end
 
   def handle_cast({:outbox, item}, s),
     do:
@@ -297,6 +347,45 @@ defmodule TinyAxe.Remote do
   end
 
   def handle_info(:flush, s), do: {:noreply, flush(s)}
+
+  def handle_info({:approval_opened, pid, ref, result}, s) do
+    case result do
+      {:ok, %{"approval" => %{"id" => id} = approval}} ->
+        send(pid, {:remote, {:approval_opened, ref, approval}})
+        {:noreply, poll_soon(%{s | approvals: Map.put(s.approvals, id, pid)})}
+
+      {:ok, _} ->
+        send(pid, {:remote, {:approval_failed, ref, "the site's answer had no approval"}})
+        {:noreply, s}
+
+      {:error, reason} ->
+        send(pid, {:remote, {:approval_failed, ref, reason}})
+        {:noreply, s}
+    end
+  end
+
+  def handle_info(:poll_approvals, s) do
+    s = %{s | polling: false}
+    Enum.each(Map.keys(s.approvals), &read_approval(s, &1))
+    {:noreply, poll_soon(s)}
+  end
+
+  def handle_info({:approval_read, id, result}, s) do
+    case {Map.fetch(s.approvals, id), result} do
+      {{:ok, pid}, {:ok, %{"approval" => %{"status" => status} = approval}}}
+      when status in ["answered", "closed"] ->
+        send(pid, {:remote, {:approval_answer, id, approval}})
+        {:noreply, %{s | approvals: Map.delete(s.approvals, id)}}
+
+      # Gone from the site: nobody can answer it now.
+      {{:ok, pid}, {:error, "ta-remote-approval: 404" <> _}} ->
+        send(pid, {:remote, {:approval_answer, id, %{"id" => id, "status" => "closed"}}})
+        {:noreply, %{s | approvals: Map.delete(s.approvals, id)}}
+
+      _ ->
+        {:noreply, s}
+    end
+  end
 
   def handle_info({:beat, gen}, %{gen: gen, beat: nil} = s) do
     {ref, s} = next_ref(s)
@@ -488,6 +577,15 @@ defmodule TinyAxe.Remote do
        }),
        do: deliver(s, message)
 
+  # The page answered an approval: read it back now, with the key.
+  defp frame(s, %{
+         "event" => "broadcast",
+         "payload" => %{"event" => "approval", "payload" => %{"id" => id, "status" => "answered"}}
+       }) do
+    if Map.has_key?(s.approvals, id), do: read_approval(s, id)
+    s
+  end
+
   defp frame(s, %{"event" => event}) when event in ["phx_error", "phx_close"],
     do: retry(s, "the channel closed (#{event})")
 
@@ -553,6 +651,35 @@ defmodule TinyAxe.Remote do
   end
 
   defp flush(s), do: s
+
+  ## Approvals
+
+  defp approval_task(s, fun) do
+    base = s.url
+    key = s.key
+
+    Task.Supervisor.start_child(TinyAxe.TaskSupervisor, fn ->
+      case key.() do
+        {:ok, k} -> fun.(base, k)
+        _ -> fun.(base, "")
+      end
+    end)
+  end
+
+  defp read_approval(s, id) do
+    me = self()
+
+    approval_task(s, fn base, key ->
+      send(me, {:approval_read, id, Api.approval(base, key, %{action: "get", id: id})})
+    end)
+  end
+
+  defp poll_soon(%{polling: false, approvals: approvals} = s) when map_size(approvals) > 0 do
+    Process.send_after(self(), :poll_approvals, s.approval_poll)
+    %{s | polling: true}
+  end
+
+  defp poll_soon(s), do: s
 
   ## Plumbing
 

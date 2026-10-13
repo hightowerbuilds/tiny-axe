@@ -120,7 +120,7 @@ defmodule TinyAxe.TUIRemoteTest do
     take_run(state)
   end
 
-  test "nobody at the machine: a tool call, a purchase and Claude are refused, and the reply says so" do
+  test "no approval PIN: a tool call, a purchase and Claude are refused, and the reply says so" do
     state = info(mount(), {:remote, {:message, message("m1")}})
     id = take_run(state)
 
@@ -145,12 +145,15 @@ defmodule TinyAxe.TUIRemoteTest do
     # Claude stays undecided for the chats at the machine.
     assert state.remote == nil
 
-    state = events(state, id, [{:done, "Couldn't do it."}])
+    _state = events(state, id, [{:done, "Couldn't do it."}])
     assert_received {:remote_out, {:reply, "m1", "answered", body}}
     assert body =~ "Couldn't do it."
-    assert body =~ "didn't use github__create_issue: it needs a yes at the machine"
+
+    assert body =~
+             "didn't use github__create_issue: approvals from the site are off: no approval PIN yet"
+
     assert body =~ "didn't buy at shop.example"
-    assert body =~ "sending it to Claude Haiku needs a yes at the machine"
+    assert body =~ "kept it on this machine instead of sending it to Claude Haiku"
   end
 
   test "a question from a chat at the machine is left for you" do
@@ -197,7 +200,10 @@ defmodule TinyAxe.TUIRemoteTest do
 
   test "/remote on, off, and how it stands; the status bar shows 🌐" do
     state = type(mount(), "/remote")
-    assert List.last(state.transcript) == {:meta, "🌐 remote chat: off (/remote on)"}
+
+    assert {:meta, "🌐 remote chat: off (/remote on) · approvals: off: no approval PIN yet" <> _} =
+             List.last(state.transcript)
+
     refute status_bar(state) =~ "🌐"
 
     state = type(state, "/remote on")
@@ -208,7 +214,7 @@ defmodule TinyAxe.TUIRemoteTest do
     assert state.status == "🌐 the site can reach this tiny-axe"
     assert status_bar(state) =~ "🌐"
     state = type(state, "/remote")
-    assert List.last(state.transcript) == {:meta, "🌐 remote chat: on, online"}
+    assert {:meta, "🌐 remote chat: on, online · approvals: " <> _} = List.last(state.transcript)
 
     state = type(state, "/remote off")
     assert_received {:remote_out, {:switch, false}}

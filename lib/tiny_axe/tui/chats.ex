@@ -135,7 +135,7 @@ defmodule TinyAxe.TUI.Chats do
   defp owns?(_chat, _msg), do: false
 
   @doc "The chat whose question a key answers, when it's on screen and asked by another chat."
-  def asker(%{card_flow: nil, account_flow: nil} = state, %Event.Key{
+  def asker(%{card_flow: nil, account_flow: nil, pin_flow: nil} = state, %Event.Key{
         kind: kind,
         code: code,
         modifiers: mods
