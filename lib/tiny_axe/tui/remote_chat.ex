@@ -355,27 +355,48 @@ defmodule TinyAxe.TUI.RemoteChat do
         add_meta(state, "🌐 remote chat off: the site can't reach this tiny-axe")
 
       "" ->
-        TinyAxe.TUI.Panel.open(state, :remote)
+        add_meta(state, "🌐 remote chat: " <> describe(link))
 
       _ ->
         add_meta(state, "/remote · /remote on · /remote off")
     end
   end
 
-  defp switch(pid, on) when is_pid(pid), do: send(pid, {:remote_out, {:switch, on}})
+  @doc "Changes remote connectivity explicitly, without adding anything to a chat transcript."
+  def set_enabled(state, on) when is_boolean(on) do
+    case switch(state.remote_link.to, on) do
+      :ok ->
+        phase =
+          cond do
+            not on -> :off
+            state.remote_link.phase == :online -> :online
+            true -> :connecting
+          end
 
-  defp switch(server, on) do
-    TinyAxe.Remote.set_on(on)
-    if on, do: TinyAxe.Remote.connect(server), else: TinyAxe.Remote.disconnect(server)
-  catch
-    :exit, _ -> :ok
+        {:ok, put_link(state, phase: phase, error: nil)}
+
+      {:error, _} ->
+        {:error, "Remote connectivity could not be changed. Refresh to check its status.", state}
+    end
   end
 
-  @doc "How the link stands, in a few words."
-  def describe(%{phase: :off}), do: "off"
-  def describe(%{phase: :online} = link), do: "on, online#{busy(link)}"
-  def describe(%{phase: :waiting, error: error}), do: "on, not connected: #{error}"
-  def describe(%{phase: _connecting}), do: "on, connecting…"
+  defp switch(pid, on) when is_pid(pid) do
+    send(pid, {:remote_out, {:switch, on}})
+    :ok
+  end
+
+  defp switch(server, on) do
+    with :ok <- TinyAxe.Remote.set_on(on) do
+      if on, do: TinyAxe.Remote.connect(server), else: TinyAxe.Remote.disconnect(server)
+    end
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp describe(%{phase: :off}), do: "off (/remote on)"
+  defp describe(%{phase: :online} = link), do: "on, online#{busy(link)}"
+  defp describe(%{phase: :waiting, error: error}), do: "on, not connected: #{error}"
+  defp describe(%{phase: _connecting}), do: "on, connecting…"
 
   defp busy(%{current: nil}), do: ""
 

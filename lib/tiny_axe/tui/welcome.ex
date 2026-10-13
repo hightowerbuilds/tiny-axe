@@ -35,18 +35,20 @@ defmodule TinyAxe.TUI.Welcome do
 
   def new(opts), do: %{frame: 0, timer: nil, animate?: opts[:test_mode] == nil}
 
+  def account?(%{section: section}) when section != :chat, do: false
   def account?(%{account_flow: %{step: :welcome}, size: {w, h}}), do: w >= 100 and h >= 26
   def account?(_state), do: false
 
   # Keep startup notices above the welcome, and give the conversation all
   # the space as soon as there is a real turn or a running request.
   def visible?(state) do
-    state.history == [] and state.run == nil and state.streaming == nil and
+    Map.get(state, :section, :chat) == :chat and
+      state.history == [] and state.run == nil and state.streaming == nil and
       state.running_cmd == nil and state.account_flow == nil and state.card_flow == nil and
       state.recovery == nil and state.pending_plan == nil and state.pending_commands == nil and
       state.pending_edits == [] and state.confirm_undo == nil and state.asking == nil and
       state.tool_ask == nil and state.purchase_ask == nil and
-      Map.get(state, :panel) == nil and
+      Map.get(state, :token_dash) == nil and
       Enum.all?(state.transcript, &match?({:meta, _}, &1))
   end
 

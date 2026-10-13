@@ -201,12 +201,6 @@ defmodule TinyAxe.CardsTest do
       {:noreply, state} =
         TUI.handle_event(%ExRatatui.Event.Key{code: "enter", kind: "press", modifiers: []}, state)
 
-      # It opens the wallet; a adds a card.
-      assert state.panel.tab == :wallet
-
-      {:noreply, state} =
-        TUI.handle_event(%ExRatatui.Event.Key{code: "a", kind: "press", modifiers: []}, state)
-
       assert state.card_flow != nil
 
       flow =

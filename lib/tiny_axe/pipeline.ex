@@ -105,17 +105,32 @@ defmodule TinyAxe.Pipeline do
           "(e.g. \"in my tiny-app repo\", \"go to Downloads\", \"the web folder\")?"
     },
     # The command question comes from TinyAxe.Capabilities (route_questions/0).
-    command: %{type: :noul, instructions: ""}
+    command: %{type: :noul, instructions: ""},
+    desktop: %{
+      type: :noul,
+      instructions:
+        "Does the user want something about their desktop changed or done, or ask how " <>
+          "it's set: how it or the terminal looks (theme, background, fonts, text size, " <>
+          "terminal font size, padding, opacity, cursor or tabs, display scaling, " <>
+          "brightness, night light, window gaps, borders, corners, blur, animations, " <>
+          "layout, the bar); sound (volume, mute, microphone, which speakers); bluetooth; " <>
+          "power profile; default browser, editor or terminal; or an action: a screenshot, " <>
+          "screen recording, opening an app or a web page, a reminder, restarting audio or " <>
+          "the shell, or locking, logging out, rebooting or shutting down? No if they're " <>
+          "asking how to do it themselves, or about code or files."
+    }
   }
 
   @doc """
   Handles one request. `opts`: `:remote` (`:ask`, `:allowed` or `:denied`,
   the default), whether a request that falls short may go to a model off this
-  machine (see `TinyAxe.Escalation`).
+  machine (see `TinyAxe.Escalation`); `:origin`, `:site` for a request from
+  the site's Chat tab (it can't change the desktop).
   """
   @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
   def run(history, prompt, notify, opts \\ []) do
     remote = Keyword.get(opts, :remote, :denied)
+    origin = Keyword.get(opts, :origin)
 
     # The router sees the conversation and where tiny-axe is, so "now run it"
     # or "put those there" can be understood, and a request that means
@@ -137,6 +152,9 @@ defmodule TinyAxe.Pipeline do
       case task do
         :command ->
           TinyAxe.Commander.run(history, prompt, notify, remote: remote)
+
+        :desktop ->
+          TinyAxe.Desktop.run(history, prompt, notify, remote: remote, origin: origin)
 
         :organize ->
           TinyAxe.Organizer.run(history, prompt, web_context, notify, remote: remote)
@@ -216,8 +234,9 @@ defmodule TinyAxe.Pipeline do
   defp describe_server(name), do: name
 
   # Commands go to the Commander, file tasks (moving, organising, writing
-  # documents) to the Organizer, and requests that need connected services to
-  # the agent; when several look likely, the likeliest wins.
+  # documents) to the Organizer, requests that need connected services to
+  # the agent, and desktop changes and actions to TinyAxe.Desktop;
+  # when several look likely, the likeliest wins.
   # Carrying on an agent's task goes back to the agent, before anything else.
   defp task(route, true) do
     if TinyAxe.Agent.available?() and
@@ -230,8 +249,9 @@ defmodule TinyAxe.Pipeline do
     command = if config(:commands, true), do: Decider.p(route, :command) || 0, else: 0
     organize = if config(:file_ops, true), do: Decider.p(route, :organize) || 0, else: 0
     agent = if TinyAxe.Agent.available?(), do: Decider.p(route, :tools) || 0, else: 0
+    desktop = if config(:desktop, true), do: Decider.p(route, :desktop) || 0, else: 0
 
-    [command: command, organize: organize, agent: agent]
+    [command: command, organize: organize, agent: agent, desktop: desktop]
     |> Enum.filter(fn {_task, p} -> p >= config(:route_threshold, 0.5) end)
     |> Enum.max_by(&elem(&1, 1), fn -> {:answer, 0} end)
     |> elem(0)

@@ -61,7 +61,7 @@ defmodule TinyAxe.Application do
         }
       ] ++
         if Application.get_env(:tiny_axe, :start_tui, false),
-          do: [{TinyAxe.TUI, halt_on_exit: true}],
+          do: [{TinyAxe.TUI, halt_on_exit: true, mouse_capture: true}],
           else: []
 
     result = Supervisor.start_link(children, strategy: :one_for_one, name: TinyAxe.Supervisor)

@@ -39,7 +39,15 @@ tiny-axe needs Ollama. If it isn't running when tiny-axe starts, tiny-axe starts
 
 This builds a release (it carries its own Erlang runtime, so it doesn't need the repo or `mix`) into `~/.local/share/tiny-axe/release`, and a launcher into `~/.local/bin/tiny-axe`. Settings, such as `TYPESAFE_API_KEY=…`, live in `~/.config/tiny-axe/env`; the first install copies this repo's `.env` there. Logs and plan journals go to `~/.local/state/tiny-axe/`. Run the install again after pulling changes. In development, `mix tiny_axe` (which starts in your home folder) or `bin/tiny-axe-dev` (which starts where you run it) run straight from the repo.
 
-Keys: `enter` send · `alt+enter` newline · `esc` cancel · `pgup`/`pgdn` scroll (with an empty prompt also `↑`/`↓`, the mouse wheel, `home`/`end`) · `ctrl+y` copy the newest code block (again for older ones) · `ctrl+z` undo the last file plan · `ctrl+k` compact · `ctrl+t` sidebar · `ctrl+o` next chat · `ctrl+l` clear this chat · `ctrl+c` quit. Proposed file edits appear as a diff: `y` accept · `n` skip · `esc` skip the rest · `↑`/`↓` scroll. Accepted edits are saved together as one plan, so `ctrl+z` undoes them.
+The top row contains **Chat**, **Wallet**, **Gemma Search**, **Tokens**, and **Remote**. Click a main tab or press `F1`–`F5`. Each opens its own workspace; the conversation tabs appear underneath only in Chat. Moving between workspaces preserves your selected conversation, unsent drafts, and background work.
+
+- **Chat:** conversations, code, tools, and approvals, with a second row of conversation tabs.
+- **Wallet:** masked saved cards, purchase limits and allowed shops, secure Add Card, and Refresh. Opening Wallet does not enable purchases.
+- **Gemma Search:** words/phrases (`F6`), literal text (`F7`), or questions answered by local Gemma (`F8`). Type a query and press Enter. The toolbar also offers archive Status (`F9`), background Review on (`F10`), Pause (`F11`), and Next results (`F12`). Search has its own local conversation and draft; no query is sent to a hosted model.
+- **Tokens:** the token dashboard as a full page, updated as calls finish. `r` refreshes; arrows and page keys scroll, and left/right pan wide rows.
+- **Remote:** connection status, configured account, message queue, Enable, Disable, and Open chat. Enable and Disable change the remembered connection setting; selecting the tab only reads status.
+
+Chat keys: `enter` send · `alt+enter` newline · `esc` cancel · `pgup`/`pgdn` or the mouse wheel scroll (with an empty prompt also `↑`/`↓`, `home`/`end`) · `ctrl+y` copy the newest code block (again for older ones) · `ctrl+z` undo the last file plan · `ctrl+k` compact · `ctrl+t` sidebar · `ctrl+o` next chat · `alt+←`/`alt+→` previous/next chat · `alt+1`…`alt+9` select a conversation tab · `ctrl+l` clear this chat · `ctrl+c` quit. Proposed file edits appear as a diff: `y` accept · `n` skip · `esc` skip the rest · `↑`/`↓` scroll. Accepted edits are saved together as one plan, so `ctrl+z` undoes them.
 
 New chats open with a double-bit axe turning in 3D, drawn in ASCII: it's ray-cast at compile time, so the handle is round, the bits are ground thin, and the near side is lit (orange handle, steel head, green edges). You can type right away; the axe gives way to the conversation when you send a message. It also appears beside the initial account setup choices and hides when the terminal is too small to fit it.
 
@@ -58,16 +66,23 @@ tiny-axe keeps track of where it is, like a shell: the title shows 📍 and the 
 
 The website account and chat archive are optional. `/account` sets up or shows your account, and `/site` opens its chat archive. Automatic website sync is off by default (`config :tiny_axe, :sync, enabled: true` enables it for ordinary chats). Local memory conversations are always excluded from sync. The site's search tools are remote; use `/memory` for on-machine search. See [docs/plan-lobsterattack.md](docs/plan-lobsterattack.md).
 
-The panel is one popup with a tab each for **Remote**, **Token**, **Wallet** and **Search**. Each command opens it on its own tab: `/remote`, `/token`, `/wallet` (or `/credit-card`) and `/search words`. `tab` and the arrow keys switch tabs, and `esc` closes it. Questions still come up on top of it. See [docs/plan-panels.md](docs/plan-panels.md).
-
-- **Remote** shows whether the site can reach this tiny-axe, and `enter` turns it on or off.
-- **Token** shows how many tokens Claude Haiku, Jev and the local model (Gemma) have used this session, today and in the last 7 days, with Claude's 5-hour and 7-day usage windows and today's use by hour. The counts are kept in `usage.jsonl` in tiny-axe's state folder (no prompts or answers, no prices; 90 days). See [docs/plan-token-dashboard.md](docs/plan-token-dashboard.md).
-- **Wallet** lists your cards (masked). `a` adds one, and `f` forgets the one chosen.
-- **Search** finds kept chats that have all your words; `enter` opens the chosen one.
-
 Every question uses the same layout: a coloured banner for how risky it is (green only reads, yellow changes something or leaves the machine, red spends money or can't be taken back), who's asking, what it is, the keys, and the questions waiting behind it. `d` shows everything a tool call would send. The decider's route line above each answer is hidden unless you turn it on with `/route on`.
 
-Type `/new` to start another chat; the one you leave keeps working in the background, and its questions still pop up wherever you are ("asked by chat 1"). `/chats` lists them (what each is about, and whether it's working, waiting for you or idle), `/chat N` or `ctrl+o` switches, and `/chat close` closes the one on screen once it's idle. The status bar shows which chat you're in and what the others are doing; `esc` cancels only the chat on screen, `ctrl+c` quits them all.
+Ask it to change the desktop and it does it, with the local model taking a fixed path and code checking every step:
+
+- **How it looks:** "make the terminal font bigger", "switch to Tokyo Night", "no gaps between windows and square corners", "put the terminal tabs at the bottom". This covers Omarchy's theme, background, font, text size, display scaling, brightness, night light and the bar; Ghostty's font size, padding, opacity, cursor and tabs; and Hyprland's gaps, borders, rounding, layout, dimming, blur and animations.
+- **Sound and devices:** "volume to 30", "mute my mic", "play through my headset", "turn bluetooth off", "power saver profile", "make firefox my default browser".
+- **Actions:** "take a screenshot of a region", "open obsidian", "go to github.com", "remind me in 20 minutes to call mum", "restart audio", "lock the screen", "reboot".
+- **Packages and services** go through a root helper you install once (`mix tiny_axe.os_setup` prints the two `sudo` commands): "install ripgrep and htop", "uninstall vlc", "update the system", "restart the bluetooth service". It covers the official repos only and takes a snapper snapshot before any package change.
+- **Anything else** goes to the agent (Claude Haiku 5.5) with `os_run`, for things like keybindings, window rules, user services and config files. Each command runs outside the sandbox after you approve it. `~/.config` is snapshotted around it, and a Hyprland change that leaves errors is put back.
+
+Gemma never writes a command. It picks items from a typed list and gives values. Code checks each value against the computer's own lists and ranges. Jev reviews any change the request doesn't name outright, and when Gemma falls short, Haiku fills in the same list. Low-risk changes run at once. Bluetooth, wifi, default apps, screen recording, power actions, root actions and anything Jev doubts wait for your y/n. `/look` lists the settings, and `/look undo` puts the last change back, even after a restart or a crash (actions can't be undone). Requests from the site's Chat tab can't change anything. `mix tiny_axe.desktop_eval` scores the route on fixed tasks. See [docs/plan-os-control.md](docs/plan-os-control.md).
+
+Inside Chat, the second row shows conversations, with the active chat highlighted. Click a conversation tab to switch or the `+` button to start an ordinary chat; `/new` also starts one. Each chat keeps its own unsent draft and cursor while you switch, and any work continues in the background. Drafts are held only for this running session, not saved to the archive. Tabs that don't fit stay reachable through the bar's arrow controls or the Chat keyboard shortcuts; the active tab stays visible.
+
+Conversation markers show `●` working, `?` waiting for you, and `!` an error. `🔒` marks a local memory conversation and `🌐` a website remote chat. Search and Remote conversations remain browseable under Chat. The new-chat button opens an ordinary chat even when you are viewing local memory; `/memory` opens the Gemma Search workspace. Returning to Chat restores its previously selected conversation.
+
+Background chats' questions still pop up wherever you are ("asked by chat 1"). Switching tabs does not answer or transfer those questions. Account/card entry and chat-specific confirmation screens hold navigation until you finish or dismiss them. `/chats` lists the chats, `/chat N` switches, and `/chat close` closes the one on screen once it's idle. `esc` cancels only the chat on screen and `ctrl+c` quits them all. The context sidebar remains available with `ctrl+t`.
 
 Every chat is kept on disk in `~/.local/state/tiny-axe/history/`, including command output going forward. Saved text is redacted for card numbers and token-like strings. `/history` lists recent chats and `/history N` reopens one. [History format](docs/plan-history.md).
 

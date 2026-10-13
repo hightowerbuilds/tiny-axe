@@ -50,3 +50,10 @@ config :tiny_axe, :site, opener: false
 # One state folder for the whole suite: a failure in one test mustn't become
 # a dead end in the next (TinyAxe.Browser.DeadEnds); their own tests switch it on.
 config :tiny_axe, :dead_ends, enabled: false
+
+# Appearance changes never reach the real desktop in tests (test/support/fake_desktop.ex).
+config :tiny_axe, desktop_runner: TinyAxe.FakeDesktop
+
+config :tiny_axe, :desktop,
+  ghostty_config: Path.join(System.tmp_dir!(), "tiny_axe_test_ghostty_#{System.pid()}"),
+  hypr_look: Path.join(System.tmp_dir!(), "tiny_axe_test_looknfeel_#{System.pid()}.lua")

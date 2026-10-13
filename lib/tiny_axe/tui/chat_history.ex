@@ -81,44 +81,31 @@ defmodule TinyAxe.TUI.ChatHistory do
         id -> " ◂ open as chat #{Chats.position(state, id)}"
       end
 
-    "#{n} · #{describe(chat)}#{open}"
-  end
-
-  @doc "A kept chat in one line: when, its title, how long, where."
-  def describe(chat) do
     where = if chat.folder, do: " · #{chat.folder}", else: ""
 
-    "#{when_(chat.updated)} · #{chat.title} · #{chat.messages} message#{if chat.messages == 1, do: "", else: "s"}#{where}"
+    "#{n} · #{when_(chat.updated)} · #{chat.title} · #{chat.messages} message#{if chat.messages == 1, do: "", else: "s"}#{where}#{open}"
   end
 
   defp reopen(state, n) do
-    case n >= 1 && Enum.at(state.history_shown, n - 1) do
-      id when is_binary(id) -> open(state, id)
-      _ -> add_meta(state, "no chat #{n} in the last list: /history lists them")
-    end
-  end
+    with id when is_binary(id) <- n >= 1 && Enum.at(state.history_shown, n - 1),
+         nil <- Chats.kept_as(state, id) do
+      case History.load(id) do
+        {:ok, kept} ->
+          state
+          |> Chats.reopen(kept)
+          |> add_meta(
+            "reopened “#{kept.title}” from #{when_(kept.started)}; it goes on in the same history"
+          )
 
-  @doc """
-  Reopens a kept chat by its id (as `/history N` does), or shows it if it's
-  open already.
-  """
-  def open(state, id) do
-    case Chats.kept_as(state, id) do
-      nil ->
-        case History.load(id) do
-          {:ok, kept} ->
-            state
-            |> Chats.reopen(kept)
-            |> add_meta(
-              "reopened “#{kept.title}” from #{when_(kept.started)}; it goes on in the same history"
-            )
-
-          {:error, _reason} ->
-            add_meta(state, "couldn't read that chat from the history")
-        end
-
-      open ->
+        {:error, _reason} ->
+          add_meta(state, "couldn't read chat #{n} from the history")
+      end
+    else
+      open when is_integer(open) ->
         Chats.switch(state, open)
+
+      _ ->
+        add_meta(state, "no chat #{n} in the last list: /history lists them")
     end
   end
 

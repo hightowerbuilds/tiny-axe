@@ -1,10 +1,11 @@
 defmodule TinyAxe.TUI.TokenDash do
   @moduledoc """
-  The panel's Token tab (`/token`, `TinyAxe.TUI.Panel`): token use by Claude
-  Haiku, Jev and the local model (`TinyAxe.Usage`), for this session, today
-  and the last 7 days; Claude's usage windows; and today's tokens by hour. It
-  refreshes every second while the panel is open, so a request finishing
-  shows up. Nothing in it goes to a model.
+  `/token`: a popup of token use by Claude Haiku, Jev and the local model
+  (`TinyAxe.Usage`), for this session, today and the last 7 days; Claude's
+  usage windows; and today's tokens by hour. It refreshes every second while
+  open, so a request finishing shows up; `esc` (or `q`) closes it. Questions
+  (a tool call, a purchase) still come first, on top of it. Nothing in it
+  goes to a model.
   """
 
   alias ExRatatui.Style
@@ -36,18 +37,28 @@ defmodule TinyAxe.TUI.TokenDash do
     :exit, _ -> nil
   end
 
+  @doc "How wide its widest line is."
+  def width, do: 66
+
+  @doc "Whether a key closes it; every other key is ignored while it's open."
+  def close?(code), do: code in ["esc", "q", "enter"]
+
   ## What it shows
 
-  def lines(%{summary: nil}) do
+  def lines(dash, opts \\ [])
+
+  def lines(%{summary: nil}, opts) do
     [
       styled(
         "tiny-axe isn't counting tokens right now (its usage record didn't answer).",
         :yellow
-      )
+      ),
+      styled(""),
+      styled(if(opts[:page], do: "r refresh", else: "esc close"), :dark_gray)
     ]
   end
 
-  def lines(%{summary: s}) do
+  def lines(%{summary: s}, opts) do
     body =
       if Enum.all?([:claude, :jev, :ollama], &(s.week[&1].calls == 0)) do
         [
@@ -59,7 +70,12 @@ defmodule TinyAxe.TUI.TokenDash do
         claude(s) ++ [styled("")] ++ jev(s) ++ [styled("")] ++ gemma(s) ++ hours(s.hours)
       end
 
-    body
+    hint =
+      if opts[:page],
+        do: "updates as calls finish · r refresh",
+        else: "updates as calls finish · esc close"
+
+    body ++ [styled(""), styled(hint, :dark_gray)]
   end
 
   defp claude(s) do

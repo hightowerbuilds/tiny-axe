@@ -1,0 +1,7 @@
+#!/bin/sh
+# A stand-in for sudo in tests: never root. `-n -l <path>` says the rule
+# exists; `-n <path> <args>` runs the path as the user (tests set
+# TINY_AXE_ROOT_DRY_RUN=1, so the helper only prints what it would run).
+[ "$1" = "-n" ] && shift
+if [ "$1" = "-l" ]; then exit 0; fi
+exec "$@"

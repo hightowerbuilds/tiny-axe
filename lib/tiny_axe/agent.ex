@@ -203,7 +203,12 @@ defmodule TinyAxe.Agent do
       system_prompt(request.servers, request.briefing,
         dispatch: dispatch,
         shell: ShellTool.available?(),
-        chrome: task[:chrome] == true and match?({:claude, _}, choice)
+        chrome: task[:chrome] == true and match?({:claude, _}, choice),
+        # os_run is for an agent's own task, never a sub-agent's (the gate
+        # doesn't offer it there either).
+        os:
+          not Map.get(request, :subagent, false) and Map.get(task, :depth, 0) == 0 and
+            TinyAxe.Desktop.OsRun.available?()
       )
 
     driver(choice).run(Map.put(request, :system, system), task, choice, notify)
@@ -311,7 +316,7 @@ defmodule TinyAxe.Agent do
     Never type passwords or card details: ask the user (browser_handoff). To buy \
     something, go through the shop to the final "Place order" (or "Pay") button and \
     click it: tiny-axe then shows the order to the user, who decides.
-    #{site_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}#{chrome_line(opts[:chrome])}
+    #{site_line(servers)}#{dispatch_line(opts[:dispatch])}#{shell_line(opts[:shell])}#{chrome_line(opts[:chrome])}#{os_line(opts[:os])}
     Use as few calls as the task needs. When you're done, reply with a short \
     summary for the user: what you did, what you found, and anything left undone.\
     """ <> browser
@@ -325,6 +330,8 @@ defmodule TinyAxe.Agent do
 
   defp chrome_line(true), do: "\n" <> TinyAxe.Chrome.instructions() <> "\n"
   defp chrome_line(_), do: ""
+  defp os_line(true), do: "\n" <> TinyAxe.Desktop.OsRun.instructions() <> "\n"
+  defp os_line(_), do: ""
 
   # Only when the site server is connected, so its tools exist.
   defp site_line(servers) do

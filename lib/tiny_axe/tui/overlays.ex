@@ -230,25 +230,31 @@ defmodule TinyAxe.TUI.Overlays do
         styled(if(i == 0, do: "$ ", else: "  ") <> line, nil, [:bold])
       end)
 
+    # os_run (TinyAxe.Desktop.OsRun) runs outside the sandbox: that's said
+    # up front, not under details.
+    outside = if shell[:unsandboxed], do: sandbox_note(shell), else: []
+
+    after_command =
+      if shell[:unsandboxed],
+        do: [
+          styled(""),
+          styled("~/.config is snapshotted first: /look undo puts it back.", :dark_gray)
+        ],
+        else: []
+
     lines =
       [
         styled("The agent wants to run a command", nil, [:bold]),
-        styled("in #{shell.dir}", :cyan),
-        styled("")
-      ] ++ command
+        styled("in #{shell.dir}", :cyan)
+      ] ++ outside ++ [styled("")] ++ command ++ after_command
 
-    details = [
-      styled(
-        "Only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; the network is on.",
-        :cyan
-      )
-    ]
+    details = if shell[:unsandboxed], do: [], else: sandbox_note(shell)
 
     ask_popup(
       state,
       ask,
       " run this command? ",
-      :command,
+      if(shell[:unsandboxed], do: :os_command, else: :command),
       lines,
       details,
       "y run · n refuse",
@@ -351,6 +357,31 @@ defmodule TinyAxe.TUI.Overlays do
     popup(" undo ", lines, state.plan_scroll, area)
   end
 
+  def render(%{pending_commands: %{kind: :desktop} = plan} = state, area) do
+    header = [
+      Line.new([
+        Span.new("tiny-axe will do these once you approve", style: %Style{modifiers: [:bold]}),
+        Span.new(
+          if(plan[:why] == :doubtful,
+            do: " · the reviewer wasn't sure",
+            else: " · these always ask first"
+          ),
+          style: %Style{fg: :yellow}
+        )
+      ]),
+      styled("desktop changes; `/look undo` puts settings back (actions can't be undone)", :cyan),
+      styled("y do it · n cancel · ↑/↓ scroll", :dark_gray),
+      styled("")
+    ]
+
+    changes =
+      Enum.map(plan.commands, fn c ->
+        Line.new([Span.new("🎨 " <> c.command, style: %Style{modifiers: [:bold]})])
+      end)
+
+    popup(" change the desktop? ", header ++ changes, state.plan_scroll, area)
+  end
+
   def render(%{pending_commands: plan} = state, area) when plan != nil do
     {review_text, review_color} = review_label(plan.review)
 
@@ -408,6 +439,26 @@ defmodule TinyAxe.TUI.Overlays do
   # Below everything that asks the user something.
   def render(%{pending_edits: [_ | _]} = state, area), do: edit_popup(state, area)
 
+  # Its columns line up only unwrapped, so it's sized to fit its lines.
+  def render(%{token_dash: dash}, area) when dash != nil do
+    lines = TinyAxe.TUI.TokenDash.lines(dash)
+
+    [
+      {%Popup{
+         content: %Paragraph{text: lines, wrap: false},
+         block: %Block{
+           title: " token use ",
+           borders: [:all],
+           border_type: :rounded,
+           border_style: %Style{fg: :cyan},
+           padding: {1, 1, 0, 0}
+         },
+         fixed_width: min(TinyAxe.TUI.TokenDash.width() + 4, area.width),
+         fixed_height: min(length(lines) + 2, area.height)
+       }, area}
+    ]
+  end
+
   def render(_state, _area), do: []
 
   defp plan_step_lines(op) do
@@ -451,6 +502,7 @@ defmodule TinyAxe.TUI.Overlays do
   defp risk(:leaves), do: {:yellow, "↗ LEAVES THIS MACHINE"}
   defp risk(:outward), do: {:red, "■ SENDS SOMETHING OFF THIS MACHINE · CAN'T BE TAKEN BACK"}
   defp risk(:command), do: {:red, "■ RUNS A COMMAND · CAN'T BE UNDONE WITH CTRL+Z"}
+  defp risk(:os_command), do: {:red, "■ RUNS A COMMAND OUTSIDE THE SANDBOX"}
   defp risk(:money), do: {:red, "■ SPENDS MONEY · CAN'T BE UNDONE"}
   defp risk(:you), do: {:cyan, "◆ YOUR TURN"}
 
@@ -665,5 +717,28 @@ defmodule TinyAxe.TUI.Overlays do
     if String.length(json) < 70,
       do: json,
       else: json |> :json.decode() |> :json.format() |> IO.iodata_to_binary()
+  end
+
+  # os_run (TinyAxe.Desktop.OsRun) runs outside the sandbox; shell_run in it.
+  defp sandbox_note(%{unsandboxed: true} = shell) do
+    why = if shell[:why] in [nil, ""], do: [], else: [styled(shell.why, :cyan)]
+
+    why ++
+      [
+        styled(
+          "runs OUTSIDE the sandbox, as you, with your real home folder and files",
+          :yellow,
+          [:bold]
+        )
+      ]
+  end
+
+  defp sandbox_note(_shell) do
+    [
+      styled(
+        "only this folder and tool installs (~/.cargo, ~/.local/bin…) can change; network on",
+        :cyan
+      )
+    ]
   end
 end

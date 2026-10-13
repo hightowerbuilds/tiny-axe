@@ -178,6 +178,8 @@ defmodule TinyAxe.AgentDispatchTest do
       assert length(usage_lines("subagent")) - before == 3
       report = text(result)
       assert report =~ "3 sub-agents ran (3 done)"
+      # Sub-agents aren't told about os_run: only an agent's own task has it.
+      refute report =~ "change this computer with os_run"
 
       for {word, n} <- Enum.with_index(~w(one two three), 1) do
         assert report =~ "## Agent #{n}: done\nTask: #{echo(s, word)}"

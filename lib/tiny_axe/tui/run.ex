@@ -35,7 +35,8 @@ defmodule TinyAxe.TUI.Run do
           # The 🌐 chat is never on the leash (TinyAxe.Leash).
           leash: not state.remote_chat,
           # The last turn was an agent's: this one may carry its task on.
-          after_agent: state.agent_run
+          after_agent: state.agent_run,
+          origin: if(state[:remote_chat], do: :site)
         )
       end)
 

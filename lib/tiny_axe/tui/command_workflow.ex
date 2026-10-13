@@ -21,11 +21,22 @@ defmodule TinyAxe.TUI.CommandWorkflow do
              status: "ready",
              history: mark_proposal(state.history, "not run: you said no")
          }
-         |> add_meta("commands cancelled; nothing ran")}
+         |> add_meta(
+           if(plan[:kind] == :desktop,
+             do: "desktop changes cancelled; nothing changed",
+             else: "commands cancelled; nothing ran"
+           )
+         )}
 
       _ ->
         {:noreply, scroll_plan(code, state)}
     end
+  end
+
+  # A desktop plan that needs approval waits in the same popup.
+  defp start_commands(state, %{kind: :desktop} = plan) do
+    state = Run.start(state, &TinyAxe.Desktop.execute(plan, &1))
+    %{state | status: "changing the desktop…", scroll: :bottom}
   end
 
   defp start_commands(state, plan) do
@@ -48,6 +59,22 @@ defmodule TinyAxe.TUI.CommandWorkflow do
 
   def event({:command_problems, problems}, state),
     do: add_meta(state, "commands sent back to the model: " <> Enum.join(problems, " "))
+
+  def event({:desktop_plan, plan}, state),
+    do: %{state | pending_commands: plan, plan_scroll: 0}
+
+  def event({:desktop_problems, problems}, state),
+    do: add_meta(state, "settings sent back to the model: " <> Enum.join(problems, " "))
+
+  def event({:desktop_done, text}, state) do
+    %{
+      state
+      | run: nil,
+        status: "ready",
+        transcript: state.transcript ++ [{:assistant, text}],
+        history: mark_proposal(state.history, "approved") |> append_to_last_answer("\n\n" <> text)
+    }
+  end
 
   def event({:cmd_start, _i, command}, state),
     do: %{
