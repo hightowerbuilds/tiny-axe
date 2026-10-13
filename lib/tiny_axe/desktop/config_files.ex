@@ -147,7 +147,8 @@ defmodule TinyAxe.Desktop.ConfigFiles do
 
   def reload_hyprland, do: Runner.cmd("hyprctl", ["reload"])
 
-  defp config_errors do
+  @doc "Hyprland's config errors now (\"\" for none)."
+  def config_errors do
     case Runner.cmd("hyprctl", ["configerrors"]) do
       {out, 0} -> String.trim(out)
       _ -> ""

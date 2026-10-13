@@ -84,6 +84,13 @@ defmodule TinyAxe.TUI do
     startup = Enum.map(Application.get_env(:tiny_axe, :startup_notes, []), &{:meta, &1})
     Application.delete_env(:tiny_axe, :startup_notes)
 
+    # A desktop change cut off by a crash becomes something /look undo can
+    # put back (TinyAxe.Desktop.Snapshot); the real session only.
+    interrupted =
+      if session?,
+        do: Enum.map(TinyAxe.Desktop.Snapshot.recover_interrupted(), &{:meta, &1}),
+        else: []
+
     restored =
       if saved.crashed,
         do: [
@@ -112,7 +119,7 @@ defmodule TinyAxe.TUI do
        # Completed turns sent back to the model as context.
        history: saved.history,
        # What the transcript shows: {:user | :assistant | :meta, text}
-       transcript: saved.transcript ++ restored ++ startup,
+       transcript: saved.transcript ++ restored ++ startup ++ interrupted,
        # This chat's id in the history (TinyAxe.History).
        saved_as: saved[:saved_as] || TinyAxe.History.new_id(),
        # The chats the last /history listed, by number (TinyAxe.TUI.ChatHistory).

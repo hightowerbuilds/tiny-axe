@@ -1,6 +1,6 @@
 defmodule TinyAxe.Desktop.Undo do
   @moduledoc """
-  What appearance changes did, kept on disk (`<state_dir>/desktop-undo.json`,
+  What desktop changes did, kept on disk (`<state_dir>/desktop-undo.json`,
   the last #{20}), so `/look undo` can put the newest one back, even after a
   restart.
 
@@ -32,6 +32,23 @@ defmodule TinyAxe.Desktop.Undo do
     save(Enum.take([record | load()], @keep))
   end
 
+  @doc """
+  Records a change that could touch any config file (a command run outside
+  the sandbox) as its two snapshots (`TinyAxe.Desktop.Snapshot`).
+  """
+  @spec push_snapshot(String.t(), String.t(), String.t()) :: :ok
+  def push_snapshot(request, before, after_sha) do
+    record = %{
+      "at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "request" => request,
+      "kind" => "snapshot",
+      "before" => before,
+      "after" => after_sha
+    }
+
+    save(Enum.take([record | load()], @keep))
+  end
+
   @doc "The records, newest first."
   @spec load() :: [map()]
   def load do
@@ -54,11 +71,24 @@ defmodule TinyAxe.Desktop.Undo do
       [] ->
         :empty
 
+      [%{"kind" => "snapshot"} = record | rest] ->
+        result = TinyAxe.Desktop.Snapshot.restore(record["before"], record["after"])
+        TinyAxe.Desktop.ConfigFiles.reload_hyprland()
+        TinyAxe.Desktop.ConfigFiles.reload_terminals()
+        save(rest)
+        {:ok, record, snapshot_results(result)}
+
       [record | rest] ->
         results = record["changes"] |> Enum.reverse() |> Enum.map(&revert/1)
         save(rest)
         {:ok, record, results}
     end
+  end
+
+  defp snapshot_results(%{restored: restored, set_aside: aside, skipped: skipped}) do
+    Enum.map(restored, &{&1, :ok}) ++
+      Enum.map(aside, &{&1, :ok}) ++
+      Enum.map(skipped, &{&1, {:error, "changed again since, so left alone"}})
   end
 
   defp revert(%{"setting" => id} = change) do

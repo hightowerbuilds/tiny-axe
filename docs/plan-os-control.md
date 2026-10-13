@@ -318,3 +318,29 @@ the request names outright.
   Gemma set "louder" to 100.
 - Commands outside the typed list (webapp install, dns, plugins, …) are
   for Haiku's `os_run` in O3, always with approval.
+
+## O2 as built (2026-10-12)
+
+- **`Desktop.Snapshot`** keeps a git repo at `<state_dir>/config-snapshots`
+  whose work tree is `~/.config`.
+  - It tracks an allowlist of desktop config folders: hypr, omarchy, the
+    terminals, nvim, helix, zed, btop, tmux, systemd, autostart, fcitx5,
+    mimeapps.list and similar.
+  - It never tracks browser profiles, `gh` or other credentials, or
+    `pulse/` (its auth cookie). Anything named like a secret is excluded
+    too: `*cookie*`, `*token*`, `*secret*`, `*.key` and so on.
+  - On this machine a snapshot takes 31 ms the first time and 8 ms after,
+    for 696 KB.
+- **Restoring** puts changed files back from the "before" snapshot.
+  - Files the change added are moved into `<state_dir>/config-set-aside/`,
+    never deleted.
+  - A file edited again since the change is left alone and named.
+- **Hyprland guard:** after a run that touched `hypr/`, Hyprland reloads.
+  If `configerrors` shows anything new, only the `hypr/` files are put back
+  (`guard_hyprland/3`).
+- **Interrupted runs:** `started/2` writes a marker before a run and
+  `finished/1` clears it. At the next start, the TUI turns a leftover
+  marker into an undo record and says `/look undo` puts things back.
+- **Undo:** `Undo.push_snapshot/3` records the before and after pair, and
+  `/look undo` restores it, then reloads Hyprland and the terminals.
+- **Tests:** `test/tiny_axe/desktop_snapshot_test.exs`.
