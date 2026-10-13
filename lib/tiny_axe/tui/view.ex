@@ -319,8 +319,9 @@ defmodule TinyAxe.TUI.View do
 
   defp header_height(%{section: :search}), do: MainTabs.height() + SearchWorkspace.height()
 
-  defp header_height(%{section: section}) when section in [:wallet, :tokens, :remote],
-    do: MainTabs.height()
+  defp header_height(%{section: section})
+       when section in [:wallet, :tokens, :remote, :explained],
+       do: MainTabs.height()
 
   defp header_height(_state), do: MainTabs.height() + TabBar.height()
 

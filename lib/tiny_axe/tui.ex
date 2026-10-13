@@ -527,7 +527,8 @@ defmodule TinyAxe.TUI do
   defp on_event(%Event.Resize{width: w, height: h}, state),
     do: {:noreply, %{state | size: {w, h}}}
 
-  defp on_event(event, %{section: section} = state) when section in [:wallet, :tokens, :remote] do
+  defp on_event(event, %{section: section} = state)
+       when section in [:wallet, :tokens, :remote, :explained] do
     if tab_navigation_blocked?(state) do
       {:noreply, state}
     else
@@ -732,6 +733,7 @@ defmodule TinyAxe.TUI do
       # /route, /look and /credit-card are handled here, like shell built-ins:
       # no model involved.
       prompt in ["pwd", "tools", "/account", "/token", "/site", "/route", "/look", "/look undo"] or
+        prompt in ["/help", "/explained"] or
         prompt in ["/route on", "/route off"] or
         prompt =~ ~r/\Acd(\s|\z)/ or
         prompt =~ ~r/\A\/(remote|chrome|leash)(\s|\z)/ or
@@ -870,6 +872,10 @@ defmodule TinyAxe.TUI do
   end
 
   defp builtin(state, "/token"), do: %{state | token_dash: TinyAxe.TUI.TokenDash.open()}
+
+  # The Explained tab: every feature and how to reach it.
+  defp builtin(state, help) when help in ["/help", "/explained"],
+    do: Workspace.select(state, :explained)
 
   # Reading every setting runs a few dozen small programs, and undo runs
   # some too, so both run aside.

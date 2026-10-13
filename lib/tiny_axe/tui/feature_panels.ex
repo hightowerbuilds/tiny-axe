@@ -1,5 +1,5 @@
 defmodule TinyAxe.TUI.FeaturePanels do
-  @moduledoc "The Wallet, Tokens and Remote workspaces. Their notices never enter a chat."
+  @moduledoc "The Wallet, Tokens, Remote and Explained workspaces. Their notices never enter a chat."
 
   alias ExRatatui.{Event, Style}
   alias ExRatatui.Layout.Rect
@@ -13,7 +13,8 @@ defmodule TinyAxe.TUI.FeaturePanels do
     %{
       wallet: %{cards: [], settings: [], notice: nil, scroll: 0, horizontal: 0},
       tokens: %{dashboard: nil, notice: nil, scroll: 0, horizontal: 0},
-      remote: %{account: nil, notice: nil, scroll: 0, horizontal: 0}
+      remote: %{account: nil, notice: nil, scroll: 0, horizontal: 0},
+      explained: %{notice: nil, scroll: 0, horizontal: 0}
     }
   end
 
@@ -67,6 +68,9 @@ defmodule TinyAxe.TUI.FeaturePanels do
             {:open_chat, "c Open chat"},
             {:refresh, "r Refresh"}
           ]
+
+        :explained ->
+          []
       end
 
     {items, _} =
@@ -234,6 +238,10 @@ defmodule TinyAxe.TUI.FeaturePanels do
       end
   end
 
+  # Wrapped to fit inside the panel's border.
+  defp body_lines(%{section: :explained, size: {width, _}}),
+    do: TinyAxe.TUI.Explained.lines(width - 4)
+
   defp body_lines(%{section: :tokens, panels: %{tokens: %{dashboard: dash}}}),
     do: TokenDash.lines(dash || %{summary: nil}, page: true)
 
@@ -263,7 +271,10 @@ defmodule TinyAxe.TUI.FeaturePanels do
         styled("Messages and replies travel through the hosted service."),
         styled("Opening this tab does not enable or connect Remote.", :dark_gray),
         styled("Remote requests use their own conversation in Chat.", :dark_gray),
-        styled("Actions requiring approval are refused in Remote.", :dark_gray)
+        styled(
+          "Approvals from the Chat tab: #{TinyAxe.Remote.Approvals.describe(TinyAxe.Remote.Approvals.status())}",
+          :dark_gray
+        )
       ]
   end
 
@@ -314,6 +325,7 @@ defmodule TinyAxe.TUI.FeaturePanels do
   defp title(:wallet), do: "Wallet"
   defp title(:tokens), do: "Tokens"
   defp title(:remote), do: "Remote"
+  defp title(:explained), do: "Explained"
   defp phase(:off), do: "off"
   defp phase(:online), do: "online"
   defp phase(:waiting), do: "waiting to reconnect"

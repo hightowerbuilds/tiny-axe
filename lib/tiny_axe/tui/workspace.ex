@@ -3,7 +3,7 @@ defmodule TinyAxe.TUI.Workspace do
 
   alias TinyAxe.TUI.{Chats, FeaturePanels, MemoryChat}
 
-  @sections [:chat, :wallet, :search, :tokens, :remote]
+  @sections [:chat, :wallet, :search, :tokens, :remote, :explained]
 
   def select(%{section: section} = state, section), do: state
 

@@ -10,7 +10,8 @@ defmodule TinyAxe.TUI.MainTabs do
     {:wallet, "Wallet", "Wallet"},
     {:search, "Gemma Search", "Search"},
     {:tokens, "Tokens", "Tokens"},
-    {:remote, "Remote", "Remote"}
+    {:remote, "Remote", "Remote"},
+    {:explained, "Explained", "Help"}
   ]
 
   def height, do: 1
@@ -25,7 +26,8 @@ defmodule TinyAxe.TUI.MainTabs do
       @sections
       |> Enum.with_index(1)
       |> Enum.map(fn {{section, name, _short}, index} ->
-        item(section, " F#{index} #{name} ", active)
+        # F1–F5 for the first five; Explained is clicked or /help.
+        item(section, if(index <= 5, do: " F#{index} #{name} ", else: " #{name} "), active)
       end)
 
     compact =
@@ -44,7 +46,7 @@ defmodule TinyAxe.TUI.MainTabs do
     tabs
   end
 
-  @doc "Only the primary row is clickable; omitted tabs remain available through F1–F5."
+  @doc "Only the primary row is clickable; omitted tabs remain available through F1–F5 and /help."
   def hit(%{size: {width, height}} = state, x, 0)
       when height > 0 and x >= 0 and x < width do
     state
