@@ -1,0 +1,118 @@
+#!/bin/bash
+# tiny-axe-root: the only thing tiny-axe may run as root, through
+#   sudo -n /usr/local/bin/tiny-axe-root <verb> <args...>
+# with a sudoers rule allowing exactly this file (see `mix tiny_axe.os_setup`).
+# Installed root-owned and not writable by anyone else, it checks every
+# argument itself; tiny-axe checks them too, and the user approves each run.
+#
+#   install <package>...                       official repos only, after a snapshot
+#   remove <package>...                        explicitly installed, not protected, after a snapshot
+#   update                                     full system upgrade, after a snapshot
+#   service <start|stop|restart|enable|disable> <unit>
+#   snapshot <description>
+#
+# TINY_AXE_ROOT_DRY_RUN=1 prints what would run instead of running it (for
+# tests; sudo's env_reset never passes it through).
+
+set -euo pipefail
+export PATH=/usr/bin:/usr/sbin
+export LC_ALL=C
+umask 022
+
+VERSION=1
+DRY=${TINY_AXE_ROOT_DRY_RUN:-}
+
+die() { echo "tiny-axe-root: $*" >&2; exit 2; }
+run() {
+  if [[ -n $DRY ]]; then echo "would run: $*"; else "$@"; fi
+}
+
+# Never removed, never stopped: what the system needs to boot, log in, update and recover.
+PROTECTED_PACKAGES='^(base|base-devel|linux|linux-[a-z0-9-]+|linux-firmware.*|omarchy.*|hyprland.*|sddm|limine.*|sudo|systemd.*|pacman.*|glibc|bash|coreutils|filesystem|btrfs-progs|snapper|networkmanager|iwd|mkinitcpio|uwsm|pipewire.*|wireplumber|dbus.*|polkit|util-linux|shadow|grub|efibootmgr)$'
+PROTECTED_UNITS='^(sddm|systemd-.*|dbus.*|polkit|getty@.*|user@.*|snapper-.*|limine.*)(\.service|\.socket|\.timer)?$'
+NETWORK_UNITS='^(NetworkManager|iwd|systemd-networkd|systemd-resolved)(\.service)?$'
+
+valid_package() { [[ $1 =~ ^[a-z0-9@_+][a-z0-9@._+-]{0,127}$ ]]; }
+valid_unit() { [[ $1 =~ ^[A-Za-z0-9@_][A-Za-z0-9@._:-]{0,127}$ ]]; }
+
+snapshot() {
+  local desc="tiny-axe: $1"
+  desc=${desc//[^A-Za-z0-9 ._:+@-]/}
+  local configs
+  configs=$(snapper --csvout list-configs 2>/dev/null | awk -F, 'NR>1 {print $1}') || true
+  [[ -n $configs ]] || { echo "no snapper configs; no snapshot taken"; return 0; }
+  local config num
+  for config in $configs; do
+    if [[ -n $DRY ]]; then
+      echo "would run: snapper -c $config create -c number -p -d $desc"
+    else
+      num=$(snapper -c "$config" create -c number -p -d "$desc")
+      echo "snapshot $config #$num"
+      snapper -c "$config" cleanup number >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+verb=${1:-}
+[[ -n $verb ]] || die "usage: tiny-axe-root install|remove|update|service|snapshot ..."
+shift
+
+case $verb in
+  version)
+    echo "tiny-axe-root $VERSION"
+    ;;
+
+  install)
+    (($# >= 1 && $# <= 20)) || die "install takes 1 to 20 package names"
+    for pkg in "$@"; do
+      valid_package "$pkg" || die "not a package name: $pkg"
+      pacman -Si -- "$pkg" >/dev/null 2>&1 || die "$pkg isn't in the official repositories"
+    done
+    snapshot "before installing $*"
+    run pacman -S --needed --noconfirm -- "$@"
+    ;;
+
+  remove)
+    (($# >= 1 && $# <= 20)) || die "remove takes 1 to 20 package names"
+    explicit=$(pacman -Qqe)
+    for pkg in "$@"; do
+      valid_package "$pkg" || die "not a package name: $pkg"
+      [[ $pkg =~ $PROTECTED_PACKAGES ]] && die "$pkg is protected: the system needs it"
+      grep -qxF -- "$pkg" <<<"$explicit" || die "$pkg isn't a package you installed yourself"
+    done
+    snapshot "before removing $*"
+    run pacman -Rns --noconfirm -- "$@"
+    ;;
+
+  update)
+    (($# == 0)) || die "update takes no arguments"
+    snapshot "before a system update"
+    run pacman -Syu --noconfirm
+    ;;
+
+  service)
+    (($# == 2)) || die "service takes an action and a unit"
+    action=$1 unit=$2
+    [[ $action =~ ^(start|stop|restart|enable|disable)$ ]] || die "not a service action: $action"
+    valid_unit "$unit" || die "not a unit name: $unit"
+    [[ $unit == *.* ]] || unit="$unit.service"
+    [[ $unit =~ \.(service|socket|timer)$ ]] || die "only services, sockets and timers"
+    [[ $unit =~ $PROTECTED_UNITS ]] && die "$unit is protected: the system needs it"
+    if [[ $unit =~ $NETWORK_UNITS && $action =~ ^(stop|disable)$ ]]; then
+      die "stopping $unit would cut the network off"
+    fi
+    systemctl cat -- "$unit" >/dev/null 2>&1 || die "there's no unit $unit"
+    run systemctl "$action" -- "$unit"
+    ;;
+
+  snapshot)
+    (($# == 1)) || die "snapshot takes one description"
+    snapshot "$1"
+    ;;
+
+  *)
+    die "unknown verb: $verb"
+    ;;
+esac
+
+echo "tiny-axe-root: done"

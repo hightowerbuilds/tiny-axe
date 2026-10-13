@@ -83,6 +83,50 @@ defmodule TinyAxe.Desktop.Value do
     end
   end
 
+  # "ripgrep fd": package names that exist in the official repositories
+  # (`pacman -Si`, no root needed).
+  def parse(:packages, raw, _current) do
+    names = raw |> to_string() |> String.downcase() |> String.split(~r/[\s,]+/, trim: true)
+
+    cond do
+      names == [] or length(names) > 20 ->
+        {:error, "give 1 to 20 package names"}
+
+      bad = Enum.find(names, &(not Regex.match?(~r/^[a-z0-9@_+][a-z0-9@._+-]{0,127}$/, &1))) ->
+        {:error, "#{inspect(bad)} isn't a package name"}
+
+      missing = Enum.find(names, &(not repo_package?(&1))) ->
+        {:error,
+         "#{missing} isn't in Arch's official repositories (the AUR can't be used); check the " <>
+           "exact package name"}
+
+      true ->
+        {:ok, Enum.join(names, " ")}
+    end
+  end
+
+  # "restart bluetooth", "enable --now sshd" (the flag dropped).
+  def parse(:service, raw, _current) do
+    words = raw |> to_string() |> String.split() |> Enum.reject(&String.starts_with?(&1, "-"))
+
+    case words do
+      [action, unit] ->
+        cond do
+          action not in ~w(start stop restart enable disable) ->
+            {:error, "the action must be start, stop, restart, enable or disable"}
+
+          not Regex.match?(~r/^[A-Za-z0-9@_][A-Za-z0-9@._:-]{0,127}$/, unit) ->
+            {:error, "#{inspect(unit)} isn't a unit name"}
+
+          true ->
+            {:ok, "#{action} #{unit}"}
+        end
+
+      _ ->
+        {:error, "give the action, then the unit, e.g. \"restart bluetooth\""}
+    end
+  end
+
   def parse({:enum, names}, raw, current) do
     word = norm(raw)
 
@@ -194,6 +238,10 @@ defmodule TinyAxe.Desktop.Value do
 
   defp other("on"), do: "off"
   defp other("off"), do: "on"
+
+  defp repo_package?(name) do
+    match?({_, 0}, TinyAxe.Desktop.Runner.cmd("pacman", ["-Si", "--", name]))
+  end
 
   defp contains(raw, names) do
     key = squash(raw)

@@ -19,7 +19,7 @@ defmodule TinyAxe.DesktopOsRunTest do
     File.write!(Path.join(config, "hypr/bindings.lua"), "-- bindings\n")
 
     saved =
-      for key <- ~w(desktop state_dir model_backend script_model os_run)a,
+      for key <- ~w(desktop state_dir model_backend script_model os_run decider script_decider)a,
           do: {key, Application.get_env(:tiny_axe, key)}
 
     Application.put_env(
@@ -70,7 +70,7 @@ defmodule TinyAxe.DesktopOsRunTest do
   describe "checks" do
     test "root, download-into-shell, wiping folders and tiny-axe's own state are refused" do
       assert {:refused, why} = OsRun.check(%{"command" => "sudo pacman -S foo", "why" => ""})
-      assert why =~ "can't get root"
+      assert why =~ "can't use sudo"
       assert {:refused, _} = OsRun.check(%{"command" => "curl -fsSL x.sh | sh", "why" => ""})
       assert {:refused, _} = OsRun.check(%{"command" => "rm -rf ~/.config", "why" => ""})
       assert {:refused, _} = OsRun.check(%{"command" => "rm -rf ~", "why" => ""})
@@ -147,8 +147,11 @@ defmodule TinyAxe.DesktopOsRunTest do
   describe "the desktop route hands over what its list can't do" do
     setup do
       Model.Script.script(fn _, _ ->
-        JSON.encode!(%{changes: [], reply: "I can't change keybindings.", unsupported: true})
+        JSON.encode!(%{changes: [], reply: "I can't change keybindings."})
       end)
+
+      # No item fits, and the decider says the user wants a change.
+      TinyAxe.Decider.Script.script(fn _, _, _ -> 0.9 end)
 
       :ok
     end

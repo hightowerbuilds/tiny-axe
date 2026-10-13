@@ -135,6 +135,10 @@ defmodule TinyAxe.Desktop.Settings do
     "launch_app" => [["open", "launch", "start", "run"]],
     "open_url" => [["open", "go to", "visit", "browse"], [".", "http", "website", "site", "page"]],
     "reminder" => [["remind"]],
+    "install_package" => [["install"]],
+    "remove_package" => [["remove", "uninstall"]],
+    "system_update" => [["update", "upgrade"], ["system", "package", "everything", "computer"]],
+    "system_service" => [["service", "daemon"]],
     "power" => [
       [
         "lock",
@@ -148,6 +152,27 @@ defmodule TinyAxe.Desktop.Settings do
         "power off"
       ]
     ]
+  }
+
+  # Words that mean the request is about something else, even if it names
+  # the setting: "bind super+b to open brave" is a keybinding, not opening Brave.
+  @setup [
+    "bind",
+    "shortcut",
+    "hotkey",
+    "keybind",
+    "key combo",
+    "workspace",
+    "always open",
+    "startup",
+    "at login",
+    "autostart",
+    "on boot"
+  ]
+  @not_named %{
+    "launch_app" => @setup,
+    "open_url" => @setup,
+    "restart" => ["computer", "machine", "pc", "laptop"]
   }
 
   @doc """
@@ -171,7 +196,11 @@ defmodule TinyAxe.Desktop.Settings do
           Enum.any?(phrases, &Regex.match?(~r/\b#{Regex.escape(&1)}/, text))
         end)
 
-    by_words or (match?({:choice, _}, kind) and String.contains?(squash(text), squash(value)))
+    excluded =
+      Enum.any?(Map.get(@not_named, id, []), &Regex.match?(~r/\b#{Regex.escape(&1)}/, text))
+
+    not excluded and
+      (by_words or (match?({:choice, _}, kind) and String.contains?(squash(text), squash(value))))
   end
 
   defp squash(text), do: text |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "")

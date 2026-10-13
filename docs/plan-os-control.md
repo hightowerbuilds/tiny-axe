@@ -371,12 +371,16 @@ the request names outright.
     takes a snapshot after, runs the Hyprland guard, and records an undo
     when files changed. The result lists the changed files and the
     guard's outcome.
-- **Handoff:** Gemma's JSON has an `unsupported` field. When nothing in
-  the list can do the request, `Desktop.run` hands it to the agent
-  (Haiku), whose system prompt now includes `OsRun.instructions/0`. The
-  instructions cover Omarchy's bind form,
-  `o.bind("SUPER + ALT + N", "Obsidian", { launch = "obsidian" })`, and
-  checking `hyprctl binds` first.
+- **Handoff:** when Gemma returns no changes, Jev answers one yes/no
+  question: does the user want something changed or done, not just ask
+  how it's set? Yes hands the request to the agent (Haiku), whose system
+  prompt now includes `OsRun.instructions/0`.
+  - The first version had Gemma fill an `unsupported` field. It proved
+    unreliable: it replied "Opening Obsidian now" and flagged the request
+    unsupported.
+  - The instructions cover Omarchy's bind form,
+    `o.bind("SUPER + ALT + N", "Obsidian", { launch = "obsidian" })`, and
+    checking `hyprctl binds` first.
   - Requests from the site don't hand over.
   - With `os_run` off, Gemma's reply stands.
 - **Live checks:**
@@ -387,3 +391,66 @@ the request names outright.
     and stopped, and for Obsidian proposed exactly Omarchy's form.
 - **Tests:** `test/tiny_axe/desktop_os_run_test.exs`. Full suite: 845
   tests, 0 failures.
+
+## O4 as built (2026-10-12)
+
+The user chose all four root actions: install packages, remove packages,
+system update, and system services.
+
+- **`priv/root/tiny-axe-root`** is a bash script that runs as root.
+  - Its environment is pinned: `PATH=/usr/bin:/usr/sbin`, `LC_ALL=C`, no
+    `eval`.
+  - Its verbs:
+    - `install <pkgs>`: names checked by regex and found in the official
+      repos (`pacman -Si`), then a snapper snapshot, then `pacman -S
+      --needed --noconfirm --`.
+    - `remove <pkgs>`: only explicitly installed packages, never protected
+      ones (base, linux*, omarchy*, hyprland*, sddm, limine*, sudo,
+      systemd*, pacman, networkmanager, pipewire, …), then a snapshot,
+      then `pacman -Rns --noconfirm --`.
+    - `update`: a snapshot, then `pacman -Syu --noconfirm`.
+    - `service <start|stop|restart|enable|disable> <unit>`: the unit must
+      exist. Protected units (sddm, systemd-*, dbus, polkit, getty, user@,
+      snapper, limine) are refused, and so is stopping or disabling the
+      network.
+    - `snapshot <desc>`.
+  - `TINY_AXE_ROOT_DRY_RUN=1` prints what would run; sudo's env_reset
+    never passes it through. All of the refusals were dry-run checked on
+    this machine.
+- **`Desktop.Root`** wraps the helper.
+  - `status/0` passes only if the helper at `/usr/local/bin/tiny-axe-root`
+    has the same content as the shipped one, is owned by root, isn't
+    group- or world-writable, and `sudo -n -l` allows it.
+  - `run/2` uses `sudo -n` (never a password prompt) with a 30 min limit,
+    and checks the arguments here as well as in the helper.
+  - `setup/0` writes the helper and a sudoers rule (`<user> ALL=(root)
+    NOPASSWD: /usr/local/bin/tiny-axe-root`) to the state folder and
+    returns the two `sudo install` commands. `mix tiny_axe.os_setup`
+    prints them, and `--remove` prints how to take them out. tiny-axe
+    never touches `/etc` itself.
+- **Desktop items** (all `risk: :ask`): install_package (`:packages`,
+  official-repo names, and several installs merge into one),
+  remove_package (a lookup over `pacman -Qqe`), system_update, and
+  system_service (`:service`, "restart bluetooth"). Before the helper is
+  installed, applying one says how to set it up.
+- **`os_run`** accepts `tiny-axe-root <verb> <args>`, with or without sudo
+  or the full path, checks it, asks, and runs it through `Root.run`.
+  Raw sudo is refused with that form as the suggestion. Haiku's
+  instructions say to use it, official repos only, no AUR.
+- **Gemma path fixes found in live runs:**
+  - Long lookups show the names the request mentions first, so "uninstall
+    obsidian" sees obsidian in the examples.
+  - Requests mentioning bind, shortcut, workspace, autostart and the like
+    never count as naming launch_app or open_url.
+  - "restart the computer" never counts as naming restart.
+- **Live dry run:**
+  - Right on Gemma alone: install ripgrep and fd → one install; update the
+    system; restart the bluetooth service; uninstall obsidian; open
+    obsidian.
+  - Handed over, correctly: bind super+alt+n, firefox always on
+    workspace 2, enable the ollama service at login, install spotify (not
+    in the official repos).
+- **Tests:** `test/tiny_axe/desktop_root_test.exs`, with a stand-in sudo
+  (`test/support/fake_sudo`) and the helper in dry-run mode.
+- **To set up:** run `mix tiny_axe.os_setup`, then the two commands it
+  prints.

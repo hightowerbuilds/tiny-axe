@@ -99,6 +99,12 @@ defmodule TinyAxe.Desktop.OsRun do
     already bound first (`hyprctl binds`), and tell the user if they are.
     - Prefer Omarchy's own commands (`omarchy commands` lists them) to editing files.
     - ~/.config is snapshotted before and after; the user puts it back with /look undo.
+    - Packages, a system update and system services need root: use tiny-axe's root helper \
+    as the os_run command, without sudo: `tiny-axe-root install <packages>`, \
+    `tiny-axe-root remove <packages>`, `tiny-axe-root update`, or \
+    `tiny-axe-root service <start|stop|restart|enable|disable> <unit>`. Official \
+    repositories only (check names with `pacman -Ss` through shell_run); the AUR (yay) \
+    can't be used. Package changes take a system snapshot first.
     - Never sudo; never stop tiny-axe.
     """
   end
@@ -112,6 +118,16 @@ defmodule TinyAxe.Desktop.OsRun do
     cond do
       command == "" ->
         {:refused, "#{@name} needs a command"}
+
+      root = root_call(command) ->
+        case root do
+          {:ok, verb, args} ->
+            {:outward, "runs tiny-axe's root helper: #{verb} #{Enum.join(args, " ")}",
+             %{command: command, why: why, read?: false, root: {verb, args}}}
+
+          {:error, why} ->
+            {:refused, why}
+        end
 
       problem = refusal(command) ->
         {:refused, problem}
@@ -141,6 +157,27 @@ defmodule TinyAxe.Desktop.OsRun do
     end
   end
 
+  # `tiny-axe-root <verb> <args>` (with or without sudo or its full path):
+  # tiny-axe runs it through sudo -n itself (TinyAxe.Desktop.Root).
+  defp root_call(command) do
+    case Regex.run(~r{^(?:sudo\s+(?:-n\s+)?)?(?:/usr/local/bin/)?tiny-axe-root\s+(.+)$}s, command) do
+      [_, rest] ->
+        if rest =~ ~r/[;&|$`<>\n\\]/ do
+          {:error, "tiny-axe-root takes plain words: a verb and its arguments, nothing else"}
+        else
+          [verb | args] = String.split(rest)
+
+          case TinyAxe.Desktop.Root.check(verb, args) do
+            :ok -> {:ok, verb, args}
+            {:error, why} -> {:error, why}
+          end
+        end
+
+      nil ->
+        nil
+    end
+  end
+
   defp refusal(command) do
     home = System.user_home!()
 
@@ -150,8 +187,11 @@ defmodule TinyAxe.Desktop.OsRun do
 
     cond do
       command =~ ~r/(^|[\s;&|(])(sudo|su|doas|pkexec)(\s|$)/ ->
-        "#{@name} runs as the user and can't get root; root changes go through tiny-axe's " <>
-          "root helper (installs, removals, updates, services, snapshots)"
+        "#{@name} runs as the user and can't use sudo. For root changes use tiny-axe's root " <>
+          "helper as the command, without sudo: `tiny-axe-root install <packages>`, " <>
+          "`tiny-axe-root remove <packages>`, `tiny-axe-root update` or " <>
+          "`tiny-axe-root service <start|stop|restart|enable|disable> <unit>` (official " <>
+          "repositories only; the AUR can't be used)"
 
       command =~ ~r/(curl|wget)[^|]*\|\s*(ba|z|fi)?sh\b/ ->
         "piping a download into a shell isn't allowed; download it, read it, then run it"
@@ -179,6 +219,13 @@ defmodule TinyAxe.Desktop.OsRun do
   @spec run(map(), map()) :: map()
   def run(task, %{read?: true} = plan) do
     report(plan, execute(task, plan.command), nil)
+  end
+
+  def run(_task, %{root: {verb, args}} = plan) do
+    case TinyAxe.Desktop.Root.run(verb, args) do
+      {:ok, out} -> report(plan, {:ok, 0, out}, nil)
+      {:error, why} -> error("the root helper didn't do it: #{why}")
+    end
   end
 
   def run(task, plan) do

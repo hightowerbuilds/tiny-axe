@@ -230,6 +230,10 @@ defmodule TinyAxe.Desktop do
               choices = fun.()
               {:choice, fn -> choices end}
 
+            {:lookup, fun} ->
+              names = fun.()
+              {:lookup, fn -> names end}
+
             other ->
               other
           end
@@ -266,10 +270,9 @@ defmodule TinyAxe.Desktop do
             required: ["setting", "value"]
           }
         },
-        reply: %{type: "string"},
-        unsupported: %{type: "boolean"}
+        reply: %{type: "string"}
       },
-      required: ["changes", "reply", "unsupported"]
+      required: ["changes", "reply"]
     }
   end
 
@@ -313,14 +316,10 @@ defmodule TinyAxe.Desktop do
 
   defp planned(answer, messages, context, settings, notify, round, reviewed?) do
     reply = text(answer["reply"])
-    unsupported? = answer["unsupported"] == true
 
     case check(answer["changes"], settings, context.request) do
-      {:ok, [], _already} when unsupported? ->
-        {:unsupported, reply}
-
       {:ok, [], _already} ->
-        {:reply, reply}
+        if wants_change?(context), do: {:unsupported, reply}, else: {:reply, reply}
 
       {:ok, changes, already} ->
         case review(changes, already, context, notify) do
@@ -376,6 +375,13 @@ defmodule TinyAxe.Desktop do
               {ok, ["#{inspect(id)} isn't a setting tiny-axe has" | bad]}
 
             s ->
+              # Several package installs are one install of them all.
+              value =
+                case {s.kind, Enum.find(ok, &(&1.setting.id == id))} do
+                  {:packages, %{value: earlier}} -> earlier <> " " <> value
+                  _ -> value
+                end
+
               case Value.parse(s.kind, value, s.now) |> within_jump(s, request) do
                 {:ok, v} ->
                   {[%{setting: s, value: v} | Enum.reject(ok, &(&1.setting.id == id))], bad}
@@ -417,6 +423,26 @@ defmodule TinyAxe.Desktop do
   end
 
   defp within_jump(result, _s, _request), do: result
+
+  # No item fits, or it's a question? The model's own flag for this proved
+  # unreliable (it wrote "Opening Obsidian now" and flagged it unsupported),
+  # so the decider says whether the user wants something changed or done.
+  defp wants_change?(context) do
+    question = %{
+      change: %{
+        type: :noul,
+        instructions:
+          "Does the user want something on their computer changed, installed, set up or " <>
+            "done, rather than only asking how something is set or what it is?"
+      }
+    }
+
+    TinyAxe.Decider.yes?(
+      TinyAxe.Decider.decide(%{request: context.request}, question),
+      :change,
+      TinyAxe.Decider.review_threshold()
+    )
+  end
 
   defp same?(nil, _), do: false
   defp same?(now, value), do: String.downcase(to_string(now)) == String.downcase(value)
@@ -624,11 +650,9 @@ defmodule TinyAxe.Desktop do
     range; "+2" or "-2" changes a number from its current value. "bigger"/"smaller" means \
     about 2 points or pixels.
     - "reply": one short sentence for the user about what you're doing. If the user only \
-    asks how something is set, leave "changes" empty and answer from the current values.
-    - "unsupported": true only when the user wants the computer changed or something done \
-    that no item in the list can do (a keybinding, a window rule, a service, a config \
-    file, installing software); then leave "changes" empty, and tiny-axe hands the request \
-    to a bigger model that can run commands. Otherwise false.
+    asks how something is set, leave "changes" empty and answer from the current values. \
+    If no item in the list can do what they ask (a keybinding, a window rule, a config \
+    file), leave "changes" empty: tiny-axe hands it to a bigger model.
 
     Only change or do what the user asked for. The terminal is Ghostty; "terminal" \
     settings only change it, while "text_size" scales text everywhere (bar, apps and \
@@ -645,13 +669,14 @@ defmodule TinyAxe.Desktop do
     [
       recent != "" && "Conversation so far:\n#{recent}",
       "Request: #{prompt}",
-      "Items (id — what it is — now — values):\n" <> Enum.map_join(settings, "\n", &line/1)
+      "Items (id — what it is — now — values):\n" <>
+        Enum.map_join(settings, "\n", &line(&1, prompt))
     ]
     |> Enum.filter(& &1)
     |> Enum.join("\n\n")
   end
 
-  defp line(s) do
+  defp line(s, request) do
     now =
       cond do
         not undoable?(s) -> "action"
@@ -659,19 +684,15 @@ defmodule TinyAxe.Desktop do
         true -> "now: unknown"
       end
 
-    "- #{s.id} — #{s.summary} — #{now} — #{values(s.kind)}"
+    "- #{s.id} — #{s.summary} — #{now} — #{values_for(s.kind, request)}"
   end
 
   defp values(:action), do: "value: \"now\" (does it once)"
   defp values(:image), do: "an image file path"
   defp values(:url), do: "a web address"
   defp values(:reminder), do: "minutes, then the message"
-
-  defp values({:lookup, fun}) do
-    names = fun.()
-
-    "the name of one of #{length(names)} installed apps, e.g. #{names |> Enum.take(6) |> Enum.join(", ")}"
-  end
+  defp values(:packages), do: "package names, separated by spaces"
+  defp values(:service), do: "the action, then the unit"
 
   defp values({:choice, fun}), do: "one of: " <> Enum.join(fun.(), ", ")
   defp values({:enum, names}), do: "one of: " <> Enum.join(names, ", ")
@@ -680,6 +701,31 @@ defmodule TinyAxe.Desktop do
 
   defp values({:or, words, kind}),
     do: Enum.map_join(words, ", ", &inspect/1) <> ", or " <> values(kind)
+
+  # A long list shows the names the request mentions first, so "uninstall
+  # obsidian" sees obsidian among the examples.
+  defp values_for({:lookup, fun}, request) do
+    words =
+      request
+      |> String.downcase()
+      |> String.split(~r/[^a-z0-9]+/, trim: true)
+      |> Enum.filter(&(String.length(&1) >= 3))
+
+    all = fun.()
+
+    {mentioned, rest} =
+      Enum.split_with(all, fn name ->
+        key = String.downcase(name)
+        Enum.any?(words, &String.contains?(key, &1))
+      end)
+
+    names = Enum.take(mentioned, 6) ++ rest
+
+    "one of #{length(all)} names on this computer (any of them works, not only these " <>
+      "examples), e.g. #{names |> Enum.take(8) |> Enum.join(", ")}"
+  end
+
+  defp values_for(kind, _request), do: values(kind)
 
   defp describe(%{setting: s, value: v}),
     do: if(s.kind == :action, do: label(s), else: "#{label(s)} → #{v}")

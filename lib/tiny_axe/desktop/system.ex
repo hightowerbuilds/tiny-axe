@@ -169,85 +169,151 @@ defmodule TinyAxe.Desktop.System do
   ## Actions
 
   defp actions do
+    root_actions() ++
+      [
+        %{
+          id: "screenshot",
+          group: "actions",
+          summary:
+            "take a screenshot: smart (pick a window or region), region, windows or fullscreen",
+          kind: {:enum, ~w(smart region windows fullscreen)},
+          undo: :none,
+          apply: &omarchy(["capture", "screenshot", &1])
+        },
+        %{
+          id: "screen_recording",
+          group: "actions",
+          summary: "start or stop recording the screen",
+          kind: :action,
+          risk: :ask,
+          undo: :none,
+          apply: fn _ -> omarchy(["capture", "screenrecording"]) end
+        },
+        %{
+          id: "restart",
+          group: "actions",
+          summary: "restart or reload a part of the desktop that's misbehaving",
+          kind: {:enum, ~w(audio shell terminal hyprctl hyprsunset xcompose btop tmux)},
+          undo: :none,
+          apply: &omarchy(["restart", &1])
+        },
+        %{
+          id: "restart_network",
+          group: "actions",
+          summary: "unblock and restart wifi or bluetooth",
+          kind: {:enum, ~w(wifi bluetooth)},
+          risk: :ask,
+          undo: :none,
+          apply: &omarchy(["restart", &1])
+        },
+        %{
+          id: "launch_app",
+          group: "actions",
+          summary: "open an installed app by its name",
+          kind: {:lookup, fn -> Enum.map(apps(), &elem(&1, 0)) end},
+          undo: :none,
+          apply: fn name ->
+            case List.keyfind(apps(), name, 0) do
+              {_, id} -> detach(["uwsm-app", "--", id])
+              nil -> {:error, "#{name} isn't an installed app"}
+            end
+          end
+        },
+        %{
+          id: "open_url",
+          group: "actions",
+          summary: "open a web page in the default browser",
+          kind: :url,
+          undo: :none,
+          apply: &detach(["xdg-open", &1])
+        },
+        %{
+          id: "reminder",
+          group: "actions",
+          summary:
+            "a desktop reminder: minutes from now, then the message (e.g. \"10 check the oven\")",
+          kind: :reminder,
+          undo: :none,
+          apply: fn value ->
+            [minutes | message] = String.split(value, " ", parts: 2)
+            omarchy(["reminder", minutes | message])
+          end
+        },
+        %{
+          id: "power",
+          group: "actions",
+          summary: "lock the screen, log out, reboot or shut down",
+          kind: {:enum, ~w(lock logout reboot shutdown)},
+          risk: :ask,
+          undo: :none,
+          apply: &omarchy(["system", &1])
+        }
+      ]
+  end
+
+  # Root actions, through tiny-axe's root helper (TinyAxe.Desktop.Root): they
+  # always ask, and package changes take a snapper snapshot first. Shown even
+  # before the helper is set up, so the user hears how to set it up.
+  defp root_actions do
     [
       %{
-        id: "screenshot",
-        group: "actions",
+        id: "install_package",
+        group: "system",
         summary:
-          "take a screenshot: smart (pick a window or region), region, windows or fullscreen",
-        kind: {:enum, ~w(smart region windows fullscreen)},
+          "install packages from Arch's official repositories (names separated by spaces; " <>
+            "not the AUR)",
+        kind: :packages,
+        risk: :ask,
         undo: :none,
-        apply: &omarchy(["capture", "screenshot", &1])
+        apply: &root("install", String.split(&1))
       },
       %{
-        id: "screen_recording",
-        group: "actions",
-        summary: "start or stop recording the screen",
+        id: "remove_package",
+        group: "system",
+        summary: "remove a package the user installed (its name)",
+        kind: {:lookup, &explicit_packages/0},
+        risk: :ask,
+        undo: :none,
+        apply: &root("remove", [&1])
+      },
+      %{
+        id: "system_update",
+        group: "system",
+        summary: "update every package on the system (after a snapshot)",
         kind: :action,
         risk: :ask,
         undo: :none,
-        apply: fn _ -> omarchy(["capture", "screenrecording"]) end
+        apply: fn _ -> root("update", []) end
       },
       %{
-        id: "restart",
-        group: "actions",
-        summary: "restart or reload a part of the desktop that's misbehaving",
-        kind: {:enum, ~w(audio shell terminal hyprctl hyprsunset xcompose btop tmux)},
-        undo: :none,
-        apply: &omarchy(["restart", &1])
-      },
-      %{
-        id: "restart_network",
-        group: "actions",
-        summary: "unblock and restart wifi or bluetooth",
-        kind: {:enum, ~w(wifi bluetooth)},
-        risk: :ask,
-        undo: :none,
-        apply: &omarchy(["restart", &1])
-      },
-      %{
-        id: "launch_app",
-        group: "actions",
-        summary: "open an installed app by its name",
-        kind: {:lookup, fn -> Enum.map(apps(), &elem(&1, 0)) end},
-        undo: :none,
-        apply: fn name ->
-          case List.keyfind(apps(), name, 0) do
-            {_, id} -> detach(["uwsm-app", "--", id])
-            nil -> {:error, "#{name} isn't an installed app"}
-          end
-        end
-      },
-      %{
-        id: "open_url",
-        group: "actions",
-        summary: "open a web page in the default browser",
-        kind: :url,
-        undo: :none,
-        apply: &detach(["xdg-open", &1])
-      },
-      %{
-        id: "reminder",
-        group: "actions",
+        id: "system_service",
+        group: "system",
         summary:
-          "a desktop reminder: minutes from now, then the message (e.g. \"10 check the oven\")",
-        kind: :reminder,
+          "start, stop, restart, enable or disable a system service: the action, then the " <>
+            "unit (e.g. \"restart bluetooth\")",
+        kind: :service,
+        risk: :ask,
         undo: :none,
         apply: fn value ->
-          [minutes | message] = String.split(value, " ", parts: 2)
-          omarchy(["reminder", minutes | message])
+          [action, unit] = String.split(value, " ", parts: 2)
+          root("service", [action, unit])
         end
-      },
-      %{
-        id: "power",
-        group: "actions",
-        summary: "lock the screen, log out, reboot or shut down",
-        kind: {:enum, ~w(lock logout reboot shutdown)},
-        risk: :ask,
-        undo: :none,
-        apply: &omarchy(["system", &1])
       }
     ]
+  end
+
+  defp root(verb, args) do
+    case TinyAxe.Desktop.Root.run(verb, args) do
+      {:ok, _out} -> :ok
+      {:error, why} -> {:error, why}
+    end
+  end
+
+  defp explicit_packages do
+    case Runner.ok("pacman", ["-Qqe"]) do
+      {:ok, text} -> String.split(text, "\n", trim: true)
+      {:error, _} -> []
+    end
   end
 
   @doc """

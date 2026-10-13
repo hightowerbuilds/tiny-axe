@@ -34,7 +34,12 @@ defmodule TinyAxe.DesktopTest do
     File.write!(ConfigFiles.hypr_path(), "-- Change the default Omarchy look'n'feel.\n")
     File.rm(Undo.path())
     desktop()
-    Decider.Script.script(fn _, _, _ -> 0.9 end)
+    # Reviews pass; "does the user want a change?" (asked when no item fits) is no.
+    Decider.Script.script(fn
+      :change, _, _ -> 0.1
+      _, _, _ -> 0.9
+    end)
+
     :ok
   end
 
