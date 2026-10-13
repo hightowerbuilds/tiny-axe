@@ -190,7 +190,11 @@ defmodule TinyAxe.Agent do
       system_prompt(request.servers, request.briefing,
         dispatch: dispatch,
         shell: ShellTool.available?(),
-        os: Map.get(task, :depth, 0) == 0 and TinyAxe.Desktop.OsRun.available?()
+        # os_run is for an agent's own task, never a sub-agent's (the gate
+        # doesn't offer it there either).
+        os:
+          not Map.get(request, :subagent, false) and Map.get(task, :depth, 0) == 0 and
+            TinyAxe.Desktop.OsRun.available?()
       )
 
     driver(choice).run(Map.put(request, :system, system), task, choice, notify)

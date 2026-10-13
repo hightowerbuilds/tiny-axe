@@ -44,12 +44,23 @@ defmodule TinyAxe.Desktop do
   @max_rounds 3
 
   @doc """
-  Handles a desktop request. `opts[:remote]`: whether the escalation
-  ladder may leave this machine (`:ask`, `:allowed`, `:denied`);
-  `opts[:origin]`: `:site` for a request from the site's Chat tab.
+  Works out what to do without doing it: `{:ok, changes, reply}` (ready to
+  apply), `{:doubtful, changes, reply}` (for the user's y/n),
+  `{:gave_up, reply, nil}`, `{:reply, reply}` (a question, or nothing to
+  do), `{:unsupported, reply}` (for the agent) or `{:error, reason}`.
+  Escalates like `run/4`. `TinyAxe.Desktop.Eval` scores this.
   """
-  @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
-  def run(history, prompt, notify, opts \\ []) do
+  @spec decide([Ollama.message()], String.t(), (term() -> any()), keyword()) :: tuple()
+  def decide(history, prompt, notify, opts \\ []) do
+    # Keybindings, workspaces and startup: nothing in the list does them, and
+    # small models squeeze them into an item that's close ("bind super+n to
+    # open obsidian" became opening Obsidian), so they go to the agent.
+    if Settings.setup_request?(prompt),
+      do: {:unsupported, "That's a keybinding, workspace or startup change."},
+      else: decide_items(history, prompt, notify, opts)
+  end
+
+  defp decide_items(history, prompt, notify, opts) do
     notify.({:stage, "reading the desktop's settings…"})
     settings = snapshot()
 
@@ -99,6 +110,19 @@ defmodule TinyAxe.Desktop do
         other ->
           other
       end
+
+    result
+  end
+
+  @doc """
+  Handles a desktop request. `opts[:remote]`: whether the escalation
+  ladder may leave this machine (`:ask`, `:allowed`, `:denied`);
+  `opts[:origin]`: `:site` for a request from the site's Chat tab.
+  """
+  @spec run([Ollama.message()], String.t(), (term() -> any()), keyword()) :: :ok
+  def run(history, prompt, notify, opts \\ []) do
+    remote = Keyword.get(opts, :remote, :denied)
+    result = decide(history, prompt, notify, opts)
 
     site? = Keyword.get(opts, :origin) == :site
 
@@ -318,7 +342,13 @@ defmodule TinyAxe.Desktop do
     reply = text(answer["reply"])
 
     case check(answer["changes"], settings, context.request) do
-      {:ok, [], _already} ->
+      # Everything asked for is already so: say that, nothing to do.
+      {:ok, [], [_ | _] = already} ->
+        {:reply,
+         "Already as asked: " <>
+           Enum.map_join(already, ", ", &"#{label(&1.setting)} is #{&1.value}") <> "."}
+
+      {:ok, [], []} ->
         if wants_change?(context), do: {:unsupported, reply}, else: {:reply, reply}
 
       {:ok, changes, already} ->
@@ -409,7 +439,7 @@ defmodule TinyAxe.Desktop do
   # Settings with a `max_jump` (volume) move at most that far when the
   # request gives no number: "louder" isn't "100".
   defp within_jump({:ok, v} = ok, %{max_jump: max, now: now} = s, request)
-       when is_binary(request) and is_binary(now) do
+       when is_number(max) and is_binary(request) and is_binary(now) do
     with false <- request =~ ~r/\d/,
          {new, _} <- Float.parse(v),
          {old, _} <- Float.parse(now),

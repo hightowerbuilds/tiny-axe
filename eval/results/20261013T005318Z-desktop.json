@@ -1,0 +1,1 @@
+{"model":"gemma4:e4b-it-qat","decider":"TinyAxe.Decider.Jev","splits":{"holdout2":{"error":0,"right":1,"tasks":1,"right_asked":0,"escalated":0,"wrong":0}},"median_ms":868,"results":[{"id":"h2_unmute","split":"holdout2","prompt":"unmute my mic","outcome":"right","ms":868,"got":"reply: Already as asked: mic muted is off."}]}

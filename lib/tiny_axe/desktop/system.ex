@@ -354,7 +354,9 @@ defmodule TinyAxe.Desktop.System do
 
   defp app_dirs do
     data = System.get_env("XDG_DATA_HOME") || Path.expand("~/.local/share")
-    [Path.join(data, "applications"), "/usr/share/applications"]
+
+    Application.get_env(:tiny_axe, :desktop, [])
+    |> Keyword.get(:app_dirs, [Path.join(data, "applications"), "/usr/share/applications"])
   end
 
   ## Helpers

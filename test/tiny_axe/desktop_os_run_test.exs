@@ -147,7 +147,7 @@ defmodule TinyAxe.DesktopOsRunTest do
   describe "the desktop route hands over what its list can't do" do
     setup do
       Model.Script.script(fn _, _ ->
-        JSON.encode!(%{changes: [], reply: "I can't change keybindings."})
+        JSON.encode!(%{changes: [], reply: "I can't change the mouse speed."})
       end)
 
       # No item fits, and the decider says the user wants a change.
@@ -158,7 +158,7 @@ defmodule TinyAxe.DesktopOsRunTest do
 
     defp run(opts) do
       me = self()
-      Desktop.run([], "bind super+b to brave", &send(me, {:event, &1}), opts)
+      Desktop.run([], "make the mouse faster", &send(me, {:event, &1}), opts)
       collect()
     end
 
@@ -179,7 +179,7 @@ defmodule TinyAxe.DesktopOsRunTest do
     test "with os_run off, Gemma's reply stands" do
       Application.put_env(:tiny_axe, :os_run, false)
       events = run([])
-      assert {:done, "I can't change keybindings."} in events
+      assert {:done, "I can't change the mouse speed."} in events
     end
   end
 end

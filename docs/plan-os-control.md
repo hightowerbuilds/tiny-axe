@@ -1,6 +1,6 @@
 # Plan: changing this computer
 
-Status (2026-10-12): the appearance slice is built (below, "Appearance as built"); the rest is plan. Branch `os-control` (worktree ../tiny-axe-os).
+Status (2026-10-12): built through O5 (sections "as built" below). Branch `os-control` (worktree ../tiny-axe-os).
 
 Goal: tiny-axe can change the computer it runs on (theme, display, audio,
 wifi, bluetooth, keybindings, installed apps, services, settings) when asked.
@@ -454,3 +454,45 @@ system update, and system services.
   (`test/support/fake_sudo`) and the helper in dry-run mode.
 - **To set up:** run `mix tiny_axe.os_setup`, then the two commands it
   prints.
+
+## O5 as built (2026-10-12)
+
+- **What it runs:** `mix tiny_axe.desktop_eval` runs `eval/desktop_tasks.exs`
+  through `Desktop.decide/4`, the plan without applying it, which `run/4`
+  now uses too.
+  - It uses the real Gemma and Jev against a fixed fake desktop
+    (`Desktop.Eval.Fixture`): canned values, temporary Ghostty and
+    Hyprland files, a made-up app list and package lists.
+  - Nothing is applied and nothing on the machine is read for answers.
+  - `--split`, `--only`, `--haiku` (let escalation reach Claude) and
+    `--quiet` are supported. Results go to
+    `eval/results/<time>-desktop.json`.
+- **Outcomes:** right · right but asked (doubtful, so the user would be
+  asked) · escalated · **wrong** (a wrong plan that would have run, the
+  number that matters) · error.
+- **Tasks:** 46 in three splits. Dev and holdout have 18 each: appearance,
+  sound, devices, default apps, actions, root, out-of-list (for the
+  agent) and questions. Holdout2 has 10, written after the fixes.
+- **First run:** dev 16/18 right, 2 wrong; holdout 17/18 right, 1 wrong.
+  - "make the terminal font bigger" went 12 → 18. Fix: font sizes move at
+    most 4 without a number (`max_jump`).
+  - "bind super+alt+n to open obsidian" became launch Obsidian, and "make
+    firefox always open on workspace 2" became default browser Firefox.
+    Jev let both through. Fix: requests about keybindings, workspaces or
+    startup (`Settings.setup_request?/1`) go straight to the agent without
+    asking Gemma.
+  - The window-rule fix came from a holdout task, so holdout is no longer
+    untouched.
+- **After the fixes:** dev 18/18, holdout 18/18, 0 wrong.
+- **Holdout2, run once untuned:** 9/10 right, 0 wrong, 1 escalated.
+  - The escalation was a real bug, not a model miss: "unmute my mic" when
+    it's already unmuted dropped the change, and with nothing left the
+    request went to the agent.
+  - Fixed: nothing to change now answers "Already as asked: …". This is
+    recorded as found, not counted as a retune.
+- **Speed:** about 2.7 s per task on Gemma with the model loaded. Named
+  requests skip the review.
+- **Also fixed:** sub-agents were told about `os_run`, which only an
+  agent's own task gets. Their prompts now leave it out, and
+  `agent_dispatch_test` checks that.
+- **Full suite:** 853 tests, 0 failures.

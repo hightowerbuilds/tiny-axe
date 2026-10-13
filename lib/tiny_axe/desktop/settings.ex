@@ -167,13 +167,29 @@ defmodule TinyAxe.Desktop.Settings do
     "startup",
     "at login",
     "autostart",
-    "on boot"
+    "on boot",
+    "window rule"
   ]
   @not_named %{
     "launch_app" => @setup,
     "open_url" => @setup,
     "restart" => ["computer", "machine", "pc", "laptop"]
   }
+
+  @doc """
+  Whether the request is about a keybinding, workspaces or what starts at
+  login: no desktop item does those, so the agent takes it straight away.
+
+      iex> TinyAxe.Desktop.Settings.setup_request?("make firefox always open on workspace 2")
+      true
+      iex> TinyAxe.Desktop.Settings.setup_request?("open firefox")
+      false
+  """
+  @spec setup_request?(String.t()) :: boolean()
+  def setup_request?(request) do
+    text = String.downcase(request)
+    Enum.any?(@setup, &Regex.match?(~r/\b#{Regex.escape(&1)}/, text))
+  end
 
   @doc """
   Whether the request names this change's setting outright: its words
@@ -243,6 +259,7 @@ defmodule TinyAxe.Desktop.Settings do
         summary:
           "text size everywhere at once (bar, apps and terminals), in px; 12 is the default",
         kind: {:or, ["reset"], {:int, 9, 20}},
+        max_jump: 4,
         current: fn ->
           with text when is_binary(text) <- out(["display", "text", "size"]),
                [_, n] <- Regex.run(~r/text size:\s*(\d+)/, text),
@@ -340,7 +357,8 @@ defmodule TinyAxe.Desktop.Settings do
   defp ghostty do
     [
       ghostty_setting("terminal_font_size", "font size in the terminal, in points", {:int, 6, 40},
-        key: "font-size"
+        key: "font-size",
+        max_jump: 4
       ),
       ghostty_setting(
         "terminal_padding",
@@ -398,6 +416,7 @@ defmodule TinyAxe.Desktop.Settings do
       group: "terminal",
       summary: summary,
       kind: kind,
+      max_jump: Keyword.get(opts, :max_jump),
       current: fn ->
         case ConfigFiles.ghostty_get(key) || Keyword.get(opts, :default) do
           nil -> nil
@@ -557,7 +576,11 @@ defmodule TinyAxe.Desktop.Settings do
   end
 
   defp shell_json(keys) do
-    with {:ok, text} <- File.read(Path.expand("~/.config/omarchy/shell.json")),
+    shell =
+      Application.get_env(:tiny_axe, :desktop, [])[:omarchy_shell] ||
+        "~/.config/omarchy/shell.json"
+
+    with {:ok, text} <- File.read(Path.expand(shell)),
          {:ok, map} <- JSON.decode(text),
          v when not is_nil(v) <- get_in(map, keys) do
       to_string(v)

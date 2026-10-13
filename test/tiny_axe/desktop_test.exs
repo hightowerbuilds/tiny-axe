@@ -296,6 +296,13 @@ defmodule TinyAxe.DesktopTest do
       refute_received {:reviewed, :change_1, _}
     end
 
+    test "asking for what's already so says so, and hands nothing over" do
+      plan([%{setting: "theme", value: "Solitude"}])
+      events = run("switch to solitude")
+      assert done(events) == "Already as asked: theme is Solitude."
+      refute Enum.any?(events, &match?({:escalate, _}, &1))
+    end
+
     test "a question about the current look changes nothing" do
       plan([], "You're on Solitude.")
       events = run("what theme am I using?")
